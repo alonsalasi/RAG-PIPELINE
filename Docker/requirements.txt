@@ -1,0 +1,10 @@
+boto3==1.34.116             # AWS SDK
+gunicorn==22.0.0            # WSGI for Flask API
+Flask==2.3.3                # Web framework
+psycopg2-binary==2.9.9      # PostgreSQL connector (for RDS metadata)
+langchain==0.1.16           # Core RAG library
+sentence-transformers==2.7.0  # For generating vector embeddings
+opensearch-py==2.4.2        # Client for connecting to the OpenSearch Vector DB
+amazon-textract-caller==0.2.0 # Supports LangChain Textract integration
+requests==2.32.3            # Standard Python HTTP client (for frontend to call backend)
+streamlit==1.36.0           # Framework for creating the user interface
