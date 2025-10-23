@@ -1,4 +1,4 @@
-# VPC
+# --- VPC Base Resources ---
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
@@ -9,7 +9,6 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Internet Gateway for Public Subnets
 resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.main.id
   tags = {
@@ -17,7 +16,11 @@ resource "aws_internet_gateway" "gw" {
   }
 }
 
-# Public Subnets (for ECS API Service/Load Balancer)
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# --- Subnets ---
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -30,7 +33,6 @@ resource "aws_subnet" "public" {
   }
 }
 
-# Private Subnets (for RDS and ECS Worker Service)
 resource "aws_subnet" "private" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -42,7 +44,7 @@ resource "aws_subnet" "private" {
   }
 }
 
-# Route Table for Public Subnets
+# --- Internet Gateway and Public Routes ---
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   route {
@@ -57,24 +59,9 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# RDS Subnet Group
-resource "aws_db_subnet_group" "rds" {
-  subnet_ids = aws_subnet.private.*.id
-  tags = {
-    Name = "${var.project_name}-rds-subnet-group"
-  }
-}
-
-resource "aws_opensearchservice_domain" "ecs_opensearch" {
-}
-
-# Get available AZs
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
+# --- NAT Gateways and Private Routes ---
 resource "aws_eip" "nat" {
-  count = 2
+  count  = 2
   domain = "vpc"
 }
 
@@ -100,4 +87,48 @@ resource "aws_route_table_association" "private" {
   count          = 2
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
+}
+
+# ======================================================================
+# VPC ENDPOINTS (CRITICAL for Lambdas in Private Subnets)
+# ======================================================================
+
+# --- 1. Bedrock VPC Interface Endpoint ---
+resource "aws_vpc_endpoint" "bedrock_interface" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private.*.id
+  security_group_ids  = [aws_security_group.lambda_sg.id] 
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-bedrock-endpoint"
+  }
+}
+
+# --- 2. S3 VPC Gateway Endpoint (Data Plane) ---
+resource "aws_vpc_endpoint" "s3_gateway" {
+  vpc_id       = aws_vpc.main.id
+  service_name = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids = aws_route_table.private.*.id
+
+  tags = {
+    Name = "${var.project_name}-s3-gateway-endpoint"
+  }
+}
+
+# --- 3. S3 VPC Interface Endpoint (Control Plane/API) ---
+resource "aws_vpc_endpoint" "s3_interface" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private.*.id
+  security_group_ids  = [aws_security_group.lambda_sg.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-s3-interface-endpoint"
+  }
 }

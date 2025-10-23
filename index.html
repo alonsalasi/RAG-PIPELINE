@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Document Chatbot</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; display: flex; flex-direction: column; height: 100vh; }
+        .container { flex-grow: 1; max-width: 800px; margin: 20px auto; width: 100%; display: flex; flex-direction: column; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background-color: white; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
+        .header { background-color: #007bff; color: white; padding: 15px; text-align: center; font-size: 1.2em; font-weight: bold; }
+        .chat-log { flex-grow: 1; padding: 15px; overflow-y: auto; background-color: #f9f9f9; }
+        .input-area { display: flex; padding: 10px; border-top: 1px solid #ddd; align-items: center; }
+        #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; margin-right: 10px; }
+        #send-button { background-color: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-size: 1em; transition: background-color 0.2s; }
+        #send-button:hover { background-color: #218838; }
+        .message { margin-bottom: 15px; padding: 10px; border-radius: 6px; max-width: 80%; }
+        .user-message { background-color: #e6f7ff; align-self: flex-end; margin-left: auto; }
+        .assistant-message { background-color: #ffffff; border: 1px solid #eee; align-self: flex-start; }
+        .citation { font-size: 0.75em; color: #666; margin-top: 5px; background-color: #e0f7fa; padding: 5px; border-radius: 4px; }
+        .loading-message { font-style: italic; color: #007bff; }
+        
+        /* File Upload Styles */
+        .file-upload-area { display: flex; flex-direction: column; padding: 10px; border-top: 1px solid #ddd; background-color: #fff; }
+        .file-input-group { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+        #file-input { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        #upload-button { background-color: #ffc107; color: #333; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; transition: background-color 0.2s; }
+        #upload-button:hover { background-color: #e0a800; }
+        #upload-status { font-size: 0.85em; color: #007bff; }
+        
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">RAG Chatbot - Ask About Your Documents</div>
+    
+    <div class="chat-log" id="chat-log">
+        <div class="message assistant-message">Hello! I can answer questions from your documents. Ask me anything, or upload a PDF/image to start.</div>
+    </div>
+    
+    <!-- FILE UPLOAD AREA -->
+    <div class="file-upload-area">
+        <div class="file-input-group">
+            <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff" title="Select PDF or Image">
+            <button type="button" id="upload-button" onclick="requestPresignedUrlAndUploadFile()">Upload File</button>
+        </div>
+        <div id="upload-status"></div>
+    </div>
+
+    <!-- QUERY INPUT AREA -->
+    <div class="input-area">
+        <input type="text" id="user-input" placeholder="Type your question here...">
+        <button id="send-button" onclick="handleQuerySubmission()">Send</button>
+    </div>
+</div>
+
+<script>
+    // CRITICAL: Updated with your actual API Gateway Invoke URL
+    const API_GATEWAY_URL = 'https://1xeczo4tz9.execute-api.us-west-2.amazonaws.com/default'; 
+    const CHAT_LOG = document.getElementById('chat-log');
+    const UPLOAD_STATUS = document.getElementById('upload-status');
+    const USER_INPUT = document.getElementById('user-input');
+
+    // --- Utility Functions ---
+    
+    USER_INPUT.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            handleQuerySubmission();
+        }
+    });
+
+    function appendMessage(role, content, sources = null) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', `${role}-message`);
+        messageDiv.innerHTML = content.replace(/\n/g, '<br>');
+
+        if (sources && sources.length > 0) {
+            const citationDiv = document.createElement('div');
+            citationDiv.classList.add('citation');
+            citationDiv.innerHTML = 'Sources: ' + Array.from(new Set(sources)).join(', ');
+            messageDiv.appendChild(citationDiv);
+        }
+
+        CHAT_LOG.appendChild(messageDiv);
+        CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight; // Auto-scroll to bottom
+        return messageDiv;
+    }
+    
+    function setButtonState(disabled) {
+        document.getElementById('send-button').disabled = disabled;
+        document.getElementById('upload-button').disabled = disabled;
+        USER_INPUT.disabled = disabled;
+        document.getElementById('file-input').disabled = disabled;
+    }
+
+    // --- QUERY LOGIC ---
+
+    async function handleQuerySubmission() {
+        const query = USER_INPUT.value.trim();
+        if (query === "") return;
+
+        appendMessage('user', query);
+        USER_INPUT.value = '';
+        setButtonState(true);
+
+        const loadingMsg = appendMessage('assistant', '<span class="loading-message">Thinking...</span>');
+
+        try {
+            const response = await fetch(`${API_GATEWAY_URL}/query`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
+
+            const data = await response.json();
+
+            CHAT_LOG.removeChild(loadingMsg);
+            
+            if (response.ok) {
+                appendMessage('assistant', data.response, data.source_documents);
+            } else {
+                appendMessage('assistant', `ERROR: ${data.error || 'API request failed.'}`, null);
+            }
+        } catch (error) {
+            CHAT_LOG.removeChild(loadingMsg);
+            appendMessage('assistant', 'CRITICAL ERROR: Could not connect to the API Gateway.', null);
+            console.error('Fetch error:', error);
+        } finally {
+            setButtonState(false);
+        }
+    }
+
+    // --- UPLOAD LOGIC ---
+    
+    async function requestPresignedUrlAndUploadFile() {
+        const fileInput = document.getElementById('file-input');
+        const file = fileInput.files[0];
+        if (!file) {
+            UPLOAD_STATUS.textContent = 'Please select a file first.';
+            return;
+        }
+
+        setButtonState(true);
+        UPLOAD_STATUS.textContent = `1/2: Requesting secure upload link for ${file.name}...`;
+
+        try {
+            // Step 1: Request the presigned URL from the API Lambda
+            // Note the use of encodeURIComponent for safe URL parameters
+            const fileNameEncoded = encodeURIComponent(file.name);
+            const fileTypeEncoded = encodeURIComponent(file.type);
+            
+            const urlResponse = await fetch(`${API_GATEWAY_URL}/get-upload-url?fileName=${fileNameEncoded}&fileType=${fileTypeEncoded}`, {
+                method: 'GET'
+            });
+
+            if (!urlResponse.ok) {
+                const errorData = await urlResponse.json();
+                throw new Error(errorData.error || `API failed to get upload URL. Status: ${urlResponse.status}`);
+            }
+
+            const { signedUrl } = await urlResponse.json();
+
+            // Step 2: Upload the file directly to the S3 URL
+            UPLOAD_STATUS.textContent = `2/2: Uploading file... (Do not navigate away)`;
+            
+            const uploadResponse = await fetch(signedUrl, {
+                method: 'PUT',
+                body: file,
+                headers: {
+                    // Content-Type is critical for S3 validation
+                    'Content-Type': file.type, 
+                }
+            });
+
+            if (uploadResponse.ok) {
+                UPLOAD_STATUS.textContent = `File "${file.name}" uploaded successfully! Ingestion worker triggered.`;
+                appendMessage('assistant', `Document **${file.name}** has been uploaded. The ingestion worker (Tesseract OCR, Chunking, and Indexing) has been triggered via SQS. Please allow a few minutes before querying its content.`);
+            } else {
+                throw new Error(`S3 Upload failed with status: ${uploadResponse.status} ${uploadResponse.statusText}`);
+            }
+
+        } catch (error) {
+            UPLOAD_STATUS.textContent = `Upload failed: ${error.message}`;
+            console.error('Upload Error:', error);
+        } finally {
+            fileInput.value = ''; // Clear file input
+            setButtonState(false);
+        }
+    }
+
+</script>
+
+</body>
+</html>

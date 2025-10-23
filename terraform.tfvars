@@ -1,3 +1,4 @@
-project_name = "pdf_query"
-rds_username = "rds_user"
-rds_password = "rds_user1109"
+project_name      = "pdfquery"
+ingestion_version = 1
+api_version       = 1
+layer_version     = 1

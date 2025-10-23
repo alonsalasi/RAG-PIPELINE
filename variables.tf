@@ -10,38 +10,32 @@ variable "project_name" {
   default     = "rag-ecs-project"
 }
 
-variable "rds_username" {
-  description = "Master username for the RDS PostgreSQL instance"
-  type        = string
-  default     = "dbmaster"
-}
-
-variable "rds_password" {
-  description = "Master password for the RDS PostgreSQL instance (In production, use Secrets Manager)"
-  type        = string
-  sensitive   = true
-}
-
 variable "environment" {
   description = "Project Enviroment"
   type        = string
   default     = "default"
 }
 
-variable "opensearch_instance_type" {
-  description = "The instance type for the OpenSearch data nodes"
+variable "api_version" {
+  description = "Lambda_API_Version"
+  type = number
+  default = 1
+}
+
+variable "ingestion_image_tag" {
+  description = "Docker image tag for ingestion Lambda (e.g., 'latest')."
   type        = string
-  default     = "t3.small.search"
+  default     = "latest"
 }
 
-variable "ecs_task_cpu" {
-  description = "The CPU limit (in vCPU units) for the Fargate task"
-  type        = number
-  default     = 0.5 # 512 is 0.5 vCPU
+variable "ingestion_version" {
+  description = "Lambda_Ingestion_Version"
+  type = number
+  default = 1
 }
 
-variable "ecs_task_memory" {
-  description = "The memory limit (in GB) for the Fargate task"
-  type        = number
-  default     = 1 # 1GB
+variable "layer_version" {
+  description = "Lambda_Layer_Version"
+  type = number
+  default = 1
 }
