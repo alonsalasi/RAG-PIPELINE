@@ -66,7 +66,6 @@ resource "aws_iam_role_policy_attachment" "lambda_api_vpc_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
-# --- NEW: Role and Policy for API Gateway to write to CloudWatch ---
 resource "aws_iam_role" "apigw_logs_role" {
   name = "${var.project_name}-apigw-logs-role"
   assume_role_policy = jsonencode({
@@ -74,7 +73,7 @@ resource "aws_iam_role" "apigw_logs_role" {
     Statement = [
       {
         Effect    = "Allow",
-        Principal = { Service = "apigateway.amazonaws.com" },
+        Principal = { Service = "apigateway.amazonaws.com" }, 
         Action    = "sts:AssumeRole"
       },
     ]
@@ -92,9 +91,11 @@ resource "aws_iam_policy" "apigw_logs_policy" {
         Action   = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:PutLogEvents"
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
         ],
-        Resource = "*" # Must be '*' for creating the initial log group
+        Resource = "*" 
       },
     ]
   })
@@ -107,10 +108,7 @@ resource "aws_iam_role_policy_attachment" "apigw_logs_attach" {
 
 resource "aws_api_gateway_account" "apigw_account_settings" {
   cloudwatch_role_arn = aws_iam_role.apigw_logs_role.arn
-  depends_on          = [aws_iam_role_policy_attachment.apigw_logs_attach]
 }
-# --- END NEW API GATEWAY LOGGING ROLE ---
-
 
 resource "aws_iam_role" "lambda_ingestion_role" {
   name = "${var.project_name}-lambda-ingest-role"

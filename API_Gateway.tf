@@ -3,6 +3,7 @@ resource "aws_apigatewayv2_api" "rag_api_gateway" {
   protocol_type = "HTTP"
   description   = "API Gateway for RAG Query Lambda Function"
 
+  # Core CORS settings (HTTP API handles OPTIONS implicitly with these headers)
   cors_configuration {
     allow_origins = ["*"] 
     allow_methods = ["POST", "GET", "OPTIONS", "PUT"] 
@@ -11,6 +12,7 @@ resource "aws_apigatewayv2_api" "rag_api_gateway" {
   }
 }
 
+# --- 1. Integration for POST/GET/OPTIONS (Lambda Proxy) ---
 resource "aws_apigatewayv2_integration" "rag_api_integration" {
   api_id             = aws_apigatewayv2_api.rag_api_gateway.id
   integration_type   = "AWS_PROXY"
@@ -19,31 +21,28 @@ resource "aws_apigatewayv2_integration" "rag_api_integration" {
   payload_format_version = "2.0" 
 }
 
+# --- 2. Route for Core API Calls (Handles all methods including implicit OPTIONS) ---
 resource "aws_apigatewayv2_route" "rag_api_route" {
   api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key = "ANY /{proxy+}"
+  # The "ANY" method ensures all HTTP methods (POST, GET, OPTIONS, PUT) 
+  # are routed. HTTP API's built-in CORS handles the OPTIONS response.
+  route_key = "ANY /{proxy+}" 
   target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
 }
 
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id      = aws_apigatewayv2_api.rag_api_gateway.id
+  # Dependency on the single, catch-all route
   depends_on  = [aws_apigatewayv2_route.rag_api_route]
 }
 
-# --- CRITICAL FIX: Decouple Log Group from Stage Resource Interpolation ---
+# --- CloudWatch Log Group for API Access Logs ---
 resource "aws_cloudwatch_log_group" "api_access_logs" {
-  # Use known variables (API ID, Stage Name) to construct the name, 
-  # but do not force dependency on the stage's ARN.
   name              = "/aws/apigateway/${aws_apigatewayv2_api.rag_api_gateway.id}/${var.environment}"
   retention_in_days = 7
 
   tags = {
     Name = "${var.project_name}-api-access-logs"
-  }
-  
-  # Ensure the Log Group is not destroyed if the API GW automatically created it.
-  lifecycle {
-    prevent_destroy = false
   }
 }
 
@@ -52,7 +51,7 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
   name        = var.environment
   auto_deploy = true
   
-  # Enable Access Logging on the Stage, referencing the Log Group's ARN
+  # Enable Access Logging on the Stage
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access_logs.arn
     format = jsonencode({
@@ -69,7 +68,6 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
 
   depends_on = [
     aws_apigatewayv2_route.rag_api_route,
-    # Explicitly depend on the API Gateway account role being set up (IAM.tf)
     aws_api_gateway_account.apigw_account_settings, 
   ]
 }
