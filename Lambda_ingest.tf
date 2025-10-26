@@ -10,12 +10,12 @@ resource "aws_lambda_function" "ingestion_worker" {
 
   vpc_config {
     subnet_ids         = aws_subnet.private.*.id
-security_group_ids = [aws_security_group.lambda_sg.id]
+    security_group_ids = [aws_security_group.lambda_sg.id]
   }
 
   environment {
     variables = {
-      S3_DOCUMENTS_BUCKET = aws_s3_bucket.rag_documents.bucket
+      S3_BUCKET  = aws_s3_bucket.rag_documents.bucket
     }
   }
 

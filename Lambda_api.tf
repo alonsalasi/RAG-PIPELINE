@@ -1,31 +1,37 @@
-resource "aws_s3_object" "api_lambda_zip" {
-  bucket = aws_s3_bucket.rag_documents.id
-  key    = "lambda_zips/api_query_service.zip"
-  source = "lambda_api_deployment_package.zip"
-}
+##############################################
+# Lambda: API Query Service (Container Image)
+##############################################
 
+# --- Lambda Function (using ECR image) ---
 resource "aws_lambda_function" "api_query_service" {
   function_name = "${var.project_name}-api-query-service"
-  description   = "Version: ${var.api_version}"
+  description   = "RAG Query API Lambda (container image with FAISS + LangChain)"
   role          = aws_iam_role.lambda_api_role.arn
-  handler       = "lambda_api_handler.lambda_handler"
-  runtime       = "python3.11"
+
+  # Use container image instead of ZIP
+  package_type  = "Image"
+  image_uri    = "${aws_ecr_repository.api_lambda_repo.repository_url}:${var.api_image_tag}"
   timeout       = 90
-  memory_size   = 512
-
-  s3_bucket = aws_s3_object.api_lambda_zip.bucket
-  s3_key    = aws_s3_object.api_lambda_zip.key
-
-  source_code_hash = aws_s3_object.api_lambda_zip.source_hash
+  memory_size   = 1024
 
   vpc_config {
     subnet_ids         = aws_subnet.private.*.id
-security_group_ids = [aws_security_group.lambda_sg.id]
+    security_group_ids = [aws_security_group.lambda_sg.id]
   }
 
   environment {
     variables = {
-      S3_DOCUMENTS_BUCKET = aws_s3_bucket.rag_documents.bucket
+      S3_BUCKET             = aws_s3_bucket.rag_documents.bucket
+      PATH_PREFIX_TO_REMOVE = "default"
     }
+  }
+
+  depends_on = [
+    aws_iam_role.lambda_api_role
+  ]
+
+  tags = {
+    Name        = "${var.project_name}-api-query-service"
+    Environment = var.environment
   }
 }

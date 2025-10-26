@@ -3,40 +3,60 @@ resource "aws_apigatewayv2_api" "rag_api_gateway" {
   protocol_type = "HTTP"
   description   = "API Gateway for RAG Query Lambda Function"
 
-  # Core CORS settings (HTTP API handles OPTIONS implicitly with these headers)
   cors_configuration {
-    allow_origins = ["*"] 
-    allow_methods = ["POST", "GET", "OPTIONS", "PUT"] 
-    allow_headers = ["content-type"]
+    allow_origins = ["https://d2h33zz3k8plgu.cloudfront.net"]
+    allow_methods = ["*"]
+    allow_headers = ["*"]
     max_age       = 300
   }
 }
 
-# --- 1. Integration for POST/GET/OPTIONS (Lambda Proxy) ---
 resource "aws_apigatewayv2_integration" "rag_api_integration" {
   api_id             = aws_apigatewayv2_api.rag_api_gateway.id
   integration_type   = "AWS_PROXY"
-  integration_method = "POST"
+  # ❗️FIX 1: Removed 'integration_method = "POST"'
   integration_uri    = aws_lambda_function.api_query_service.invoke_arn
-  payload_format_version = "2.0" 
+  # ❗️FIX 2: Changed payload version to 1.0 to match your Python code
+  payload_format_version = "1.0"
 }
 
-# --- 2. Route for Core API Calls (Handles all methods including implicit OPTIONS) ---
-resource "aws_apigatewayv2_route" "rag_api_route" {
+# ❗️FIX 3: Deleted the old 'ANY' route and created three specific routes
+# All routes point to the same integration
+resource "aws_apigatewayv2_route" "rag_api_route_query" {
   api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  # The "ANY" method ensures all HTTP methods (POST, GET, OPTIONS, PUT) 
-  # are routed. HTTP API's built-in CORS handles the OPTIONS response.
-  route_key = "ANY /{proxy+}" 
+  route_key = "POST /query"
+  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_list_files" {
+  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key = "GET /list-files"
+  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "rag_api_catchall" {
+  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key = "ANY /{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_get_upload_url" {
+  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key = "GET /get-upload-url"
   target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
 }
 
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
-  api_id      = aws_apigatewayv2_api.rag_api_gateway.id
-  # Dependency on the single, catch-all route
-  depends_on  = [aws_apigatewayv2_route.rag_api_route]
+  api_id = aws_apigatewayv2_api.rag_api_gateway.id
+  
+  # ❗️FIX 4: 'depends_on' must now include all new routes
+  depends_on = [
+    aws_apigatewayv2_route.rag_api_route_query,
+    aws_apigatewayv2_route.rag_api_route_list_files,
+    aws_apigatewayv2_route.rag_api_route_get_upload_url,
+  ]
 }
 
-# --- CloudWatch Log Group for API Access Logs ---
 resource "aws_cloudwatch_log_group" "api_access_logs" {
   name              = "/aws/apigateway/${aws_apigatewayv2_api.rag_api_gateway.id}/${var.environment}"
   retention_in_days = 7
@@ -50,25 +70,29 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
   api_id      = aws_apigatewayv2_api.rag_api_gateway.id
   name        = var.environment
   auto_deploy = true
-  
-  # Enable Access Logging on the Stage
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access_logs.arn
     format = jsonencode({
-      requestId               = "$context.requestId"
-      requestTime             = "$context.requestTime"
-      httpMethod              = "$context.httpMethod"
-      path                    = "$context.routeKey"
-      status                  = "$context.status"
-      integrationLatency      = "$context.integrationLatency"
-      integrationStatus       = "$context.integrationStatus"
+      requestId             = "$context.requestId"
+      requestTime           = "$context.requestTime"
+      httpMethod            = "$context.httpMethod"
+      path                  = "$context.routeKey" # This will now show the specific route
+      status                = "$context.status"
+      integrationLatency    = "$context.integrationLatency"
+      integrationStatus     = "$context.integrationStatus"
       integrationErrorMessage = "$context.integrationErrorMessage"
     })
   }
 
+  default_route_settings {
+    throttling_burst_limit = 500
+    throttling_rate_limit  = 500
+  }
+
   depends_on = [
-    aws_apigatewayv2_route.rag_api_route,
-    aws_api_gateway_account.apigw_account_settings, 
+    aws_apigatewayv2_deployment.rag_api_deployment, # Stage depends on deployment
+    aws_api_gateway_account.apigw_account_settings,
   ]
 }
 
@@ -78,5 +102,6 @@ resource "aws_lambda_permission" "apigw_lambda_permission" {
   function_name = aws_lambda_function.api_query_service.function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_apigatewayv2_api.rag_api_gateway.execution_arn}/*/*"
+  # Updated source_arn to be more robust for all routes
+  source_arn = "${aws_apigatewayv2_api.rag_api_gateway.execution_arn}/*/*/*"
 }

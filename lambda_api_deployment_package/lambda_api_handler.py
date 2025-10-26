@@ -1,357 +1,313 @@
-import json
-import os
+# ==========================================================
+# AUTO-INSTALL REQUIRED LIBRARIES (NO LAYERS NEEDED)
+# ==========================================================
+import subprocess
 import sys
-import boto3
+import importlib
+
+REQUIRED_LIBS = [
+    "faiss-cpu",
+    "langchain==0.2.14",
+    "langchain-aws==0.1.8",
+    "numpy>=1.26.0"
+]
+
+for lib in REQUIRED_LIBS:
+    lib_name = lib.split("==")[0].split(">=")[0].replace("-", "_")
+    try:
+        importlib.import_module(lib_name)
+    except ImportError:
+        print(f"Installing missing library: {lib}")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", lib, "-t", "/tmp"],
+            check=True,
+        )
+        sys.path.append("/tmp")
+
+# ==========================================================
+# STANDARD IMPORTS
+# ==========================================================
+import os
+import json
 import time
+import boto3
 import re
+import shutil
 from collections import defaultdict
 from botocore.exceptions import ClientError
 
-# Ensure local imports work
-sys.path.insert(0, os.path.dirname(__file__))
-
-# --- RAG / LLM Imports ---
-import worker
-from langchain.chains import RetrievalQA
-from langchain_aws import ChatBedrock
+# ==========================================================
+# LANGCHAIN IMPORTS
+# ==========================================================
 from langchain_core.documents import Document
+from langchain_aws import BedrockLLM, BedrockEmbeddings
+from langchain.vectorstores import FAISS
 
-# --- Configuration (from Lambda Environment Variables) ---
+# ==========================================================
+# CONFIGURATION
+# ==========================================================
 S3_DOCUMENTS_BUCKET = os.environ.get("S3_DOCUMENTS_BUCKET")
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
 
-# --- Constants ---
-PRIMARY_MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"
-FALLBACK_MODEL_ID = "amazon.titan-text-lite-v1"
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
+BEDROCK_EMBEDDINGS_ID = os.environ.get("BEDROCK_EMBEDDINGS_ID", "amazon.titan-embed-text-v2")
+
+VECTOR_STORE_S3_PREFIX = os.environ.get("VECTOR_STORE_S3_PREFIX", "vector_store/default")
+LOCAL_FAISS_DIR = "/tmp/faiss_index"
+
 MAX_CONTEXT_CHUNKS = 5
 
-# Initialize Boto3 clients
+# ==========================================================
+# AWS CLIENTS
+# ==========================================================
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 bedrock_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
-# Initialize the default LLM
-def create_llm(model_id: str):
-    """Helper to create a ChatBedrock instance for the given model."""
-    provider = "anthropic" if "anthropic" in model_id else "amazon"
-    return ChatBedrock(client=bedrock_client, model_id=model_id, provider=provider)
+llm = BedrockLLM(client=bedrock_client, model_id=BEDROCK_MODEL_ID)
+embedding_model = BedrockEmbeddings(model_id=BEDROCK_EMBEDDINGS_ID, client=bedrock_client)
 
-llm = create_llm(PRIMARY_MODEL_ID)
-
-# Global cache for document content
 DOCUMENT_CACHE = {}
+VECTOR_STORE = None
 LAST_UPDATE_TIME = 0
 
+# ==========================================================
+# FAISS UTILITIES (S3 SYNC)
+# ==========================================================
+def _clear_local_faiss_dir():
+    try:
+        if os.path.isdir(LOCAL_FAISS_DIR):
+            shutil.rmtree(LOCAL_FAISS_DIR)
+        os.makedirs(LOCAL_FAISS_DIR, exist_ok=True)
+    except Exception as e:
+        print(f"WARNING: Could not clear local FAISS dir: {e}")
 
-# ---------------------------------------------------------------------------
+def _s3_key(prefix, filename):
+    if not prefix.endswith("/"):
+        prefix += "/"
+    return f"{prefix}{filename}"
+
+def download_faiss_from_s3():
+    """Download FAISS artifacts (index.faiss + index.pkl) from S3."""
+    _clear_local_faiss_dir()
+    needed = ["index.faiss", "index.pkl"]
+    ok = True
+    for fname in needed:
+        key = _s3_key(VECTOR_STORE_S3_PREFIX, fname)
+        try:
+            print(f"Downloading s3://{S3_DOCUMENTS_BUCKET}/{key}")
+            s3_client.download_file(S3_DOCUMENTS_BUCKET, key, os.path.join(LOCAL_FAISS_DIR, fname))
+        except Exception as e:
+            print(f"FAISS artifact missing on S3: {key} ({e})")
+            ok = False
+    return ok and all(os.path.isfile(os.path.join(LOCAL_FAISS_DIR, f)) for f in needed)
+
+def upload_faiss_to_s3():
+    """Upload FAISS index files to S3."""
+    for fname in ["index.faiss", "index.pkl"]:
+        local_path = os.path.join(LOCAL_FAISS_DIR, fname)
+        if not os.path.isfile(local_path):
+            continue
+        key = _s3_key(VECTOR_STORE_S3_PREFIX, fname)
+        print(f"Uploading {local_path} -> s3://{S3_DOCUMENTS_BUCKET}/{key}")
+        s3_client.upload_file(local_path, S3_DOCUMENTS_BUCKET, key)
+
+# ==========================================================
 # DOCUMENT MANAGEMENT
-# ---------------------------------------------------------------------------
-
+# ==========================================================
 def load_documents_from_s3():
-    """Loads all chunked documents (JSON files) saved by the ingestion worker into memory."""
+    """Load processed chunks from S3."""
     global DOCUMENT_CACHE, LAST_UPDATE_TIME
-
-    print("INFO: Reloading document cache from S3...")
+    print("Reloading document cache from S3...")
     new_cache = defaultdict(list)
 
-    list_response = s3_client.list_objects_v2(
-        Bucket=S3_DOCUMENTS_BUCKET, Prefix="processed_chunks/"
-    )
-
-    contents = list_response.get("Contents", [])
+    resp = s3_client.list_objects_v2(Bucket=S3_DOCUMENTS_BUCKET, Prefix="processed_chunks/")
+    contents = resp.get("Contents", [])
     if not contents:
-        print("WARNING: No processed chunk files found in S3.")
         DOCUMENT_CACHE = {}
+        print("No processed chunk files found.")
         return
 
     for item in contents:
-        if not item["Key"].endswith(".json"):
+        key = item.get("Key")
+        if not key.endswith(".json"):
             continue
-
         try:
-            obj = s3_client.get_object(Bucket=S3_DOCUMENTS_BUCKET, Key=item["Key"])
-            file_content = obj["Body"].read().decode("utf-8")
-            chunks_data = json.loads(file_content)
-
-            for chunk_data in chunks_data:
-                source_key = chunk_data["metadata"]["source_key"]
-                new_cache[source_key].append(
-                    Document(
-                        page_content=chunk_data["page_content"],
-                        metadata=chunk_data["metadata"],
+            obj = s3_client.get_object(Bucket=S3_DOCUMENTS_BUCKET, Key=key)
+            data = json.loads(obj["Body"].read().decode("utf-8"))
+            for chunk in data:
+                md = chunk.get("metadata", {})
+                src = md.get("source_key")
+                if src:
+                    new_cache[src].append(
+                        Document(page_content=chunk["page_content"], metadata=md)
                     )
-                )
         except Exception as e:
-            print(f"Error loading chunk file {item['Key']}: {e}")
+            print(f"Error loading {key}: {e}")
 
     DOCUMENT_CACHE = new_cache
     LAST_UPDATE_TIME = time.time()
-    print(
-        f"INFO: Successfully loaded {sum(len(v) for v in DOCUMENT_CACHE.values())} chunks into cache."
-    )
+    print(f"Loaded {sum(len(v) for v in DOCUMENT_CACHE.values())} chunks.")
 
+def build_vector_store_from_cache():
+    """Build FAISS from document cache and upload."""
+    global VECTOR_STORE
+    print("Building FAISS index...")
+    all_docs = [doc for docs in DOCUMENT_CACHE.values() for doc in docs]
+    if not all_docs:
+        print("No documents to index.")
+        return
 
-def simple_keyword_retriever(query: str) -> list[Document]:
-    """Performs a simple keyword matching across all loaded documents."""
-    if not DOCUMENT_CACHE:
-        return []
+    VECTOR_STORE = FAISS.from_documents(all_docs, embedding_model)
+    _clear_local_faiss_dir()
+    VECTOR_STORE.save_local(LOCAL_FAISS_DIR)
+    upload_faiss_to_s3()
+    print(f"FAISS index built with {len(all_docs)} docs and uploaded.")
 
-    query_tokens = set(re.findall(r"\b\w+\b", query.lower()))
-    scored_chunks = []
-
-    for _, doc_chunks in DOCUMENT_CACHE.items():
-        for chunk in doc_chunks:
-            content = chunk.page_content.lower()
-            score = sum(1 for token in query_tokens if token in content)
-            if score > 0:
-                scored_chunks.append((score, chunk))
-
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-    print(f"DEBUG: Retrieved {len(scored_chunks[:MAX_CONTEXT_CHUNKS])} top chunks for RAG.")
-    return [chunk for score, chunk in scored_chunks[:MAX_CONTEXT_CHUNKS]]
-
-
-# ---------------------------------------------------------------------------
-# LLM INVOCATION WITH FALLBACK
-# ---------------------------------------------------------------------------
-
-def invoke_with_fallback(prompt: str):
-    """Try Anthropic first; if blocked, fall back to Titan."""
-    global llm
-
+def ensure_vector_store():
+    """Load FAISS from S3 or rebuild if missing."""
+    global VECTOR_STORE
+    if VECTOR_STORE:
+        return
     try:
-        print(f"DEBUG: Invoking Bedrock model {llm.model_id}...")
-        response_msg = llm.invoke(prompt)
-        return response_msg
+        if download_faiss_from_s3():
+            VECTOR_STORE = FAISS.load_local(LOCAL_FAISS_DIR, embeddings=embedding_model, allow_dangerous_deserialization=True)
+            print("Loaded FAISS from S3 successfully.")
+            return
     except Exception as e:
-        # Detect Bedrock Anthropic access restriction
-        if "use case details" in str(e) or "ResourceNotFoundException" in str(e):
-            print("WARNING: Anthropic access not yet approved. Switching to Titan fallback...")
-            llm = create_llm(FALLBACK_MODEL_ID)
-            print(f"DEBUG: Retrying with fallback model {FALLBACK_MODEL_ID}...")
-            response_msg = llm.invoke(prompt)
-            return response_msg
-        else:
-            raise
+        print(f"Failed to load FAISS: {e}")
+    if not DOCUMENT_CACHE:
+        load_documents_from_s3()
+    build_vector_store_from_cache()
 
+# ==========================================================
+# RETRIEVAL + LLM
+# ==========================================================
+def semantic_retriever(query, k=MAX_CONTEXT_CHUNKS):
+    if not VECTOR_STORE:
+        ensure_vector_store()
+    if not VECTOR_STORE:
+        print("No vector store available.")
+        return []
+    return VECTOR_STORE.similarity_search(query, k=k)
 
-def invoke_rag_chain(query: str, retrieved_context: list[Document]):
-    """Generates the final response using Bedrock and the provided context."""
-    context_text = "\n---\n".join([d.page_content for d in retrieved_context])
-    source_keys = [d.metadata.get("source_key") for d in retrieved_context]
+def detect_language(text):
+    """Detect if text is Hebrew or English."""
+    hebrew_chars = re.findall(r'[\u0590-\u05FF]', text)
+    english_chars = re.findall(r'[A-Za-z]', text)
+    return "hebrew" if len(hebrew_chars) > len(english_chars) else "english"
 
-    prompt_template = f"""
-You are a professional RAG (Retrieval-Augmented Generation) assistant. 
-Answer the user's question ONLY based on the context provided below. 
-Do not use external knowledge. If the context does not contain the answer, state that you do not know.
+def invoke_rag_chain(query, retrieved_context):
+    """Generate a bilingual RAG answer."""
+    context_text = "\n\n".join(d.page_content for d in retrieved_context)
+    sources = [d.metadata.get("source_key") for d in retrieved_context if d.metadata.get("source_key")]
 
---- CONTEXT ---
+    lang = detect_language(query)
+    lang_instruction = "Answer fully in Hebrew only." if lang == "hebrew" else "Answer fully in English only."
+
+    prompt = f"""
+You are a retrieval-augmented assistant that answers questions strictly using the provided context.
+{lang_instruction}
+If the answer is not found in the context, respond only with: "I don't know."
+Do not restate or translate the question. Keep answers concise and factual.
+
+CONTEXT:
 {context_text}
 
---- USER QUESTION ---
+QUESTION:
 {query}
 """
+    response = llm.invoke(prompt)
+    return {"response": response.strip(), "source_documents": sources}
 
-    try:
-        response_msg = invoke_with_fallback(prompt_template)
-        response_text = (
-            response_msg.content
-            if hasattr(response_msg, "content")
-            else str(response_msg)
-        )
-    except Exception as e:
-        print("CRITICAL BEDROCK ERROR: Model invocation failed. Traceback:")
-        import traceback
-
-        traceback.print_exc()
-        raise RuntimeError(f"Bedrock invocation failed: {e}")
-
-    return {"response": response_text, "source_documents": source_keys}
-
-
-# ---------------------------------------------------------------------------
-# UTILS
-# ---------------------------------------------------------------------------
-
+# ==========================================================
+# FILE OPS
+# ==========================================================
 def get_presigned_url(file_name, file_type):
-    """Generates a presigned URL for secure, direct S3 upload from the client."""
-    object_key = f"incoming/{file_name}"
-
+    ts = int(time.time())
+    key = f"incoming/{ts}_{file_name}"
     url = s3_client.generate_presigned_url(
         ClientMethod="put_object",
-        Params={"Bucket": S3_DOCUMENTS_BUCKET, "Key": object_key, "ContentType": file_type},
+        Params={"Bucket": S3_DOCUMENTS_BUCKET, "Key": key, "ContentType": file_type},
         ExpiresIn=300,
     )
-    return url
+    return url, key
 
+def list_available_files():
+    files = set()
+    if DOCUMENT_CACHE:
+        for key in DOCUMENT_CACHE.keys():
+            files.add(os.path.basename(key))
+    if not files:
+        try:
+            resp = s3_client.list_objects_v2(Bucket=S3_DOCUMENTS_BUCKET, Prefix="incoming/")
+            for item in resp.get("Contents", []):
+                files.add(os.path.basename(item["Key"]))
+        except Exception as e:
+            print(f"Error listing files: {e}")
+    return sorted(files)
 
-def handle_system_query(query: str):
-    """Checks for system keywords and returns a direct response, bypassing LLM."""
-    system_keywords = ["what files", "files loaded", "documents do you have", "list files"]
-
-    if any(keyword in query.lower() for keyword in system_keywords):
-        document_list = list(DOCUMENT_CACHE.keys())
-
-        if not document_list:
-            response_text = (
-                "I currently do not have any processed documents loaded in my cache."
-            )
-        else:
-            file_names = "\n- ".join(document_list)
-            response_text = (
-                f"Yes, I have successfully loaded the following documents into my knowledge base:\n"
-                f"- {file_names}"
-            )
-
-        print(f"INFO: Handled system query. Found {len(document_list)} files.")
-
-        return {"response": response_text, "source_documents": document_list}
-
-    return None  # Not a system query
-
-
-# ---------------------------------------------------------------------------
-# MAIN LAMBDA HANDLER
-# ---------------------------------------------------------------------------
-
+# ==========================================================
+# HANDLER
+# ==========================================================
 def lambda_handler(event, context):
-    CORS_HEADERS = {
+    import worker
+
+    CORS = {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token",
     }
 
-    http_method = event.get("requestContext", {}).get("http", {}).get("method", "UNKNOWN")
-    path = event.get("rawPath", event.get("path", "/"))
+    path = event.get("rawPath") or event.get("path") or ""
+    method = (
+        event.get("requestContext", {}).get("http", {}).get("method")
+        or event.get("httpMethod")
+        or "UNKNOWN"
+    )
+    print(f"DEBUG: Received request {method} {path}")
 
-    print(f"DEBUG: HTTP METHOD CHECK: {http_method}")
-    print(f"DEBUG: ROUTING PATH CHECK: {path}")
+    if method == "OPTIONS":
+        return {"statusCode": 200, "headers": CORS}
 
-    if http_method == "OPTIONS":
-        return {"statusCode": 200, "headers": CORS_HEADERS}
-
-    # --- Upload URL ---
-    if path == "/default/get-upload-url" and http_method == "GET":
-        print("INFO: Matched GET /default/get-upload-url")
-        try:
-            params = event.get("queryStringParameters", {}) or {}
-            file_name = params.get("fileName")
-            file_type = params.get("fileType")
-
-            if not file_name or not file_type:
-                return {
-                    "statusCode": 400,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps({"error": "Missing fileName or fileType parameter."}),
-                }
-
-            signed_url = get_presigned_url(file_name, file_type)
-            return {
-                "statusCode": 200,
-                "headers": CORS_HEADERS,
-                "body": json.dumps({"signedUrl": signed_url}),
-            }
-        except Exception as e:
-            print(f"ERROR: Error generating presigned URL: {e}")
-            return {
-                "statusCode": 500,
-                "headers": CORS_HEADERS,
-                "body": json.dumps(
-                    {"error": "Failed to generate upload URL", "details": str(e)}
-                ),
-            }
-
-    # --- Query Route ---
-    if path == "/default/query" and http_method == "POST":
-        print("INFO: Matched POST /default/query. Starting RAG process.")
-
-        try:
-            if not DOCUMENT_CACHE:
-                load_documents_from_s3()
-        except Exception as e:
-            print(f"ERROR: Document cache load failed: {e}")
-            return {
-                "statusCode": 503,
-                "headers": CORS_HEADERS,
-                "body": json.dumps(
-                    {
-                        "error": "RAG system offline. Document cache load failed.",
-                        "details": str(e),
-                    }
-                ),
-            }
-
-        try:
-            body = json.loads(event.get("body", "{}"))
-            query = body.get("query")
-
-            if not query:
-                return {
-                    "statusCode": 400,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps({"error": "Missing query parameter."}),
-                }
-
-            # --- System Query Check ---
-            system_response = handle_system_query(query)
-            if system_response:
-                return {
-                    "statusCode": 200,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps(system_response),
-                }
-
-            # --- RAG Retrieval ---
-            context_documents = simple_keyword_retriever(query)
-
-            if not context_documents:
-                print("WARNING: No relevant context chunks found for RAG query.")
-                return {
-                    "statusCode": 200,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps(
-                        {
-                            "response": "I could not find any relevant documents in the knowledge base to answer your question.",
-                            "source_documents": [],
-                        }
-                    ),
-                }
-
-            result = invoke_rag_chain(query, context_documents)
-            return {
-                "statusCode": 200,
-                "headers": CORS_HEADERS,
-                "body": json.dumps(
-                    {
-                        "response": result["response"],
-                        "source_documents": result["source_documents"],
-                    }
-                ),
-            }
-
-        except Exception as e:
-            print(f"CRITICAL ERROR processing query: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return {
-                "statusCode": 500,
-                "headers": CORS_HEADERS,
-                "body": json.dumps(
-                    {"error": "Internal processing error.", "details": str(e)}
-                ),
-            }
-
-    # --- Health Route ---
-    if path == "/default/health" and http_method == "GET":
-        status = "ok" if DOCUMENT_CACHE else "loading/degraded (Document cache empty)"
+    # List files
+    if "/list-files" in path and method == "GET":
+        if not DOCUMENT_CACHE:
+            load_documents_from_s3()
         return {
             "statusCode": 200,
-            "headers": CORS_HEADERS,
-            "body": json.dumps({"status": status, "service": "rag-api"}),
+            "headers": CORS,
+            "body": json.dumps({"filenames": list_available_files()}),
         }
 
-    return {
-        "statusCode": 404,
-        "headers": CORS_HEADERS,
-        "body": json.dumps({"error": "Resource not found"}),
-    }
+    # Upload URL
+    if "/get-upload-url" in path and method == "GET":
+        params = event.get("queryStringParameters", {}) or {}
+        name = params.get("fileName")
+        ftype = params.get("fileType")
+        if not name or not ftype:
+            return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Missing parameters"})}
+        url, key = get_presigned_url(name, ftype)
+        return {"statusCode": 200, "headers": CORS, "body": json.dumps({"signedUrl": url, "s3Key": key})}
+
+    # Query
+    if "/query" in path and method == "POST":
+        if not DOCUMENT_CACHE:
+            load_documents_from_s3()
+        ensure_vector_store()
+        body = json.loads(event.get("body") or "{}")
+        query = body.get("query")
+        if not query:
+            return {"statusCode": 400, "headers": CORS, "body": json.dumps({"error": "Missing query"})}
+        docs = semantic_retriever(query)
+        if not docs:
+            return {"statusCode": 200, "headers": CORS, "body": json.dumps({"response": "I don't know.", "source_documents": []})}
+        result = invoke_rag_chain(query, docs)
+        return {"statusCode": 200, "headers": CORS, "body": json.dumps(result)}
+
+    # Health
+    if "/health" in path and method == "GET":
+        status = "ok" if DOCUMENT_CACHE else "loading"
+        return {"statusCode": 200, "headers": CORS, "body": json.dumps({"status": status})}
+
+    print(f"WARNING: Unmatched path {path}")
+    return {"statusCode": 404, "headers": CORS, "body": json.dumps({"error": f"Unknown path {path}"})}

@@ -28,3 +28,15 @@ resource "aws_s3_bucket_public_access_block" "rag_documents_block" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+resource "aws_s3_bucket_cors_configuration" "rag_documents_cors" {
+  bucket = aws_s3_bucket.rag_documents.id
+
+  cors_rule {
+    allowed_methods = ["PUT", "POST", "GET", "HEAD"]
+    allowed_origins = ["https://d2h33zz3k8plgu.cloudfront.net"] 
+    allowed_headers = ["*"] 
+    expose_headers = ["ETag", "Content-Length"]
+    max_age_seconds = 3000
+  }
+}

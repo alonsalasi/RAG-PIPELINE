@@ -1,0 +1,5 @@
+Ingest Docker Build CMD:
+docker build --no-cache --platform linux/amd64 --provenance=false -t pdfquery-ingestion-lambda-default -f ingestion.Dockerfile .
+
+API Docker Build CMD:
+docker build --no-cache --platform linux/amd64 --provenance=false -t pdfquery-api-lambda-default -f api.Dockerfile .

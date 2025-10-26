@@ -28,6 +28,12 @@ variable "ingestion_image_tag" {
   default     = "latest"
 }
 
+variable "api_image_tag" {
+  description = "Docker image tag for api Lambda (e.g., 'latest')."
+  type        = string
+  default     = "latest"
+}
+
 variable "ingestion_version" {
   description = "Lambda_Ingestion_Version"
   type = number

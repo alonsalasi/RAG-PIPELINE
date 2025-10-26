@@ -1,194 +1,258 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RAG Document Chatbot</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; display: flex; flex-direction: column; height: 100vh; }
-        .container { flex-grow: 1; max-width: 800px; margin: 20px auto; width: 100%; display: flex; flex-direction: column; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background-color: white; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
-        .header { background-color: #007bff; color: white; padding: 15px; text-align: center; font-size: 1.2em; font-weight: bold; }
-        .chat-log { flex-grow: 1; padding: 15px; overflow-y: auto; background-color: #f9f9f9; }
-        .input-area { display: flex; padding: 10px; border-top: 1px solid #ddd; align-items: center; }
-        #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; margin-right: 10px; }
-        #send-button { background-color: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-size: 1em; transition: background-color 0.2s; }
-        #send-button:hover { background-color: #218838; }
-        .message { margin-bottom: 15px; padding: 10px; border-radius: 6px; max-width: 80%; }
-        .user-message { background-color: #e6f7ff; align-self: flex-end; margin-left: auto; }
-        .assistant-message { background-color: #ffffff; border: 1px solid #eee; align-self: flex-start; }
-        .citation { font-size: 0.75em; color: #666; margin-top: 5px; background-color: #e0f7fa; padding: 5px; border-radius: 4px; }
-        .loading-message { font-style: italic; color: #007bff; }
-        
-        /* File Upload Styles */
-        .file-upload-area { display: flex; flex-direction: column; padding: 10px; border-top: 1px solid #ddd; background-color: #fff; }
-        .file-input-group { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
-        #file-input { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
-        #upload-button { background-color: #ffc107; color: #333; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; transition: background-color 0.2s; }
-        #upload-button:hover { background-color: #e0a800; }
-        #upload-status { font-size: 0.85em; color: #007bff; }
-        
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Document Chatbot</title>
+  <style>
+    :root {
+      --primary-color: #007bff;
+      --secondary-color: #6c757d;
+      --bg-light: #f8f9fa;
+      --bg-white: #ffffff;
+      --border-color: #dee2e6;
+      --text-dark: #343a40;
+      --text-light: #6c757d;
+      --error-color: #dc3545;
+    }
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; margin:0; padding:0; background-color:var(--bg-light); display:flex; height:100vh; color:var(--text-dark); overflow:hidden;}
+    .sidebar { width:300px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; flex-shrink:0;}
+    .container { flex-grow:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light);}
+    .sidebar h3 { margin-top:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+    #file-list { list-style:none; padding:0; margin:0; flex-grow:1;}
+    #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-break:break-all; display:flex; justify-content:space-between; align-items:center;}
+    .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
+    .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10;}
+    .chat-log { flex-grow:1; padding:20px; overflow-y:auto; background-color:#fdfdfd;}
+    .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5;}
+    .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
+    .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px;}
+    .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
+    .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
+    .input-area,.file-upload-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5;}
+    .input-area { display:flex; align-items:center; gap:10px;}
+    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none;}
+    .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em;}
+    .file-upload-area { display:flex; flex-direction:column; gap:10px;}
+    .file-input-group { display:flex; gap:10px; align-items:center;}
+    input[type="file"]{ display:none;}
+    .file-label { flex-grow:1; padding:10px 15px; border:1px solid var(--border-color); border-radius:8px; font-size:.9em; color:var(--text-light); cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+    #upload-status { font-size:.9em; color:var(--text-light); display:flex; align-items:center; gap:8px;}
+    .spinner { width:16px; height:16px; border:2px solid currentColor; border-bottom-color:transparent; border-radius:50%; display:inline-block; animation:spin 1s linear infinite;}
+    @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+    @media (max-width:768px){ body{flex-direction:column; height:auto; overflow:auto;} .sidebar{width:100%; height:300px; border-right:none; border-bottom:1px solid var(--border-color);} .container{height:calc(100vh - 300px);} }
+  </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="header">RAG Chatbot - Ask About Your Documents</div>
-    
-    <div class="chat-log" id="chat-log">
-        <div class="message assistant-message">Hello! I can answer questions from your documents. Ask me anything, or upload a PDF/image to start.</div>
-    </div>
-    
-    <!-- FILE UPLOAD AREA -->
-    <div class="file-upload-area">
-        <div class="file-input-group">
-            <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff" title="Select PDF or Image">
-            <button type="button" id="upload-button" onclick="requestPresignedUrlAndUploadFile()">Upload File</button>
-        </div>
-        <div id="upload-status"></div>
-    </div>
+<div class="sidebar">
+  <h3>
+    📚 Uploaded Documents
+    <button id="refresh-btn" class="btn" style="background:#6c757d;">🔄</button>
+  </h3>
+  <ul id="file-list"></ul>
+  <div id="file-list-status"></div>
+</div>
 
-    <!-- QUERY INPUT AREA -->
-    <div class="input-area">
-        <input type="text" id="user-input" placeholder="Type your question here...">
-        <button id="send-button" onclick="handleQuerySubmission()">Send</button>
+<div class="container">
+  <div class="header">RAG Chatbot</div>
+
+  <div class="chat-log" id="chat-log">
+    <div class="message assistant-message">Hello! I can answer questions from your documents. See the list of available documents on the left or upload a new one below.</div>
+  </div>
+
+  <div class="file-upload-area">
+    <div class="file-input-group">
+      <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff">
+      <label for="file-input" class="file-label" id="file-label">Click to select a file...</label>
+      <button type="button" id="upload-button" class="btn">Upload</button>
     </div>
+    <div id="upload-status"></div>
+  </div>
+
+  <div class="input-area">
+    <input type="text" id="user-input" placeholder="Type your question here...">
+    <button id="send-button" class="btn">Send</button>
+  </div>
 </div>
 
 <script>
-    // CRITICAL: Updated with your actual API Gateway Invoke URL
-    const API_GATEWAY_URL = 'https://1xeczo4tz9.execute-api.us-west-2.amazonaws.com/default'; 
-    const CHAT_LOG = document.getElementById('chat-log');
-    const UPLOAD_STATUS = document.getElementById('upload-status');
-    const USER_INPUT = document.getElementById('user-input');
+  // ✅ Keep your working API base (stage '/default' included)
+  const API_GATEWAY_URL = 'https://1xeczo4tz9.execute-api.us-west-2.amazonaws.com/default';
 
-    // --- Utility Functions ---
-    
-    USER_INPUT.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            handleQuerySubmission();
-        }
-    });
+  const CHAT_LOG = document.getElementById('chat-log');
+  const UPLOAD_STATUS = document.getElementById('upload-status');
+  const USER_INPUT = document.getElementById('user-input');
+  const FILE_LIST_UL = document.getElementById('file-list');
+  const FILE_LIST_STATUS = document.getElementById('file-list-status');
+  const SEND_BUTTON = document.getElementById('send-button');
+  const UPLOAD_BUTTON = document.getElementById('upload-button');
+  const FILE_INPUT = document.getElementById('file-input');
+  const FILE_LABEL = document.getElementById('file-label');
+  const REFRESH_BTN = document.getElementById('refresh-btn');
 
-    function appendMessage(role, content, sources = null) {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message', `${role}-message`);
-        messageDiv.innerHTML = content.replace(/\n/g, '<br>');
-
-        if (sources && sources.length > 0) {
-            const citationDiv = document.createElement('div');
-            citationDiv.classList.add('citation');
-            citationDiv.innerHTML = 'Sources: ' + Array.from(new Set(sources)).join(', ');
-            messageDiv.appendChild(citationDiv);
-        }
-
-        CHAT_LOG.appendChild(messageDiv);
-        CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight; // Auto-scroll to bottom
-        return messageDiv;
+  function appendMessage(role, content, sources=null, isError=false){
+    const div=document.createElement('div');
+    div.classList.add('message', `${role}-message`);
+    if(isError) div.classList.add('error');
+    div.innerHTML = content.replace(/\n/g,'<br>');
+    if(sources && sources.length){
+      const c=document.createElement('div'); c.className='citation';
+      const unique = Array.from(new Set(sources.map(s => String(s).split('/').pop())));
+      c.textContent = 'Sources: '+unique.join(', ');
+      div.appendChild(c);
     }
-    
-    function setButtonState(disabled) {
-        document.getElementById('send-button').disabled = disabled;
-        document.getElementById('upload-button').disabled = disabled;
-        USER_INPUT.disabled = disabled;
-        document.getElementById('file-input').disabled = disabled;
+    CHAT_LOG.appendChild(div);
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+  }
+
+  function showLoading(el, text){ el.innerHTML = `<span class="spinner"></span> <span>${text}</span>`; }
+
+  function renderFileList(filenames){
+    FILE_LIST_UL.innerHTML = '';
+    if(filenames && filenames.length){
+      filenames.sort().forEach(fullName=>{
+        const clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_') : fullName;
+        const li = document.createElement('li');
+        li.textContent = clean;
+        const btn = document.createElement('button');
+        btn.className = 'delete-btn';
+        btn.textContent = '🗑️';
+        btn.onclick = () => deleteFile(clean); // send clean name; backend matches by suffix
+        li.appendChild(btn);
+        FILE_LIST_UL.appendChild(li);
+      });
+      FILE_LIST_STATUS.textContent = `${filenames.length} document(s) available.`;
+    } else {
+      FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
     }
+  }
 
-    // --- QUERY LOGIC ---
-
-    async function handleQuerySubmission() {
-        const query = USER_INPUT.value.trim();
-        if (query === "") return;
-
-        appendMessage('user', query);
-        USER_INPUT.value = '';
-        setButtonState(true);
-
-        const loadingMsg = appendMessage('assistant', '<span class="loading-message">Thinking...</span>');
-
-        try {
-            const response = await fetch(`${API_GATEWAY_URL}/query`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: query })
-            });
-
-            const data = await response.json();
-
-            CHAT_LOG.removeChild(loadingMsg);
-            
-            if (response.ok) {
-                appendMessage('assistant', data.response, data.source_documents);
-            } else {
-                appendMessage('assistant', `ERROR: ${data.error || 'API request failed.'}`, null);
-            }
-        } catch (error) {
-            CHAT_LOG.removeChild(loadingMsg);
-            appendMessage('assistant', 'CRITICAL ERROR: Could not connect to the API Gateway.', null);
-            console.error('Fetch error:', error);
-        } finally {
-            setButtonState(false);
-        }
+  async function fetchUploadedFiles(){
+    showLoading(FILE_LIST_STATUS,'Loading files...');
+    try{
+      const res = await fetch(`${API_GATEWAY_URL}/list-files`);
+      const data = await res.json();
+      renderFileList(data.filenames || []);
+    }catch(e){
+      console.error(e);
+      FILE_LIST_STATUS.textContent='Error loading files.';
+      renderFileList([]);
     }
+  }
 
-    // --- UPLOAD LOGIC ---
-    
-    async function requestPresignedUrlAndUploadFile() {
-        const fileInput = document.getElementById('file-input');
-        const file = fileInput.files[0];
-        if (!file) {
-            UPLOAD_STATUS.textContent = 'Please select a file first.';
-            return;
-        }
-
-        setButtonState(true);
-        UPLOAD_STATUS.textContent = `1/2: Requesting secure upload link for ${file.name}...`;
-
-        try {
-            // Step 1: Request the presigned URL from the API Lambda
-            // Note the use of encodeURIComponent for safe URL parameters
-            const fileNameEncoded = encodeURIComponent(file.name);
-            const fileTypeEncoded = encodeURIComponent(file.type);
-            
-            const urlResponse = await fetch(`${API_GATEWAY_URL}/get-upload-url?fileName=${fileNameEncoded}&fileType=${fileTypeEncoded}`, {
-                method: 'GET'
-            });
-
-            if (!urlResponse.ok) {
-                const errorData = await urlResponse.json();
-                throw new Error(errorData.error || `API failed to get upload URL. Status: ${urlResponse.status}`);
-            }
-
-            const { signedUrl } = await urlResponse.json();
-
-            // Step 2: Upload the file directly to the S3 URL
-            UPLOAD_STATUS.textContent = `2/2: Uploading file... (Do not navigate away)`;
-            
-            const uploadResponse = await fetch(signedUrl, {
-                method: 'PUT',
-                body: file,
-                headers: {
-                    // Content-Type is critical for S3 validation
-                    'Content-Type': file.type, 
-                }
-            });
-
-            if (uploadResponse.ok) {
-                UPLOAD_STATUS.textContent = `File "${file.name}" uploaded successfully! Ingestion worker triggered.`;
-                appendMessage('assistant', `Document **${file.name}** has been uploaded. The ingestion worker (Tesseract OCR, Chunking, and Indexing) has been triggered via SQS. Please allow a few minutes before querying its content.`);
-            } else {
-                throw new Error(`S3 Upload failed with status: ${uploadResponse.status} ${uploadResponse.statusText}`);
-            }
-
-        } catch (error) {
-            UPLOAD_STATUS.textContent = `Upload failed: ${error.message}`;
-            console.error('Upload Error:', error);
-        } finally {
-            fileInput.value = ''; // Clear file input
-            setButtonState(false);
-        }
+  async function deleteFile(displayName){
+    if(!confirm(`Delete ${displayName}?`)) return;
+    try{
+      // backend deletes by suffix match, so pass the clean name
+      const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(displayName)}`, { method:'DELETE' });
+      const data = await res.json();
+      if(res.ok){
+        UPLOAD_STATUS.textContent = `${displayName} deleted.`;
+        fetchUploadedFiles();
+      }else{
+        UPLOAD_STATUS.textContent = `Error: ${data.error || 'Delete failed'}`;
+      }
+    }catch(e){
+      console.error(e);
+      UPLOAD_STATUS.textContent = 'Error deleting file.';
     }
+  }
 
+  async function requestPresignedUrlAndUploadFile(){
+    const file = FILE_INPUT.files[0];
+    if(!file){ UPLOAD_STATUS.textContent='Please select a file first.'; return; }
+
+    showLoading(UPLOAD_STATUS, `1/2: Requesting upload link for ${file.name}...`);
+    try{
+      const fileNameEncoded = encodeURIComponent(file.name);
+      const fileTypeEncoded = encodeURIComponent(file.type || 'application/octet-stream');
+
+      // 1) get presigned url
+      const urlRes = await fetch(`${API_GATEWAY_URL}/get-upload-url?fileName=${fileNameEncoded}&fileType=${fileTypeEncoded}`);
+      const urlData = await urlRes.json();
+      if(!urlRes.ok || !urlData.signedUrl) throw new Error(urlData.error || 'Could not get upload URL');
+
+      // 2) put to S3
+      showLoading(UPLOAD_STATUS, `2/2: Uploading file...`);
+      const putRes = await fetch(urlData.signedUrl, {
+        method:'PUT',
+        body:file,
+        headers:{'Content-Type':file.type || 'application/octet-stream'}
+      });
+      if(!putRes.ok) throw new Error(`Upload failed ${putRes.status}`);
+
+      UPLOAD_STATUS.textContent = `✅ ${file.name} uploaded. Processing...`;
+      appendMessage('assistant', `Document <b>${file.name}</b> uploaded successfully. Processing now...`);
+
+      // 3) poll for appearance in list-files (match by suffix for UUID prefixes)
+      const start = Date.now();
+      const timeoutMs = 120000; // 2 min
+      const poll = setInterval(async ()=>{
+        try{
+          const res = await fetch(`${API_GATEWAY_URL}/list-files`);
+          const data = await res.json();
+          const files = data.filenames || [];
+          // match by suffix — safest for UUID-prefixed keys
+          const found = files.some(f => f.endsWith(file.name));
+          if(found){
+            clearInterval(poll);
+            UPLOAD_STATUS.textContent = `✅ ${file.name} processed successfully!`;
+            fetchUploadedFiles();
+          }else if(Date.now() - start > timeoutMs){
+            clearInterval(poll);
+            UPLOAD_STATUS.textContent = `⚠️ Timed out waiting for ${file.name} to process.`;
+          }
+        }catch(e){
+          console.error('Polling error:', e);
+        }
+      }, 5000);
+
+    }catch(e){
+      console.error(e);
+      UPLOAD_STATUS.textContent = `Upload failed: ${e.message}`;
+    }finally{
+      FILE_INPUT.value='';
+      FILE_LABEL.textContent='Click to select a file...';
+    }
+  }
+
+  async function handleQuerySubmission(){
+    const query = USER_INPUT.value.trim();
+    if(!query) return;
+    appendMessage('user', query);
+    USER_INPUT.value='';
+    const loading = document.createElement('div');
+    loading.className='message assistant-message';
+    showLoading(loading,'Thinking...');
+    CHAT_LOG.appendChild(loading);
+    try{
+      const res = await fetch(`${API_GATEWAY_URL}/query`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query})
+      });
+      const data = await res.json();
+      CHAT_LOG.removeChild(loading);
+      if(res.ok) appendMessage('assistant', data.response, data.source_documents);
+      else appendMessage('assistant', `Error: ${data.error || 'API request failed.'}`, null, true);
+    }catch(e){
+      CHAT_LOG.removeChild(loading);
+      appendMessage('assistant', 'Critical Error: Could not connect to the API.', null, true);
+    }
+  }
+
+  // Events
+  SEND_BUTTON.addEventListener('click', handleQuerySubmission);
+  USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
+  UPLOAD_BUTTON.addEventListener('click', requestPresignedUrlAndUploadFile);
+  FILE_INPUT.addEventListener('change', () => { FILE_LABEL.textContent = FILE_INPUT.files[0]?.name || 'Click to select a file...'; });
+  REFRESH_BTN.addEventListener('click', fetchUploadedFiles);
+
+  // Initial load
+  document.addEventListener('DOMContentLoaded', () => {
+    fetchUploadedFiles();
+  });
 </script>
-
 </body>
 </html>

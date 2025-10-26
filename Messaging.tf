@@ -1,24 +1,31 @@
+###############################################################
+# MESSAGING PIPELINE
+# S3 → SNS → SQS → Lambda (Ingestion Worker)
+###############################################################
+
+# --- 1. SQS Queue ---
 resource "aws_sqs_queue" "rag_ingestion_queue" {
   name                       = "${var.project_name}-ingestion-queue-${var.environment}"
   delay_seconds              = 0
   max_message_size           = 262144
   message_retention_seconds  = 345600
-  # Set visibility timeout high to match Lambda max timeout (15 mins)
-  visibility_timeout_seconds = 900 
-  
+  visibility_timeout_seconds = 900  # Match ingestion lambda timeout
+
   tags = {
     Name = "RAG Ingestion Queue"
   }
 }
 
+# --- 2. SNS Topic ---
 resource "aws_sns_topic" "document_upload_topic" {
   name = "${var.project_name}-document-upload-topic-${var.environment}"
+
   tags = {
     Name = "RAG Document Upload Topic"
   }
 }
 
-# --- 1. Policy: Allows SNS to push messages into the SQS Queue ---
+# --- 3. Allow SNS → SQS publish ---
 data "aws_iam_policy_document" "sqs_allow_sns_publish" {
   statement {
     effect    = "Allow"
@@ -41,7 +48,7 @@ resource "aws_sqs_queue_policy" "ingestion_queue_policy" {
   policy    = data.aws_iam_policy_document.sqs_allow_sns_publish.json
 }
 
-# --- 2. CRITICAL FIX: Policy to allow S3 to PUBLISH to the SNS Topic ---
+# --- 4. Allow S3 → SNS publish ---
 resource "aws_sns_topic_policy" "sns_allow_s3_publish" {
   arn = aws_sns_topic.document_upload_topic.arn
   policy = jsonencode({
@@ -62,39 +69,36 @@ resource "aws_sns_topic_policy" "sns_allow_s3_publish" {
   })
 }
 
-# --- 3. Subscription: Links the SQS Queue to the SNS Topic ---
+# --- 5. SNS → SQS subscription ---
 resource "aws_sns_topic_subscription" "sqs_to_sns_subscription" {
   topic_arn            = aws_sns_topic.document_upload_topic.arn
   protocol             = "sqs"
   endpoint             = aws_sqs_queue.rag_ingestion_queue.arn
-  raw_message_delivery = true 
+  raw_message_delivery = true
 }
 
-# --- 4. S3 Notification: Triggers SNS when file is uploaded ---
+# --- 6. S3 → SNS notification ---
 resource "aws_s3_bucket_notification" "s3_to_sns" {
-  # Referencing the S3 bucket resource defined in s3.tf
-  bucket = aws_s3_bucket.rag_documents.id 
+  bucket = aws_s3_bucket.rag_documents.id
 
   topic {
     id        = "document_uploaded_notification"
     topic_arn = aws_sns_topic.document_upload_topic.arn
     events    = ["s3:ObjectCreated:*"]
-    # Only notify for new objects in the 'incoming/' prefix
-    filter_prefix = "incoming/" 
+    # ✅ FIX: Match prefix used in API uploads
+    filter_prefix = "uploads/"
   }
-  
-  # Dependency on the SNS policy and SQS subscription
+
   depends_on = [
     aws_sns_topic_subscription.sqs_to_sns_subscription,
     aws_sns_topic_policy.sns_allow_s3_publish
   ]
 }
 
-# --- 5. CRITICAL: Lambda Event Source Mapping (The SQS Trigger) ---
-# This resource links the SQS queue to the Ingestion Lambda function.
+# --- 7. SQS → Lambda trigger ---
 resource "aws_lambda_event_source_mapping" "ingestion_worker_trigger" {
   event_source_arn  = aws_sqs_queue.rag_ingestion_queue.arn
   function_name     = aws_lambda_function.ingestion_worker.function_name
-  batch_size        = 1 
+  batch_size        = 1
   enabled           = true
 }
