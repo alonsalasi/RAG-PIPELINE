@@ -1,142 +1,158 @@
 import os
-import boto3
 import json
-import time
-from urllib.parse import urlparse
-from io import BytesIO
-from botocore.exceptions import ClientError
-from PIL import Image
-
-# --- Tesseract Imports ---
+import tempfile
+import boto3
+import logging
+import traceback
 import pytesseract
-
-# --- RAG Core Imports (Minimal for Ingestion) ---
+from pdf2image import convert_from_path
+from langchain_community.vectorstores import FAISS
+from langchain_aws import BedrockEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema.document import Document
-# NOTE: Removed dependency on numpy/faiss here. We assume they exist in the execution environment
-# if vectorization logic is re-added, but for pure chunking, these are minimal.
+from botocore.exceptions import ClientError
 
-# --- Configuration (from Lambda Environment Variables) ---
-S3_DOCUMENTS_BUCKET = os.environ.get("S3_DOCUMENTS_BUCKET")
-AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-# --- FAISS/S3 Persistence Constants ---
-FAISS_INDEX_KEY = "faiss_index/index.faiss" 
-DOCSTORE_KEY = "faiss_index/docstore.json"
-FAISS_LOCAL_PATH = "/tmp/faiss_index/" 
+REGION = os.getenv("AWS_REGION", "us-west-2")
+BUCKET = os.getenv("S3_BUCKET", "pdfquery-rag-documents-default")
+VECTOR_STORE_PATH = "vector_store/default"
+EMBED_MODEL_ID = "amazon.titan-embed-text-v1"
 
-# --- RAG/LLM Constants ---
-# Bedrock Titan is the standard choice for RAG embeddings
-EMBEDDING_MODEL_ID = 'amazon.titan-embed-text-v1' 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
-
-# Initialize Boto3 clients
-sqs = boto3.client('sqs', region_name=AWS_REGION)
-s3_client = boto3.client('s3', region_name=AWS_REGION)
-bedrock_client = boto3.client('bedrock-runtime', region_name=AWS_REGION)
+s3 = boto3.client("s3", region_name=REGION)
+textract = boto3.client("textract", region_name=REGION)
+bedrock_embed = BedrockEmbeddings(model_id=EMBED_MODEL_ID, region_name=REGION)
 
 
-# Initialize RAG components once
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP,
-    separators=["\n\n", "\n", " ", ""]
-)
+# ==========================================================
+# 🧠 Main Processing Function
+# ==========================================================
+def process_message(record):
+    msg_id = record.get("messageId")
+    logger.info(f"🟦 Processing SQS message {msg_id}")
 
-
-# --- Tesseract-based Extraction Logic ---
-
-def extract_text_with_tesseract(bucket, key):
-    """Downloads file from S3 and extracts text using Tesseract (Hebrew/English)."""
-    print(f"Downloading s3://{bucket}/{key} for Tesseract processing...")
-    
-    # Download file content into memory
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    file_bytes = BytesIO(response['Body'].read())
-    
-    # Use Pillow to open the image/PDF and pytesseract for OCR
     try:
-        image = Image.open(file_bytes)
-        extracted_text = pytesseract.image_to_string(
-            image, 
-            lang='heb+eng' # Use both Hebrew and English language packs
-        )
-        return extracted_text
-    except Exception as e:
-        print(f"Tesseract or Image loading failed: {e}")
-        raise
+        body = record.get("body")
+        if not body:
+            logger.warning("⚠️ Empty SQS body.")
+            return {"messageId": msg_id, "status": "failed"}
 
-# --- Core Worker Logic ---
+        # Handle nested JSON from S3->SQS->SNS
+        s3_event = None
+        try:
+            payload = json.loads(body)
+            s3_event = payload.get("Records", [])[0]
+        except Exception:
+            try:
+                nested = json.loads(json.loads(body).get("Message", "{}"))
+                s3_event = nested.get("Records", [])[0]
+            except Exception:
+                pass
 
-def process_message(message_body):
-    """
-    Handles the entire RAG ingestion pipeline for one document.
-    NOTE: FAISS/Vectorization removed due to Lambda size constraints.
-    """
-    
-    # 1. Parse SQS/SNS Message to get S3 Key
-    try:
-        sns_message = json.loads(message_body)
-        s3_record = json.loads(sns_message['Message'])['Records'][0]['s3']
-        bucket = s3_record['bucket']['name']
-        key = urlparse(s3_record['object']['key']).path.lstrip('/') 
-    except (KeyError, json.JSONDecodeError) as e:
-        print(f"ERROR: Message format is incorrect. {e}")
-        return False
-    
-    # 2. Tesseract Extraction Workflow
-    try:
-        raw_text = extract_text_with_tesseract(bucket, key)
+        if not s3_event:
+            logger.warning(f"⚠️ No Records found after decode: {body[:200]}")
+            return {"messageId": msg_id, "status": "success"}
 
-        if not raw_text.strip():
-            print(f"WARNING: Tesseract extracted no readable text from {key}. Skipping.")
-            s3_client.delete_object(Bucket=bucket, Key=key)
-            return True 
-        
-        print(f"Successfully extracted {len(raw_text)} characters from {key}")
+        bucket = s3_event["s3"]["bucket"]["name"]
+        key = s3_event["s3"]["object"]["key"]
+        logger.info(f"📥 Processing file: s3://{bucket}/{key}")
+
+        tmp_dir = tempfile.mkdtemp()
+        local_path = os.path.join(tmp_dir, os.path.basename(key))
+        s3.download_file(bucket, key, local_path)
+
+        # Extract text (PDF or image)
+        text = extract_text(local_path)
+        if not text.strip():
+            logger.warning("⚠️ No text extracted via OCR. Skipping Textract for PDFs.")
+            # Only call Textract for images (PDF not supported by DetectDocumentText)
+            if not local_path.lower().endswith(".pdf"):
+                logger.info("🔄 Trying Textract fallback on image file...")
+                text = extract_textract_text(local_path)
+            else:
+                logger.warning("🚫 Skipping Textract fallback: unsupported for PDF format.")
+
+        if not text.strip():
+            logger.warning("❌ Still no text after OCR/Textract. Skipping indexing.")
+            return {"messageId": msg_id, "status": "success"}
+
+        # Split text & build embeddings
+        chunks = split_text(text)
+        logger.info(f"🧩 Split text into {len(chunks)} chunks for embedding.")
+        embeddings = bedrock_embed.embed_documents(chunks)
+        index = FAISS.from_embeddings(list(zip(chunks, embeddings)), bedrock_embed)
+
+        # Save to S3
+        save_faiss(index)
+        logger.info(f"✅ Processed and updated FAISS index for {key}")
+        return {"messageId": msg_id, "status": "success"}
 
     except Exception as e:
-        print(f"CRITICAL TESSERACT FAILURE processing {key}: {e}")
-        return False 
-        
-    # 3. RAG Pipeline: Chunking and Saving to JSON
+        logger.error(f"🚨 LAMBDA EXECUTION FAILED: {e}")
+        traceback.print_exc()
+        return {"messageId": msg_id, "status": "failed"}
+
+
+# ==========================================================
+# 🧾 Text Extraction
+# ==========================================================
+def extract_text(path):
+    """Perform OCR using Tesseract for Hebrew, Turkish, and English."""
+    text = ""
     try:
-        # Create a document object with metadata
-        doc = [Document(page_content=raw_text, metadata={"source_key": key, "s3_bucket": bucket})]
-        documents = text_splitter.split_documents(doc)
-        
-        # NOTE: Vector indexing logic is GONE. We are only saving the chunks for keyword search.
-        
-        chunk_key = f"processed_chunks/{key}.json"
-        
-        # Simple serialization of chunks to JSON (simulates saving vector index)
-        serializable_documents = [
-            {"page_content": d.page_content, "metadata": d.metadata} for d in documents
-        ]
-
-        s3_client.put_object(
-            Bucket=bucket,
-            Key=chunk_key,
-            Body=json.dumps(serializable_documents),
-            ContentType='application/json'
-        )
-        
-        # 4. Delete the file from the 'incoming/' folder to mark it as processed
-        s3_client.delete_object(Bucket=bucket, Key=key)
-        
-        print(f"--- Document '{key}' fully processed, chunked, and saved to {chunk_key}. ---")
-        return True
-
+        if path.lower().endswith(".pdf"):
+            logger.info("📄 Running pdf2image OCR flow...")
+            pages = convert_from_path(path)
+            for i, img in enumerate(pages):
+                txt = pytesseract.image_to_string(img, lang="eng+tur+heb")
+                logger.info(f"🧾 OCR processed page {i + 1}/{len(pages)}")
+                text += f"\n\n--- PAGE {i+1} ---\n{txt}"
+        else:
+            logger.info("🖼️ Running direct image OCR flow...")
+            txt = pytesseract.image_to_string(path, lang="eng+tur+heb")
+            text += txt
     except Exception as e:
-        print(f"CRITICAL CHUNKING/SAVING FAILURE processing {key}: {e}")
-        return False 
+        logger.error(f"OCR extraction error: {e}")
+        traceback.print_exc()
+    return text
 
 
-def start_worker():
-    """Placeholder for the old ECS worker loop (now handled by Lambda Event Source Mapping)."""
-    pass
+def extract_textract_text(local_path):
+    """Textract fallback for scanned image formats (PNG, JPG, TIFF)."""
+    text = ""
+    try:
+        with open(local_path, "rb") as f:
+            data = f.read()
+        resp = textract.detect_document_text(Document={"Bytes": data})
+        for block in resp.get("Blocks", []):
+            if block["BlockType"] == "LINE":
+                text += block["Text"] + "\n"
+        logger.info("✅ Textract fallback extracted text successfully.")
+    except ClientError as e:
+        logger.error(f"Textract client error: {e}")
+    except Exception as e:
+        logger.error(f"Textract fallback failed: {e}")
+        traceback.print_exc()
+    return text
 
-if __name__ == "__main__":
-    from langchain.schema.document import Document
-    pass
+
+# ==========================================================
+# 🪶 Text Splitting and FAISS Saving
+# ==========================================================
+def split_text(text):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
+    return splitter.split_text(text)
+
+
+def save_faiss(store):
+    """Merge into or replace FAISS on S3."""
+    tmp_dir = tempfile.mkdtemp()
+    faiss_file = os.path.join(tmp_dir, "index.faiss")
+    pkl_file = os.path.join(tmp_dir, "index.pkl")
+
+    store.save_local(tmp_dir)
+    logger.info("💾 Saving FAISS index locally before upload...")
+
+    s3.upload_file(faiss_file, BUCKET, f"{VECTOR_STORE_PATH}/index.faiss")
+    s3.upload_file(pkl_file, BUCKET, f"{VECTOR_STORE_PATH}/index.pkl")
+    logger.info(f"🆙 Uploaded FAISS index to s3://{BUCKET}/{VECTOR_STORE_PATH}/")

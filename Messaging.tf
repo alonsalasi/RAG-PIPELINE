@@ -9,7 +9,7 @@ resource "aws_sqs_queue" "rag_ingestion_queue" {
   delay_seconds              = 0
   max_message_size           = 262144
   message_retention_seconds  = 345600
-  visibility_timeout_seconds = 900  # Match ingestion lambda timeout
+  visibility_timeout_seconds = 900  # ✅ Match ingestion lambda timeout
 
   tags = {
     Name = "RAG Ingestion Queue"
@@ -28,7 +28,7 @@ resource "aws_sns_topic" "document_upload_topic" {
 # --- 3. Allow SNS → SQS publish ---
 data "aws_iam_policy_document" "sqs_allow_sns_publish" {
   statement {
-    effect    = "Allow"
+    effect = "Allow"
     principals {
       type        = "Service"
       identifiers = ["sns.amazonaws.com"]
@@ -85,8 +85,7 @@ resource "aws_s3_bucket_notification" "s3_to_sns" {
     id        = "document_uploaded_notification"
     topic_arn = aws_sns_topic.document_upload_topic.arn
     events    = ["s3:ObjectCreated:*"]
-    # ✅ FIX: Match prefix used in API uploads
-    filter_prefix = "uploads/"
+    filter_prefix = "uploads/" # ✅ Matches API uploads
   }
 
   depends_on = [
@@ -96,9 +95,11 @@ resource "aws_s3_bucket_notification" "s3_to_sns" {
 }
 
 # --- 7. SQS → Lambda trigger ---
+# ✅ CLEANED: Removed unsupported MaximumRetryAttempts etc.
 resource "aws_lambda_event_source_mapping" "ingestion_worker_trigger" {
   event_source_arn  = aws_sqs_queue.rag_ingestion_queue.arn
   function_name     = aws_lambda_function.ingestion_worker.function_name
   batch_size        = 1
   enabled           = true
+  # SQS doesn’t support MaximumRetryAttempts — handled by queue redrive policy if needed
 }

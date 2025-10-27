@@ -4,6 +4,12 @@ variable "aws_region" {
   default     = "us-west-2"
 }
 
+variable "region" {
+  description = "AWS region for resource ARNs"
+  type        = string
+  default     = "us-west-2"
+}
+
 variable "project_name" {
   description = "A unique prefix for all resources"
   type        = string

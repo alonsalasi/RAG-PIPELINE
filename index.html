@@ -77,7 +77,6 @@
 </div>
 
 <script>
-  // ✅ Keep your working API base (stage '/default' included)
   const API_GATEWAY_URL = 'https://1xeczo4tz9.execute-api.us-west-2.amazonaws.com/default';
 
   const CHAT_LOG = document.getElementById('chat-log');
@@ -118,7 +117,7 @@
         const btn = document.createElement('button');
         btn.className = 'delete-btn';
         btn.textContent = '🗑️';
-        btn.onclick = () => deleteFile(clean); // send clean name; backend matches by suffix
+        btn.onclick = () => deleteFile(clean);
         li.appendChild(btn);
         FILE_LIST_UL.appendChild(li);
       });
@@ -144,7 +143,6 @@
   async function deleteFile(displayName){
     if(!confirm(`Delete ${displayName}?`)) return;
     try{
-      // backend deletes by suffix match, so pass the clean name
       const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(displayName)}`, { method:'DELETE' });
       const data = await res.json();
       if(res.ok){
@@ -168,12 +166,10 @@
       const fileNameEncoded = encodeURIComponent(file.name);
       const fileTypeEncoded = encodeURIComponent(file.type || 'application/octet-stream');
 
-      // 1) get presigned url
       const urlRes = await fetch(`${API_GATEWAY_URL}/get-upload-url?fileName=${fileNameEncoded}&fileType=${fileTypeEncoded}`);
       const urlData = await urlRes.json();
       if(!urlRes.ok || !urlData.signedUrl) throw new Error(urlData.error || 'Could not get upload URL');
 
-      // 2) put to S3
       showLoading(UPLOAD_STATUS, `2/2: Uploading file...`);
       const putRes = await fetch(urlData.signedUrl, {
         method:'PUT',
@@ -185,16 +181,20 @@
       UPLOAD_STATUS.textContent = `✅ ${file.name} uploaded. Processing...`;
       appendMessage('assistant', `Document <b>${file.name}</b> uploaded successfully. Processing now...`);
 
-      // 3) poll for appearance in list-files (match by suffix for UUID prefixes)
       const start = Date.now();
-      const timeoutMs = 120000; // 2 min
+      const timeoutMs = 120000;
       const poll = setInterval(async ()=>{
         try{
           const res = await fetch(`${API_GATEWAY_URL}/list-files`);
           const data = await res.json();
           const files = data.filenames || [];
-          // match by suffix — safest for UUID-prefixed keys
-          const found = files.some(f => f.endsWith(file.name));
+          // ✅ FIX: match both filename.json and filename.pdf.json
+          const found = files.some(f =>
+            f === file.name ||
+            f === `${file.name}.json` ||
+            f.endsWith(`${file.name}.json`) ||
+            f.endsWith(`${file.name.replace(/\.[^.]+$/, '')}.json`)
+          );
           if(found){
             clearInterval(poll);
             UPLOAD_STATUS.textContent = `✅ ${file.name} processed successfully!`;
@@ -242,17 +242,12 @@
     }
   }
 
-  // Events
   SEND_BUTTON.addEventListener('click', handleQuerySubmission);
   USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
   UPLOAD_BUTTON.addEventListener('click', requestPresignedUrlAndUploadFile);
   FILE_INPUT.addEventListener('change', () => { FILE_LABEL.textContent = FILE_INPUT.files[0]?.name || 'Click to select a file...'; });
   REFRESH_BTN.addEventListener('click', fetchUploadedFiles);
-
-  // Initial load
-  document.addEventListener('DOMContentLoaded', () => {
-    fetchUploadedFiles();
-  });
+  document.addEventListener('DOMContentLoaded', fetchUploadedFiles);
 </script>
 </body>
 </html>
