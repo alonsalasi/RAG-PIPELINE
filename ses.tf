@@ -1,11 +1,5 @@
 # AWS SES for Email Sending
 
-variable "ses_sender_email" {
-  description = "Verified sender email address for SES"
-  type        = string
-  default     = ""
-}
-
 resource "aws_ses_email_identity" "sender" {
   count = var.ses_sender_email != "" ? 1 : 0
   email = var.ses_sender_email

@@ -1,8 +1,9 @@
 # Lambda Security Group - Tightened for HTTPS only
 resource "aws_security_group" "lambda_sg" {
+  count       = var.enable_lambda_vpc ? 1 : 0
   name        = "${var.project_name}-lambda-sg"
   description = "Security group for Lambda functions - HTTPS egress only"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = aws_vpc.main[0].id
 
   # No ingress - Lambda doesn't need inbound connections
 

@@ -46,7 +46,7 @@ resource "aws_lambda_function" "agent_executor" {
     for_each = var.enable_lambda_vpc ? [1] : []
     content {
       subnet_ids         = aws_subnet.private[*].id
-      security_group_ids = [aws_security_group.lambda_sg.id]
+      security_group_ids = [aws_security_group.lambda_sg[0].id]
     }
   }
 
@@ -67,7 +67,7 @@ resource "aws_lambda_function" "agent_executor" {
   }
 
   dead_letter_config {
-    target_arn = aws_sqs_queue.lambda_dlq.arn
+    target_arn = aws_sqs_queue.agent_dlq.arn
   }
 
   depends_on = [

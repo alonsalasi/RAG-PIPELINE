@@ -137,3 +137,9 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
+
+variable "ses_sender_email" {
+  description = "Verified sender email address for SES"
+  type        = string
+  default     = ""
+}
