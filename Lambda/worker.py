@@ -1,211 +1,245 @@
 import os
+import io
 import json
-import tempfile
 import boto3
+import tempfile
 import logging
-import traceback
-import pytesseract
-from pdf2image import convert_from_path
-from langchain_community.vectorstores import FAISS
+import numpy as np
+import base64
 from langchain_aws import BedrockEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import easyocr
+import faiss
+from PIL import Image
 
-# --- Initialize Logging ---
-logger = logging.getLogger(__name__)
+# Logging setup
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# --- Environment Variables ---
-REGION = os.getenv("AWS_REGION", "us-west-2")
-BUCKET = os.getenv("S3_BUCKET", "pdfquery-rag-documents-default")
-VECTOR_STORE_PATH = "vector_store/default"
-EMBED_MODEL_ID = "amazon.titan-embed-text-v1"
+# Clients
+s3 = boto3.client("s3")
+textract = boto3.client("textract")
 
-# --- AWS Clients ---
-s3 = boto3.client("s3", region_name=REGION)
-textract = boto3.client("textract", region_name=REGION)
-bedrock_embed = BedrockEmbeddings(model_id=EMBED_MODEL_ID, region_name=REGION)
+BUCKET = os.environ.get("S3_BUCKET", "pdfquery-rag-documents-default")
 
-# --- OCR Setup ---
-pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-easyocr_reader = easyocr.Reader(['he', 'en'], gpu=False)
-
-
-# ============================================================
-# 🧩 MAIN ENTRY POINT: SQS Message Processing
-# ============================================================
 def process_message(record):
-    msg_id = record.get("messageId")
-    logger.info(f"🟦 Processing SQS message {msg_id}")
-
     try:
+        # Extract S3 info from SQS record
         body = record.get("body")
         if not body:
             logger.warning("⚠️ Empty SQS body, skipping.")
             return
 
-        # Decode S3 event from SQS message
-        s3_event = None
-        payload = None
-        try:
-            payload = json.loads(body)
-            s3_event = payload.get("Records", [])[0]
-        except Exception:
-            pass
+        # Parse the SNS message from SQS
+        s3_event = json.loads(body)
+        s3_record = s3_event["Records"][0]
+        s3_bucket = s3_record["s3"]["bucket"]["name"]
+        s3_key = s3_record["s3"]["object"]["key"]
 
-        if not s3_event:
-            try:
-                nested = json.loads(json.loads(body).get("Message", "{}"))
-                s3_event = nested.get("Records", [])[0]
-            except Exception:
-                pass
+        logger.info(f"📥 Processing file: s3://{s3_bucket}/{s3_key}")
 
-        if not s3_event:
-            logger.warning(f"⚠️ No valid S3 record found in event: {payload}")
-            return
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = os.path.join(tmpdir, os.path.basename(s3_key))
+            s3.download_file(s3_bucket, s3_key, local_path)
+            logger.info(f"✅ Downloaded {os.path.getsize(local_path)} bytes to {local_path}")
 
-        bucket = s3_event["s3"]["bucket"]["name"]
-        key = s3_event["s3"]["object"]["key"]
-        logger.info(f"📥 Processing file: s3://{bucket}/{key}")
+            # ---- Extract images from PDF ----
+            image_metadata = []
+            if s3_key.lower().endswith('.pdf'):
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(local_path)
+                    for page_num, page in enumerate(reader.pages, 1):
+                        if '/XObject' in page['/Resources']:
+                            xObject = page['/Resources']['/XObject'].get_object()
+                            for obj_name in xObject:
+                                obj = xObject[obj_name]
+                                if obj['/Subtype'] == '/Image':
+                                    try:
+                                        # Extract image data
+                                        if '/Filter' in obj:
+                                            if obj['/Filter'] == '/DCTDecode':
+                                                img_data = obj._data
+                                            elif obj['/Filter'] == '/FlateDecode':
+                                                img_data = obj._data
+                                            else:
+                                                continue
+                                        else:
+                                            img_data = obj._data
+                                        
+                                        # Save image to S3
+                                        img_name = f"{base_name}_page{page_num}_img{len(image_metadata)}.jpg"
+                                        img_key = f"images/{base_name}/{img_name}"
+                                        
+                                        s3.put_object(
+                                            Bucket=BUCKET,
+                                            Key=img_key,
+                                            Body=img_data,
+                                            ContentType='image/jpeg'
+                                        )
+                                        
+                                        image_metadata.append({
+                                            'page': page_num,
+                                            'image_name': img_name,
+                                            's3_key': img_key,
+                                            'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}"
+                                        })
+                                        logger.info(f"✅ Extracted image from page {page_num}: {img_key}")
+                                    except Exception as img_e:
+                                        logger.warning(f"Failed to extract image: {img_e}")
+                    
+                    logger.info(f"📸 Extracted {len(image_metadata)} images from PDF")
+                except Exception as e:
+                    logger.warning(f"Image extraction failed: {e}")
+            
+            # ---- OCR-based text extraction ----
+            full_text = ""
+            base_name = os.path.splitext(os.path.basename(s3_key))[0]
+            
+            if s3_key.lower().endswith('.pdf'):
+                try:
+                    # First try pypdf for text-based PDFs
+                    from pypdf import PdfReader
+                    reader = PdfReader(local_path)
+                    for i, page in enumerate(reader.pages, 1):
+                        text = page.extract_text() or ""
+                        if text.strip() and len(text.strip()) > 50:  # If we get substantial text
+                            logger.info(f"✅ Page {i} extracted via pypdf: {len(text)} chars")
+                            full_text += text + "\n"
+                        else:
+                            logger.info(f"⚠️ Page {i} has minimal text, using OCR")
+                            # Use OCR for this page
+                            try:
+                                from pdf2image import convert_from_path
+                                import io as iolib
+                                
+                                # Convert just this page to image
+                                images = convert_from_path(local_path, first_page=i, last_page=i, dpi=200)
+                                if images:
+                                    import pytesseract
+                                    
+                                    # Quick test with fast OCR to check quality
+                                    test_data = pytesseract.image_to_data(images[0], lang='heb+eng+tur', output_type=pytesseract.Output.DICT)
+                                    confidences = [int(c) for c in test_data['conf'] if c != '-1' and str(c).isdigit()]
+                                    avg_confidence = sum(confidences) / len(confidences) if confidences else 100
+                                    
+                                    # If high confidence (>70), use fast OCR. If low, use preprocessing
+                                    if avg_confidence > 70:
+                                        # Fast path for printed text
+                                        ocr_text = pytesseract.image_to_string(images[0], lang='heb+eng+tur')
+                                        logger.info(f"✅ Page {i} Fast OCR (conf={avg_confidence:.1f}): {len(ocr_text)} chars")
+                                    else:
+                                        # Slow path with preprocessing for handwritten/low quality
+                                        logger.info(f"🔍 Page {i} Low confidence ({avg_confidence:.1f}), using enhanced OCR")
+                                        from PIL import ImageEnhance, ImageFilter, Image
+                                        import cv2
+                                        
+                                        # Higher DPI for handwriting
+                                        images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
+                                        img = images[0].convert('L')
+                                        
+                                        # Enhance contrast
+                                        enhancer = ImageEnhance.Contrast(img)
+                                        img = enhancer.enhance(2.0)
+                                        img = img.filter(ImageFilter.SHARPEN)
+                                        
+                                        # Denoise and binarize
+                                        img_array = np.array(img)
+                                        img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
+                                        _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                        img = Image.fromarray(img_array)
+                                        
+                                        ocr_text = pytesseract.image_to_string(img, lang='heb+eng+tur', config='--psm 3 --oem 1')
+                                        logger.info(f"✅ Page {i} Enhanced OCR extracted: {len(ocr_text)} chars")
+                                    
+                                    if ocr_text.strip():
+                                        full_text += ocr_text + "\n"
+                            except Exception as ocr_e:
+                                logger.error(f"OCR failed for page {i}: {ocr_e}")
+                                
+                except Exception as e:
+                    logger.error(f"PDF extraction failed: {e}")
+                    return
+            else:
+                logger.warning(f"Unsupported file type: {s3_key}")
+                return
 
-        # --- Download to temp ---
-        tmp_dir = tempfile.mkdtemp()
-        local_path = os.path.join(tmp_dir, os.path.basename(key))
-        s3.download_file(bucket, key, local_path)
+            # Clean up the text - remove excessive whitespace and common OCR artifacts
+            full_text = full_text.replace('Scanned by CamScanner', '').strip()
+            
+            if not full_text.strip() or len(full_text.strip()) < 100:
+                logger.warning(f"⚠️ Insufficient text extracted ({len(full_text)} chars); skipping embedding.")
+                return
 
-        # --- OCR Phase ---
-        text = extract_text(local_path)
+            # Split text into chunks
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            chunks = splitter.split_text(full_text)
+            
+            # Add metadata to chunks including image info
+            docs = []
+            for i, chunk in enumerate(chunks):
+                doc = Document(
+                    page_content=chunk,
+                    metadata={
+                        "source": os.path.basename(s3_key),
+                        "chunk_id": i,
+                        "total_chunks": len(chunks),
+                        "has_images": len(image_metadata) > 0,
+                        "image_count": len(image_metadata)
+                    }
+                )
+                docs.append(doc)
+            
+            # Add image descriptions as searchable documents
+            if image_metadata:
+                for img_meta in image_metadata:
+                    img_doc = Document(
+                        page_content=f"Image on page {img_meta['page']} of {os.path.basename(s3_key)}",
+                        metadata={
+                            "source": os.path.basename(s3_key),
+                            "type": "image",
+                            "page": img_meta['page'],
+                            "image_url": img_meta['url'],
+                            "s3_key": img_meta['s3_key']
+                        }
+                    )
+                    docs.append(img_doc)
+            
+            logger.info(f"📝 Created {len(docs)} chunks")
 
-        # Log for debugging
-        logger.info(f"📏 Extracted text length (Tesseract/EasyOCR): {len(text)}")
+            # ---- Create FAISS index per file ----
+            embed = BedrockEmbeddings(model_id="amazon.titan-embed-text-v1", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+            logger.info("🔍 Building FAISS index...")
+            store = FAISS.from_documents(docs, embed)
 
-        # Fallback to Textract if no text found
-        if not text.strip():
-            logger.warning("⚠️ No text extracted. Trying Textract fallback.")
-            text = extract_textract_text(local_path, bucket, key)
-            logger.info(f"📏 Extracted text length (Textract): {len(text)}")
+            # ---- Save index with filename ----
+            base_name = os.path.splitext(os.path.basename(s3_key))[0]
+            store.save_local(tmpdir)
+            
+            index_path = os.path.join(tmpdir, "index.faiss")
+            pkl_path = os.path.join(tmpdir, "index.pkl")
+            
+            s3.upload_file(index_path, BUCKET, f"vector_store/{base_name}/index.faiss")
+            s3.upload_file(pkl_path, BUCKET, f"vector_store/{base_name}/index.pkl")
+            logger.info(f"✅ Uploaded FAISS index to s3://{BUCKET}/vector_store/{base_name}/")
 
-        if not text.strip():
-            logger.warning(f"❌ Still no text after Textract for s3://{bucket}/{key}.")
-            raise Exception(f"No text could be extracted from s3://{bucket}/{key}")
-
-        # --- Debug: Save raw extracted text to S3 for inspection ---
-        save_debug_text(bucket, key, text)
-
-        # --- Split and Embed ---
-        chunks = split_text(text)
-        embeddings = bedrock_embed.embed_documents(chunks)
-        index = FAISS.from_embeddings(list(zip(chunks, embeddings)), bedrock_embed)
-
-        # --- Save Vector Index + Marker JSON ---
-        save_faiss(index, key)
-        logger.info(f"✅ Processed and updated FAISS index for {key}")
+            # ---- Mark as processed ----
+            marker_key = f"processed/{base_name}.json"
+            marker_content = {
+                "source_file": s3_key,
+                "status": "processed",
+                "images": image_metadata
+            }
+            
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=marker_key,
+                Body=json.dumps(marker_content),
+                ContentType="application/json"
+            )
+            logger.info(f"✅ Marker written to s3://{BUCKET}/{marker_key}")
 
     except Exception as e:
-        logger.error(f"🚨 LAMBDA EXECUTION FAILED for {msg_id}: {e}")
-        traceback.print_exc()
+        logger.error(f"🚨 Failed processing record: {e}")
         raise e
-
-
-# ============================================================
-# 🧩 OCR + TEXTRACT + EASYOCR
-# ============================================================
-def extract_text(path):
-    """Perform OCR using Tesseract + EasyOCR for Hebrew/English."""
-    text = ""
-    try:
-        if path.lower().endswith(".pdf"):
-            pages = convert_from_path(path)
-            for i, img in enumerate(pages):
-                # First try Tesseract
-                tesseract_txt = pytesseract.image_to_string(img, lang="eng+tur+heb").strip()
-                if tesseract_txt:
-                    text += f"\n\n--- PAGE {i+1} (Tesseract) ---\n{tesseract_txt}"
-                else:
-                    # Fallback to EasyOCR
-                    logger.info(f"⚙️ Falling back to EasyOCR for page {i+1}")
-                    easy_txt = easyocr_reader.readtext(img, detail=0, paragraph=True)
-                    if easy_txt:
-                        text += f"\n\n--- PAGE {i+1} (EasyOCR) ---\n" + "\n".join(easy_txt)
-        else:
-            txt = pytesseract.image_to_string(path, lang="eng+tur+heb").strip()
-            if not txt:
-                easy_txt = easyocr_reader.readtext(path, detail=0, paragraph=True)
-                txt = "\n".join(easy_txt)
-            text += txt
-    except Exception as e:
-        logger.error(f"OCR extraction error: {e}")
-    return text
-
-
-def extract_textract_text(local_path, bucket, key):
-    """Textract fallback for scanned or complex PDFs."""
-    text = ""
-    try:
-        with open(local_path, "rb") as f:
-            data = f.read()
-        resp = textract.detect_document_text(Document={"Bytes": data})
-        for block in resp.get("Blocks", []):
-            if block["BlockType"] == "LINE":
-                text += block["Text"] + "\n"
-        logger.info("✅ Textract fallback extracted text.")
-    except Exception as e:
-        logger.error(f"Textract fallback failed: {e}")
-    return text
-
-
-# ============================================================
-# 🧩 TEXT SPLITTING + VECTOR STORAGE
-# ============================================================
-def split_text(text):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
-    return splitter.split_text(text)
-
-
-def save_faiss(store, original_key):
-    """Save FAISS index and write a processed marker JSON in /processed/."""
-    tmp_dir = tempfile.mkdtemp()
-    faiss_file = os.path.join(tmp_dir, "index.faiss")
-    pkl_file = os.path.join(tmp_dir, "index.pkl")
-
-    store.save_local(tmp_dir)
-
-    s3.upload_file(faiss_file, BUCKET, f"{VECTOR_STORE_PATH}/index.faiss")
-    s3.upload_file(pkl_file, BUCKET, f"{VECTOR_STORE_PATH}/index.pkl")
-    logger.info("🆙 Uploaded FAISS index to S3.")
-
-    # ✅ Write processed marker in /processed/
-    base_name = os.path.splitext(os.path.basename(original_key))[0]
-    marker_key = f"processed/{base_name}.json"
-    marker_content = {
-        "source_file": original_key,
-        "status": "processed"
-    }
-
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=marker_key,
-        Body=json.dumps(marker_content),
-        ContentType="application/json"
-    )
-
-    logger.info(f"✅ Marker written to s3://{BUCKET}/{marker_key}")
-
-
-# ============================================================
-# 🪶 DEBUG UTILITIES
-# ============================================================
-def save_debug_text(bucket, original_key, text):
-    """Save the raw extracted text for debugging OCR output."""
-    try:
-        base_name = os.path.splitext(os.path.basename(original_key))[0]
-        debug_key = f"processed_text/{base_name}.txt"
-        s3.put_object(
-            Bucket=bucket,
-            Key=debug_key,
-            Body=text.encode("utf-8"),
-            ContentType="text/plain"
-        )
-        logger.info(f"🪶 Saved raw extracted text to s3://{bucket}/{debug_key}")
-    except Exception as e:
-        logger.error(f"Failed to save debug text: {e}")

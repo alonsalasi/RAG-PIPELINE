@@ -4,62 +4,100 @@ resource "aws_apigatewayv2_api" "rag_api_gateway" {
   description   = "API Gateway for RAG Query Lambda Function"
 
   cors_configuration {
-    allow_origins = ["https://d2h33zz3k8plgu.cloudfront.net"]
+    allow_origins = ["https://${aws_cloudfront_distribution.rag_frontend_cdn.domain_name}"]
     allow_methods = ["*"]
     allow_headers = ["*"]
     max_age       = 300
   }
 }
 
+resource "aws_apigatewayv2_authorizer" "cognito_authorizer" {
+  api_id           = aws_apigatewayv2_api.rag_api_gateway.id
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  name             = "cognito-authorizer"
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.agent_client.id]
+    issuer   = "https://cognito-idp.${data.aws_region.current.name}.amazonaws.com/${aws_cognito_user_pool.agent_users.id}"
+  }
+}
+
 resource "aws_apigatewayv2_integration" "rag_api_integration" {
   api_id             = aws_apigatewayv2_api.rag_api_gateway.id
   integration_type   = "AWS_PROXY"
-  # ❗️FIX 1: Removed 'integration_method = "POST"'
-  integration_uri    = aws_lambda_function.api_query_service.invoke_arn
-  # ❗️FIX 2: Changed payload version to 1.0 to match your Python code
+  integration_uri    = aws_lambda_function.agent_executor.invoke_arn
   payload_format_version = "1.0"
 }
 
 # ❗️FIX 3: Deleted the old 'ANY' route and created three specific routes
 # All routes point to the same integration
-resource "aws_apigatewayv2_route" "rag_api_route_query" {
-  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key = "POST /query"
-  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
-}
+# /query route removed - agent-only mode
 
 resource "aws_apigatewayv2_route" "rag_api_route_list_files" {
-  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key = "GET /list-files"
-  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /list-files"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
 resource "aws_apigatewayv2_route" "rag_api_catchall" {
-  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key = "ANY /{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "ANY /{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
 resource "aws_apigatewayv2_route" "rag_api_route_get_upload_url" {
-  api_id    = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key = "GET /get-upload-url"
-  target    = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /get-upload-url"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_agent_query" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /agent-query"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_agent_analyze" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /agent-analyze"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_get_image" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /get-image"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id = aws_apigatewayv2_api.rag_api_gateway.id
   
-  # ❗️FIX 4: 'depends_on' must now include all new routes
+  # Updated dependencies for agent-only mode
   depends_on = [
-    aws_apigatewayv2_route.rag_api_route_query,
     aws_apigatewayv2_route.rag_api_route_list_files,
     aws_apigatewayv2_route.rag_api_route_get_upload_url,
+    aws_apigatewayv2_route.rag_api_route_agent_query,
+    aws_apigatewayv2_route.rag_api_route_agent_analyze,
   ]
 }
 
 resource "aws_cloudwatch_log_group" "api_access_logs" {
   name              = "/aws/apigateway/${aws_apigatewayv2_api.rag_api_gateway.id}/${var.environment}"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.agent_encryption.arn
 
   tags = {
     Name = "${var.project_name}-api-access-logs"
@@ -99,9 +137,8 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
 resource "aws_lambda_permission" "apigw_lambda_permission" {
   statement_id  = "AllowAPIGatewayInvokeLambda"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.api_query_service.function_name
+  function_name = aws_lambda_function.agent_executor.function_name
   principal     = "apigateway.amazonaws.com"
 
-  # Updated source_arn to be more robust for all routes
   source_arn = "${aws_apigatewayv2_api.rag_api_gateway.execution_arn}/*/*/*"
 }

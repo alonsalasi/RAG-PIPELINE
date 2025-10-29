@@ -1,83 +1,61 @@
 ###############################################################
-# IAM ROLES & POLICIES
-###############################################################
-
-###############################################################
 # API Gateway → CloudWatch Logs Integration
 ###############################################################
-
-# Role for API Gateway to write logs to CloudWatch
 resource "aws_iam_role" "apigw_cloudwatch_role" {
   name = "${var.project_name}-apigw-cloudwatch-role-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Principal = {
-          Service = "apigateway.amazonaws.com"
-        },
-        Action = "sts:AssumeRole"
-      }
-    ]
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "apigateway.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
   })
 }
 
-# Inline policy giving API Gateway access to CloudWatch Logs
 resource "aws_iam_role_policy" "apigw_cloudwatch_policy" {
   name = "${var.project_name}-apigw-cloudwatch-policy-${var.environment}"
   role = aws_iam_role.apigw_cloudwatch_role.id
 
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams",
-          "logs:PutLogEvents",
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents"
-        ],
-        Resource = "*"
-      }
-    ]
+    Statement = [{
+      Effect = "Allow",
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:PutLogEvents",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      Resource = "*"
+    }]
   })
 }
 
-# API Gateway account — links API Gateway to the above role
 resource "aws_api_gateway_account" "apigw_account_settings" {
   cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch_role.arn
 }
 
-
-
-###########################
+###############################################################
 # 1️⃣ INGESTION LAMBDA ROLE
-###########################
+###############################################################
 resource "aws_iam_role" "lambda_ingestion_role" {
   name = "${var.project_name}-lambda-ingestion-role-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        },
-        Action = "sts:AssumeRole"
-      }
-    ]
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "lambda.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
   })
 
-  tags = {
-    Name = "Lambda Ingestion Role"
-  }
+  tags = { Name = "Lambda Ingestion Role" }
 }
 
 resource "aws_iam_policy" "lambda_ingestion_policy" {
@@ -87,74 +65,55 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      # ✅ CloudWatch Logs
       {
         Effect = "Allow",
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ],
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
         Resource = "arn:aws:logs:*:*:*"
       },
-
-      # ✅ S3 access for uploads, vector store, processed JSON
       {
         Effect = "Allow",
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket"
-        ],
-        Resource = [
-          "${aws_s3_bucket.rag_documents.arn}",
-          "${aws_s3_bucket.rag_documents.arn}/*"
-        ]
+        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+        Resource = [aws_s3_bucket.rag_documents.arn, "${aws_s3_bucket.rag_documents.arn}/*"]
       },
-
-      # ✅ SQS permissions
       {
         Effect = "Allow",
-        Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ],
-        Resource = [
-          aws_sqs_queue.rag_ingestion_queue.arn
-        ]
+        Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+        Resource = [aws_sqs_queue.rag_ingestion_queue.arn]
       },
-
-      # ✅ SNS publish + subscribe
       {
         Effect = "Allow",
-        Action = [
-          "sns:Publish",
-          "sns:Subscribe"
-        ],
+        Action = ["sns:Publish", "sns:Subscribe"],
         Resource = aws_sns_topic.document_upload_topic.arn
       },
-
-      # ✅ Textract fallback
       {
         Effect = "Allow",
-        Action = [
-          "textract:DetectDocumentText",
-          "textract:AnalyzeDocument"
-        ],
+        Action = ["textract:DetectDocumentText", "textract:AnalyzeDocument"],
         Resource = "*"
       },
-
-      # ✅ Bedrock access for embeddings
       {
         Effect = "Allow",
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
-        ],
-        # FIX: use data.aws_region.current instead of var.region
-        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.titan-*"
+        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = ["secretsmanager:GetSecretValue"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = ["sqs:SendMessage"],
+        Resource = "*"
       }
     ]
   })
@@ -165,94 +124,183 @@ resource "aws_iam_role_policy_attachment" "lambda_ingestion_policy_attach" {
   policy_arn = aws_iam_policy.lambda_ingestion_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_basic_execution_attach" {
+resource "aws_iam_role_policy_attachment" "lambda_ingestion_basic_attach" {
   role       = aws_iam_role.lambda_ingestion_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Required for dynamic region substitution
-data "aws_region" "current" {}
-
-
-
-###########################
-# 2️⃣ API LAMBDA ROLE
-###########################
-resource "aws_iam_role" "lambda_api_role" {
-  name = "${var.project_name}-lambda-api-role-${var.environment}"
+###############################################################
+# 2️⃣ AGENT LAMBDA ROLE  (Fix: proper alias-scoped Bedrock access)
+###############################################################
+resource "aws_iam_role" "lambda_agent_role" {
+  name = "${var.project_name}-lambda-agent-role-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        },
-        Action = "sts:AssumeRole"
-      }
-    ]
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Service = "lambda.amazonaws.com" },
+      Action    = "sts:AssumeRole"
+    }]
   })
 
-  tags = {
-    Name = "Lambda API Role"
-  }
+  tags = { Name = "${var.project_name}-lambda-agent-role" }
 }
 
-resource "aws_iam_policy" "lambda_api_policy" {
-  name        = "${var.project_name}-lambda-api-policy-${var.environment}"
-  description = "Allows API Lambda to query Bedrock, list S3 files, and log events."
+resource "aws_iam_policy" "lambda_agent_policy" {
+  name        = "${var.project_name}-lambda-agent-policy-${var.environment}"
+  description = "Policy for Agent Lambda to access Bedrock Agents, S3, and models"
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      # ✅ CloudWatch Logs
+      # Logs
       {
         Effect = "Allow",
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ],
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
         Resource = "arn:aws:logs:*:*:*"
       },
 
-      # ✅ S3 access (list + get processed files)
+      # S3
+      {
+        Effect = "Allow",
+        Action = ["s3:GetObject", "s3:ListBucket", "s3:PutObject", "s3:DeleteObject"],
+        Resource = [aws_s3_bucket.rag_documents.arn, "${aws_s3_bucket.rag_documents.arn}/*"]
+      },
+
+      # Bedrock Agent invocation (runtime + control plane)
       {
         Effect = "Allow",
         Action = [
-          "s3:GetObject",
-          "s3:ListBucket",
-          "s3:DeleteObject",
-          "s3:PutObject"
+          "bedrock-agent-runtime:InvokeAgent",
+          "bedrock:InvokeAgent"
         ],
         Resource = [
-          "${aws_s3_bucket.rag_documents.arn}",
-          "${aws_s3_bucket.rag_documents.arn}/*"
+          "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent-alias/*/*",
+          "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
         ]
       },
 
-      # ✅ Bedrock model access
       {
         Effect = "Allow",
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
-        ],
-        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.titan-*"
+        Action = ["bedrock:ListAgentAliases"],
+        Resource = "*"
+      },
+
+      # Foundation models
+      {
+        Effect = "Allow",
+        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        Resource = "*"
+      },
+      # KMS for encryption
+      {
+        Effect = "Allow",
+        Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
+        Resource = "*"
+      },
+      # Secrets Manager
+      {
+        Effect = "Allow",
+        Action = ["secretsmanager:GetSecretValue"],
+        Resource = "*"
+      },
+      # X-Ray tracing
+      {
+        Effect = "Allow",
+        Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+        Resource = "*"
+      },
+      # DLQ access
+      {
+        Effect = "Allow",
+        Action = ["sqs:SendMessage"],
+        Resource = "*"
+      },
+      # SES email sending
+      {
+        Effect = "Allow",
+        Action = ["ses:SendEmail", "ses:SendRawEmail"],
+        Resource = "*"
       }
     ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_api_policy_attach" {
-  role       = aws_iam_role.lambda_api_role.name
-  policy_arn = aws_iam_policy.lambda_api_policy.arn
+resource "aws_iam_role_policy_attachment" "lambda_agent_policy_attachment" {
+  role       = aws_iam_role.lambda_agent_role.name
+  policy_arn = aws_iam_policy.lambda_agent_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_api_basic_execution_attach" {
-  role       = aws_iam_role.lambda_api_role.name
+resource "aws_iam_role_policy_attachment" "lambda_agent_basic_execution_attach" {
+  role       = aws_iam_role.lambda_agent_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+###############################################################
+# 3️⃣ BEDROCK AGENT ROLE (Fix: dynamic Lambda ARN + permission)
+###############################################################
+resource "aws_iam_role" "bedrock_agent_role" {
+  name = "${var.project_name}-bedrock-agent-role-${var.environment}"
 
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "bedrock.amazonaws.com" }
+    }]
+  })
+
+  tags = { Name = "${var.project_name}-bedrock-agent-role" }
+}
+
+resource "aws_iam_policy" "bedrock_agent_policy" {
+  name        = "${var.project_name}-bedrock-agent-policy-${var.environment}"
+  description = "Policy for Bedrock Agent to invoke Lambda, access S3, and call models"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      # Allow Bedrock Agent to invoke the Action Group Lambda
+      {
+        Effect = "Allow",
+        Action = ["lambda:InvokeFunction"],
+        Resource = [
+          aws_lambda_function.agent_executor.arn,
+          "${aws_lambda_function.agent_executor.arn}:*"
+        ]
+      },
+
+      # S3 access for RAG document bucket
+      {
+        Effect = "Allow",
+        Action = ["s3:GetObject", "s3:ListBucket", "s3:PutObject"],
+        Resource = [aws_s3_bucket.rag_documents.arn, "${aws_s3_bucket.rag_documents.arn}/*"]
+      },
+
+      # Foundation model access
+      {
+        Effect = "Allow",
+        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "bedrock_agent_policy_attach" {
+  role       = aws_iam_role.bedrock_agent_role.name
+  policy_arn = aws_iam_policy.bedrock_agent_policy.arn
+}
+
+###############################################################
+# 4️⃣ Lambda permission: allow Bedrock service to invoke it
+###############################################################
+resource "aws_lambda_permission" "allow_bedrock_invoke" {
+  statement_id  = "AllowBedrockInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.agent_executor.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
+}

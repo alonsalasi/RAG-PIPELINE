@@ -3,3 +3,6 @@ docker build --no-cache --platform linux/amd64 --provenance=false -t pdfquery-in
 
 API Docker Build CMD:
 docker build --no-cache --platform linux/amd64 --provenance=false -t pdfquery-api-lambda-default -f api.Dockerfile .
+
+Agent Docker Build CMD:
+docker build --no-cache --platform linux/amd64 --provenance=false -t pdfquery-agent-lambda-default -f agent.Dockerfile .

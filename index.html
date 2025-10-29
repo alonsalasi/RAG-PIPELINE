@@ -3,82 +3,182 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RAG Document Chatbot</title>
+  <title>AI Document Assistant - Secure</title>
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js"></script>
   <style>
-    :root {
-      --primary-color: #007bff;
-      --secondary-color: #6c757d;
-      --bg-light: #f8f9fa;
-      --bg-white: #ffffff;
-      --border-color: #dee2e6;
-      --text-dark: #343a40;
-      --text-light: #6c757d;
-      --error-color: #dc3545;
-    }
+    /* Same styles as before */
+    :root { --primary-color: #007bff; --secondary-color: #6c757d; --bg-light: #f8f9fa; --bg-white: #ffffff; --border-color: #dee2e6; --text-dark: #343a40; --text-light: #6c757d; --error-color: #dc3545; }
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; margin:0; padding:0; background-color:var(--bg-light); display:flex; height:100vh; color:var(--text-dark); overflow:hidden;}
-    .sidebar { width:300px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; flex-shrink:0;}
+    .sidebar { width:320px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; flex-shrink:0; gap:20px;}
     .container { flex-grow:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light);}
-    .sidebar h3 { margin-top:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+    .sidebar h3 { margin:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+    .upload-section { background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:12px; padding:20px; box-shadow:0 4px 6px rgba(0,0,0,.1);}
+    .upload-section h3 { color:white; border:none; margin-bottom:15px; font-size:1em;}
+    .upload-box { background:rgba(255,255,255,.95); border-radius:8px; padding:15px; border:2px dashed #667eea;}
+    .upload-box input[type="file"] { display:none;}
+    .upload-box label { display:block; padding:12px; background:white; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; text-align:center; font-size:.85em; color:var(--text-light); margin-bottom:10px; transition:all .2s;}
+    .upload-box label:hover { background:var(--bg-light); border-color:var(--primary-color);}
+    .upload-box button { width:100%; padding:10px; background:#667eea; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:.9em;}
+    .upload-box button:hover { background:#5568d3;}
+    #upload-status { font-size:.8em; color:#333; margin-top:10px; text-align:center; font-weight:500;}
     #file-list { list-style:none; padding:0; margin:0; flex-grow:1;}
     #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-break:break-all; display:flex; justify-content:space-between; align-items:center;}
     .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
-    .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10;}
+    .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10; display:flex; justify-content:space-between; align-items:center;}
+    .user-info { font-size:0.8em; display:flex; gap:10px; align-items:center;}
+    .logout-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em;}
+    .logout-btn:hover { background:rgba(255,255,255,0.3);}
     .chat-log { flex-grow:1; padding:20px; overflow-y:auto; background-color:#fdfdfd;}
     .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5;}
     .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
     .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px;}
     .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
     .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
-    .input-area,.file-upload-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5;}
-    .input-area { display:flex; align-items:center; gap:10px;}
+    .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
     #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none;}
     .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em;}
-    .file-upload-area { display:flex; flex-direction:column; gap:10px;}
-    .file-input-group { display:flex; gap:10px; align-items:center;}
-    input[type="file"]{ display:none;}
-    .file-label { flex-grow:1; padding:10px 15px; border:1px solid var(--border-color); border-radius:8px; font-size:.9em; color:var(--text-light); cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-    #upload-status { font-size:.9em; color:var(--text-light); display:flex; align-items:center; gap:8px;}
+    .files-section { flex-grow:1; display:flex; flex-direction:column;}
+    .files-section h3 { margin-bottom:10px;}
     .spinner { width:16px; height:16px; border:2px solid currentColor; border-bottom-color:transparent; border-radius:50%; display:inline-block; animation:spin 1s linear infinite;}
     @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
-    @media (max-width:768px){ body{flex-direction:column; height:auto; overflow:auto;} .sidebar{width:100%; height:300px; border-right:none; border-bottom:1px solid var(--border-color);} .container{height:calc(100vh - 300px);} }
+    #login-screen { display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);}
+    .login-box { background:white; padding:40px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.2); max-width:400px; width:100%;}
+    .login-box h2 { margin-top:0; color:var(--text-dark);}
+    .login-box input { width:100%; padding:12px; margin-bottom:15px; border:1px solid var(--border-color); border-radius:6px; font-size:1em;}
+    .login-box button { width:100%; padding:12px; background:var(--primary-color); color:white; border:none; border-radius:6px; cursor:pointer; font-size:1em; font-weight:600;}
+    .login-box button:hover { background:#0056b3;}
+    .error-msg { color:var(--error-color); font-size:0.9em; margin-top:10px;}
+    #app { display:none;}
   </style>
 </head>
 <body>
 
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-box">
+    <h2>🔐 Secure Login</h2>
+    <input type="email" id="login-email" placeholder="Email" />
+    <input type="password" id="login-password" placeholder="Password" />
+    <button id="login-btn">Sign In</button>
+    <div id="login-error" class="error-msg"></div>
+  </div>
+</div>
+
+<!-- Main App (hidden until authenticated) -->
+<div id="app">
 <div class="sidebar">
-  <h3>
-    📚 Uploaded Documents
-    <button id="refresh-btn" class="btn" style="background:#6c757d;">🔄</button>
-  </h3>
-  <ul id="file-list"></ul>
-  <div id="file-list-status"></div>
+  <div class="upload-section">
+    <h3>📤 Upload Document</h3>
+    <div class="upload-box">
+      <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple>
+      <label for="file-input" id="file-label">Click to select files...</label>
+      <button type="button" id="upload-button">Upload</button>
+      <div id="upload-status"></div>
+    </div>
+  </div>
+  
+  <div class="files-section">
+    <h3>
+      📚 Documents
+      <button id="refresh-btn" class="btn" style="background:#6c757d; padding:6px 12px; font-size:.85em;">🔄</button>
+    </h3>
+    <ul id="file-list"></ul>
+    <div id="file-list-status"></div>
+  </div>
 </div>
 
 <div class="container">
-  <div class="header">RAG Chatbot</div>
-
-  <div class="chat-log" id="chat-log">
-    <div class="message assistant-message">Hello! I can answer questions from your documents. See the list of available documents on the left or upload a new one below.</div>
-  </div>
-
-  <div class="file-upload-area">
-    <div class="file-input-group">
-      <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff">
-      <label for="file-input" class="file-label" id="file-label">Click to select a file...</label>
-      <button type="button" id="upload-button" class="btn">Upload</button>
+  <div class="header">
+    <span>AI Document Assistant</span>
+    <div class="user-info">
+      <span id="user-email"></span>
+      <button id="logout-btn" class="logout-btn">Logout</button>
     </div>
-    <div id="upload-status"></div>
   </div>
+
+  <div class="chat-log" id="chat-log"></div>
 
   <div class="input-area">
-    <input type="text" id="user-input" placeholder="Type your question here...">
+    <button id="clear-chat" class="btn" style="background:#6c757d;">Clear</button>
+    <input type="text" id="user-input" placeholder="Ask me anything about your documents...">
     <button id="send-button" class="btn">Send</button>
   </div>
 </div>
+</div>
 
 <script>
-  const API_GATEWAY_URL = 'https://1xeczo4tz9.execute-api.us-west-2.amazonaws.com/default';
+  // REPLACE THESE WITH YOUR TERRAFORM OUTPUTS
+  const COGNITO_USER_POOL_ID = 'YOUR_USER_POOL_ID';
+  const COGNITO_CLIENT_ID = 'YOUR_CLIENT_ID';
+  const COGNITO_REGION = 'us-west-2';
+  const API_GATEWAY_URL = 'YOUR_API_GATEWAY_URL';
 
+  const poolData = {
+    UserPoolId: COGNITO_USER_POOL_ID,
+    ClientId: COGNITO_CLIENT_ID
+  };
+  const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+  let cognitoUser = null;
+  let idToken = null;
+
+  // Authentication
+  document.getElementById('login-btn').addEventListener('click', () => {
+    const email = document.getElementById('login-email').value;
+    const password = document.getElementById('login-password').value;
+    
+    const authenticationData = {
+      Username: email,
+      Password: password,
+    };
+    const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
+    
+    const userData = {
+      Username: email,
+      Pool: userPool
+    };
+    cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+    
+    cognitoUser.authenticateUser(authenticationDetails, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        document.getElementById('user-email').textContent = email;
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        fetchUploadedFiles();
+        clearChat();
+      },
+      onFailure: (err) => {
+        document.getElementById('login-error').textContent = err.message || 'Login failed';
+      }
+    });
+  });
+
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    if (cognitoUser) {
+      cognitoUser.signOut();
+    }
+    location.reload();
+  });
+
+  // Check if already logged in
+  cognitoUser = userPool.getCurrentUser();
+  if (cognitoUser) {
+    cognitoUser.getSession((err, session) => {
+      if (!err && session.isValid()) {
+        idToken = session.getIdToken().getJwtToken();
+        cognitoUser.getUserAttributes((err, attributes) => {
+          const email = attributes.find(attr => attr.Name === 'email')?.Value || 'User';
+          document.getElementById('user-email').textContent = email;
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('app').style.display = 'flex';
+          fetchUploadedFiles();
+          clearChat();
+        });
+      }
+    });
+  }
+
+  // Rest of your existing JavaScript code with Authorization header added
   const CHAT_LOG = document.getElementById('chat-log');
   const UPLOAD_STATUS = document.getElementById('upload-status');
   const USER_INPUT = document.getElementById('user-input');
@@ -89,12 +189,44 @@
   const FILE_INPUT = document.getElementById('file-input');
   const FILE_LABEL = document.getElementById('file-label');
   const REFRESH_BTN = document.getElementById('refresh-btn');
+  const CLEAR_CHAT = document.getElementById('clear-chat');
+  
+  let sessionId = generateSessionId();
+  
+  function generateSessionId() {
+    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  }
 
-  function appendMessage(role, content, sources=null, isError=false){
+  function getAuthHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`
+    };
+  }
+
+  function appendMessage(role, content, sources=null, isError=false, images=null){
     const div=document.createElement('div');
     div.classList.add('message', `${role}-message`);
     if(isError) div.classList.add('error');
     div.innerHTML = content.replace(/\n/g,'<br>');
+    
+    // Display images if present
+    if(images && images.length){
+      const imgContainer = document.createElement('div');
+      imgContainer.style.marginTop = '10px';
+      images.forEach(imgUrl => {
+        const img = document.createElement('img');
+        img.src = imgUrl;
+        img.style.maxWidth = '100%';
+        img.style.borderRadius = '8px';
+        img.style.marginTop = '5px';
+        img.style.cursor = 'pointer';
+        img.onclick = () => window.open(imgUrl, '_blank');
+        imgContainer.appendChild(img);
+      });
+      div.appendChild(imgContainer);
+    }
+    
     if(sources && sources.length){
       const c=document.createElement('div'); c.className='citation';
       const unique = Array.from(new Set(sources.map(s => String(s).split('/').pop())));
@@ -107,113 +239,18 @@
 
   function showLoading(el, text){ el.innerHTML = `<span class="spinner"></span> <span>${text}</span>`; }
 
-  function renderFileList(filenames){
-    FILE_LIST_UL.innerHTML = '';
-    if(filenames && filenames.length){
-      filenames.sort().forEach(fullName=>{
-        const clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_') : fullName;
-        const li = document.createElement('li');
-        li.textContent = clean;
-        const btn = document.createElement('button');
-        btn.className = 'delete-btn';
-        btn.textContent = '🗑️';
-        btn.onclick = () => deleteFile(clean);
-        li.appendChild(btn);
-        FILE_LIST_UL.appendChild(li);
-      });
-      FILE_LIST_STATUS.textContent = `${filenames.length} document(s) available.`;
-    } else {
-      FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
-    }
-  }
-
   async function fetchUploadedFiles(){
     showLoading(FILE_LIST_STATUS,'Loading files...');
     try{
-      const res = await fetch(`${API_GATEWAY_URL}/list-files`);
+      const res = await fetch(`${API_GATEWAY_URL}/list-files`, {
+        headers: getAuthHeaders()
+      });
       const data = await res.json();
       renderFileList(data.filenames || []);
     }catch(e){
       console.error(e);
       FILE_LIST_STATUS.textContent='Error loading files.';
       renderFileList([]);
-    }
-  }
-
-  async function deleteFile(displayName){
-    if(!confirm(`Delete ${displayName}?`)) return;
-    try{
-      const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(displayName)}`, { method:'DELETE' });
-      const data = await res.json();
-      if(res.ok){
-        UPLOAD_STATUS.textContent = `${displayName} deleted.`;
-        fetchUploadedFiles();
-      }else{
-        UPLOAD_STATUS.textContent = `Error: ${data.error || 'Delete failed'}`;
-      }
-    }catch(e){
-      console.error(e);
-      UPLOAD_STATUS.textContent = 'Error deleting file.';
-    }
-  }
-
-  async function requestPresignedUrlAndUploadFile(){
-    const file = FILE_INPUT.files[0];
-    if(!file){ UPLOAD_STATUS.textContent='Please select a file first.'; return; }
-
-    showLoading(UPLOAD_STATUS, `1/2: Requesting upload link for ${file.name}...`);
-    try{
-      const fileNameEncoded = encodeURIComponent(file.name);
-      const fileTypeEncoded = encodeURIComponent(file.type || 'application/octet-stream');
-
-      const urlRes = await fetch(`${API_GATEWAY_URL}/get-upload-url?fileName=${fileNameEncoded}&fileType=${fileTypeEncoded}`);
-      const urlData = await urlRes.json();
-      if(!urlRes.ok || !urlData.signedUrl) throw new Error(urlData.error || 'Could not get upload URL');
-
-      showLoading(UPLOAD_STATUS, `2/2: Uploading file...`);
-      const putRes = await fetch(urlData.signedUrl, {
-        method:'PUT',
-        body:file,
-        headers:{'Content-Type':file.type || 'application/octet-stream'}
-      });
-      if(!putRes.ok) throw new Error(`Upload failed ${putRes.status}`);
-
-      UPLOAD_STATUS.textContent = `✅ ${file.name} uploaded. Processing...`;
-      appendMessage('assistant', `Document <b>${file.name}</b> uploaded successfully. Processing now...`);
-
-      const start = Date.now();
-      const timeoutMs = 120000;
-      const poll = setInterval(async ()=>{
-        try{
-          const res = await fetch(`${API_GATEWAY_URL}/list-files`);
-          const data = await res.json();
-          const files = data.filenames || [];
-          // ✅ FIX: match both filename.json and filename.pdf.json
-          const found = files.some(f =>
-            f === file.name ||
-            f === `${file.name}.json` ||
-            f.endsWith(`${file.name}.json`) ||
-            f.endsWith(`${file.name.replace(/\.[^.]+$/, '')}.json`)
-          );
-          if(found){
-            clearInterval(poll);
-            UPLOAD_STATUS.textContent = `✅ ${file.name} processed successfully!`;
-            fetchUploadedFiles();
-          }else if(Date.now() - start > timeoutMs){
-            clearInterval(poll);
-            UPLOAD_STATUS.textContent = `⚠️ Timed out waiting for ${file.name} to process.`;
-          }
-        }catch(e){
-          console.error('Polling error:', e);
-        }
-      }, 5000);
-
-    }catch(e){
-      console.error(e);
-      UPLOAD_STATUS.textContent = `Upload failed: ${e.message}`;
-    }finally{
-      FILE_INPUT.value='';
-      FILE_LABEL.textContent='Click to select a file...';
     }
   }
 
@@ -224,30 +261,53 @@
     USER_INPUT.value='';
     const loading = document.createElement('div');
     loading.className='message assistant-message';
-    showLoading(loading,'Thinking...');
+    showLoading(loading, 'Agent thinking...');
     CHAT_LOG.appendChild(loading);
+    
     try{
-      const res = await fetch(`${API_GATEWAY_URL}/query`, {
+      const res = await fetch(`${API_GATEWAY_URL}/agent-query`, {
         method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({query})
+        headers: getAuthHeaders(),
+        body: JSON.stringify({query, sessionId})
       });
       const data = await res.json();
       CHAT_LOG.removeChild(loading);
-      if(res.ok) appendMessage('assistant', data.response, data.source_documents);
-      else appendMessage('assistant', `Error: ${data.error || 'API request failed.'}`, null, true);
+      if(res.ok) {
+        appendMessage('assistant', data.response, data.source_documents || data.sources, false, data.images);
+      } else {
+        appendMessage('assistant', `Error: ${data.error || 'API request failed.'}`, null, true);
+      }
     }catch(e){
       CHAT_LOG.removeChild(loading);
       appendMessage('assistant', 'Critical Error: Could not connect to the API.', null, true);
     }
   }
+  
+  function clearChat() {
+    CHAT_LOG.innerHTML = '';
+    sessionId = generateSessionId();
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
+  }
+
+  function renderFileList(filenames){
+    FILE_LIST_UL.innerHTML = '';
+    if(filenames && filenames.length){
+      filenames.sort().forEach(fullName=>{
+        const clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_') : fullName;
+        const li = document.createElement('li');
+        li.textContent = clean;
+        FILE_LIST_UL.appendChild(li);
+      });
+      FILE_LIST_STATUS.textContent = `${filenames.length} document(s) available.`;
+    } else {
+      FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
+    }
+  }
 
   SEND_BUTTON.addEventListener('click', handleQuerySubmission);
   USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
-  UPLOAD_BUTTON.addEventListener('click', requestPresignedUrlAndUploadFile);
-  FILE_INPUT.addEventListener('change', () => { FILE_LABEL.textContent = FILE_INPUT.files[0]?.name || 'Click to select a file...'; });
   REFRESH_BTN.addEventListener('click', fetchUploadedFiles);
-  document.addEventListener('DOMContentLoaded', fetchUploadedFiles);
+  CLEAR_CHAT.addEventListener('click', clearChat);
 </script>
 </body>
 </html>

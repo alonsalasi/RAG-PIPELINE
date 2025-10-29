@@ -13,7 +13,8 @@ def lambda_handler(event, context):
     Lambda entrypoint for document ingestion.
     Triggered by SQS (which receives S3 ObjectCreated events).
     """
-    logger.info("🚀 Ingestion Lambda triggered.")
+    logger.info("🚀 INGESTION Lambda triggered (not API Lambda).")
+    logger.info(f"Event type: {type(event)}, Records count: {len(event.get('Records', []))}")
     logger.debug(f"DEBUG raw event: {json.dumps(event)[:1000]}")
 
     # FIX: Use this list to track failed messages
@@ -35,7 +36,7 @@ def lambda_handler(event, context):
             # FIX: Add the failed messageId to the list for SQS
             batch_item_failures.append({"itemIdentifier": msg_id})
 
-    logger.info(f"🎉 Batch processing complete. {len(batch_item_failures)} failures.")
+    logger.info(f"🎉 INGESTION batch processing complete. {len(batch_item_failures)} failures.")
     
     # FIX: Return the SQS partial batch response
     return {"batchItemFailures": batch_item_failures}
