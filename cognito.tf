@@ -3,14 +3,18 @@ resource "aws_cognito_user_pool" "agent_users" {
   name = "${var.project_name}-user-pool"
 
   password_policy {
-    minimum_length    = 12
+    minimum_length    = 8
     require_lowercase = true
     require_uppercase = true
     require_numbers   = true
     require_symbols   = true
   }
 
-  mfa_configuration = var.enable_mfa_enforcement ? "ON" : "OPTIONAL"
+  mfa_configuration = "OPTIONAL"
+
+  software_token_mfa_configuration {
+    enabled = true
+  }
 
   account_recovery_setting {
     recovery_mechanism {
@@ -41,8 +45,19 @@ resource "aws_cognito_user_pool" "agent_users" {
     mutable             = false
   }
 
+  schema {
+    name                = "phone_number"
+    attribute_data_type = "String"
+    required            = false
+    mutable             = true
+  }
+
   tags = {
     Name = "${var.project_name}-user-pool"
+  }
+
+  lifecycle {
+    ignore_changes = [schema]
   }
 }
 
@@ -59,12 +74,48 @@ resource "aws_cognito_user_pool_client" "agent_client" {
   supported_identity_providers         = ["COGNITO"]
 
   explicit_auth_flows = [
-    "ALLOW_USER_SRP_AUTH",
-    "ALLOW_REFRESH_TOKEN_AUTH"
+    "ALLOW_USER_SRP_AUTH"
   ]
+  
+  id_token_validity     = 60
+  access_token_validity = 60
+  refresh_token_validity = 60
+  
+  token_validity_units {
+    id_token      = "minutes"
+    access_token  = "minutes"
+    refresh_token = "minutes"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_cognito_user_pool_domain" "agent_domain" {
   domain       = "${var.project_name}-auth-${data.aws_caller_identity.current.account_id}"
   user_pool_id = aws_cognito_user_pool.agent_users.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Cognito Admin User Creation
+
+resource "aws_cognito_user" "admin" {
+  count         = var.admin_email != "" ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.agent_users.id
+  username      = var.admin_email
+  
+  attributes = {
+    email          = var.admin_email
+    email_verified = true
+  }
+
+  password = var.admin_password != "" ? var.admin_password : null
+
+  lifecycle {
+    ignore_changes = [password]
+  }
 }

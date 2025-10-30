@@ -1,32 +1,14 @@
-resource "aws_s3_bucket" "terraform_state" {
-  bucket = "${var.project_name}-tf-state-${var.aws_region}"
-
+# Frontend bucket (no KMS for CloudFront compatibility)
+resource "aws_s3_bucket" "frontend" {
+  bucket = "${var.project_name}-frontend-${var.environment}"
+  
   tags = {
-    Name = "${var.project_name}-tf-state"
+    Name = "${var.project_name}-frontend"
   }
 }
 
-resource "aws_s3_bucket_versioning" "terraform_state_versioning" {
-  bucket = aws_s3_bucket.terraform_state.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state_encryption" {
-  bucket = aws_s3_bucket.terraform_state.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.agent_encryption.arn
-    }
-    bucket_key_enabled = true
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "terraform_state_block" {
-  bucket                  = aws_s3_bucket.terraform_state.id
+resource "aws_s3_bucket_public_access_block" "frontend_block" {
+  bucket                  = aws_s3_bucket.frontend.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -70,6 +52,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
     id     = "archive-old-versions"
     status = "Enabled"
 
+    filter {}
+
     noncurrent_version_transition {
       noncurrent_days = 30
       storage_class   = "STANDARD_IA"
@@ -88,6 +72,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
   rule {
     id     = "delete-incomplete-uploads"
     status = "Enabled"
+
+    filter {}
 
     abort_incomplete_multipart_upload {
       days_after_initiation = 7
@@ -115,9 +101,32 @@ resource "aws_s3_bucket_cors_configuration" "rag_documents_cors" {
 
   cors_rule {
     allowed_methods = ["PUT", "POST", "GET", "HEAD"]
-    allowed_origins = ["https://d2h33zz3k8plgu.cloudfront.net"] 
+    allowed_origins = ["*"]
     allowed_headers = ["*"] 
     expose_headers = ["ETag", "Content-Length"]
     max_age_seconds = 3000
+  }
+}
+
+# S3 Event Notification to trigger ingestion Lambda
+resource "aws_s3_bucket_notification" "rag_documents_notification" {
+  bucket = aws_s3_bucket.rag_documents.id
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".pdf"
+  }
+
+  depends_on = [
+    aws_lambda_permission.allow_s3_invoke,
+    aws_lambda_function.ingestion_worker
+  ]
+
+  lifecycle {
+    replace_triggered_by = [
+      aws_lambda_function.ingestion_worker
+    ]
   }
 }

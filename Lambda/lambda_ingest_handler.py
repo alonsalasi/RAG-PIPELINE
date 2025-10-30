@@ -3,9 +3,12 @@ import traceback
 import logging
 from worker import process_message
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
@@ -14,8 +17,10 @@ def lambda_handler(event, context):
     Triggered by SQS (which receives S3 ObjectCreated events).
     """
     logger.info("🚀 INGESTION Lambda triggered (not API Lambda).")
-    logger.info(f"Event type: {type(event)}, Records count: {len(event.get('Records', []))}")
-    logger.debug(f"DEBUG raw event: {json.dumps(event)[:1000]}")
+    records_count = len(event.get('Records', []))
+    logger.info(f"Event type: {type(event).__name__}, Records count: {records_count}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"DEBUG raw event: {json.dumps(event)[:1000]}")
 
     # FIX: Use this list to track failed messages
     batch_item_failures = []
@@ -30,10 +35,10 @@ def lambda_handler(event, context):
             process_message(record)
             
         except Exception as inner_e:
-            # The error is already logged in worker.py
-            logger.error(f"⚠️ Failed processing record {msg_id}. Adding to batch failures.")
+            # Log error type without exposing sensitive details
+            logger.error(f"⚠️ Failed processing record {msg_id}: {type(inner_e).__name__}. Adding to batch failures.")
             
-            # FIX: Add the failed messageId to the list for SQS
+            # Add the failed messageId to the list for SQS
             batch_item_failures.append({"itemIdentifier": msg_id})
 
     logger.info(f"🎉 INGESTION batch processing complete. {len(batch_item_failures)} failures.")

@@ -1,5 +1,4 @@
 terraform {
-  # ===== LEIDOS ACCOUNT (us-east-1)
   backend "s3" {
     bucket  = "pdfquery-tf-state-us-east-1"
     key     = "leidos/infrastructure.tfstate"
@@ -7,15 +6,6 @@ terraform {
     profile = "leidos"
     encrypt = true
   }
-
-  # ===== DEFAULT ACCOUNT (us-west-2)
-  # backend "s3" {
-  #   bucket  = "pdfquery-tf-state-us-west-2"
-  #   key     = "default/infrastructure.tfstate"
-  #   region  = "us-west-2"
-  #   profile = "default"
-  #   encrypt = true
-  # }
 
   required_providers {
     aws = {

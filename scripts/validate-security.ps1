@@ -32,7 +32,8 @@ function Test-SecurityControl {
         }
     } catch {
         Write-Host " ✗ ERROR" -ForegroundColor Red
-        Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
+        $errorType = $_.Exception.GetType().Name
+        Write-Host "  Error type: $errorType" -ForegroundColor Yellow
         $script:errors++
         return $false
     }
@@ -45,7 +46,11 @@ Write-Host "-------------------" -ForegroundColor Yellow
 Test-SecurityControl `
     -Name "S3 Bucket Encryption" `
     -Test {
-        $encryption = aws s3api get-bucket-encryption --bucket "$project_name-rag-documents-production" 2>$null
+        $bucketName = "$project_name-rag-documents-production"
+        if (-not $bucketName -or $bucketName.Length -eq 0) {
+            throw "Invalid bucket name"
+        }
+        $encryption = aws s3api get-bucket-encryption --bucket $bucketName 2>$null
         return $encryption -match "aws:kms"
     } `
     -SuccessMessage "S3 bucket is encrypted with KMS" `
@@ -55,7 +60,11 @@ Test-SecurityControl `
 Test-SecurityControl `
     -Name "S3 Public Access Block" `
     -Test {
-        $block = aws s3api get-public-access-block --bucket "$project_name-rag-documents-production" 2>$null | ConvertFrom-Json
+        $bucketName = "$project_name-rag-documents-production"
+        if (-not $bucketName -or $bucketName.Length -eq 0) {
+            throw "Invalid bucket name"
+        }
+        $block = aws s3api get-public-access-block --bucket $bucketName 2>$null | ConvertFrom-Json
         return $block.PublicAccessBlockConfiguration.BlockPublicAcls -eq $true
     } `
     -SuccessMessage "S3 bucket blocks public access" `
@@ -65,7 +74,11 @@ Test-SecurityControl `
 Test-SecurityControl `
     -Name "S3 Versioning" `
     -Test {
-        $versioning = aws s3api get-bucket-versioning --bucket "$project_name-rag-documents-production" 2>$null
+        $bucketName = "$project_name-rag-documents-production"
+        if (-not $bucketName -or $bucketName.Length -eq 0) {
+            throw "Invalid bucket name"
+        }
+        $versioning = aws s3api get-bucket-versioning --bucket $bucketName 2>$null
         return $versioning -match "Enabled"
     } `
     -SuccessMessage "S3 versioning is enabled" `
@@ -131,6 +144,24 @@ Test-SecurityControl `
     } `
     -SuccessMessage "X-Ray tracing is enabled" `
     -FailureMessage "X-Ray tracing is not enabled"
+
+Test-SecurityControl `
+    -Name "Lambda Timeout Configuration" `
+    -Test {
+        $lambda = aws lambda get-function-configuration --function-name "$project_name-ingestion-worker" --region $region 2>$null | ConvertFrom-Json
+        return $lambda.Timeout -le 900
+    } `
+    -SuccessMessage "Lambda timeout properly configured" `
+    -FailureMessage "Lambda timeout exceeds recommended limit"
+
+Test-SecurityControl `
+    -Name "API Gateway Throttling" `
+    -Test {
+        $stage = aws apigatewayv2 get-stage --api-id (aws apigatewayv2 get-apis --query "Items[?Name=='$project_name-api-gw'].ApiId" --output text) --stage-name production --region $region 2>$null | ConvertFrom-Json
+        return $stage.DefaultRouteSettings.ThrottlingBurstLimit -gt 0
+    } `
+    -SuccessMessage "API Gateway throttling configured" `
+    -FailureMessage "API Gateway throttling not configured"
 
 Test-SecurityControl `
     -Name "Lambda Dead Letter Queue" `

@@ -129,6 +129,11 @@ resource "aws_iam_role_policy_attachment" "lambda_ingestion_basic_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_ingestion_vpc_attach" {
+  role       = aws_iam_role.lambda_ingestion_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 ###############################################################
 # 2️⃣ AGENT LAMBDA ROLE  (Fix: proper alias-scoped Bedrock access)
 ###############################################################
@@ -157,7 +162,7 @@ resource "aws_iam_policy" "lambda_agent_policy" {
       # Logs
       {
         Effect = "Allow",
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:FilterLogEvents"],
         Resource = "arn:aws:logs:*:*:*"
       },
 
@@ -173,12 +178,11 @@ resource "aws_iam_policy" "lambda_agent_policy" {
         Effect = "Allow",
         Action = [
           "bedrock-agent-runtime:InvokeAgent",
+          "bedrock-agent-runtime:Retrieve",
+          "bedrock-agent-runtime:RetrieveAndGenerate",
           "bedrock:InvokeAgent"
         ],
-        Resource = [
-          "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent-alias/*/*",
-          "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
-        ]
+        Resource = "*"
       },
 
       {
@@ -237,6 +241,11 @@ resource "aws_iam_role_policy_attachment" "lambda_agent_basic_execution_attach" 
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_agent_vpc_attach" {
+  role       = aws_iam_role.lambda_agent_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 ###############################################################
 # 3️⃣ BEDROCK AGENT ROLE (Fix: dynamic Lambda ARN + permission)
 ###############################################################
@@ -282,7 +291,33 @@ resource "aws_iam_policy" "bedrock_agent_policy" {
       # Foundation model access
       {
         Effect = "Allow",
-        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:GetFoundationModel",
+          "bedrock:ListFoundationModels",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles"
+        ],
+        Resource = "*"
+      },
+      
+      # Guardrail access
+      {
+        Effect = "Allow",
+        Action = [
+          "bedrock:ApplyGuardrail",
+          "bedrock:GetGuardrail"
+        ],
+        Resource = "*"
+      },
+      
+      # AWS Marketplace access for model subscriptions
+      {
+        Effect = "Allow",
+        Action = [
+          "aws-marketplace:ViewSubscriptions"
+        ],
         Resource = "*"
       }
     ]
@@ -303,4 +338,54 @@ resource "aws_lambda_permission" "allow_bedrock_invoke" {
   function_name = aws_lambda_function.agent_executor.function_name
   principal     = "bedrock.amazonaws.com"
   source_arn    = "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
+}
+
+#########################
+# 4️⃣ Cognito Permissions
+#########################
+
+resource "aws_iam_role" "cognito_sms_role" {
+  name = "${var.project_name}-cognito-sms-role-${var.environment}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "cognito-idp.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+      Condition = {
+        StringEquals = {
+          "sts:ExternalId" = "${var.project_name}-cognito-sms"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Name = "${var.project_name}-cognito-sms-role"
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy" "cognito_sms_policy" {
+  name = "${var.project_name}-cognito-sms-policy-${var.environment}"
+  role = aws_iam_role.cognito_sms_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sns:Publish"
+      ]
+      Resource = "arn:aws:sns:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      Condition = {
+        StringEquals = {
+          "sns:Protocol" = "sms"
+        }
+      }
+    }]
+  })
 }

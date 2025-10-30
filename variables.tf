@@ -119,6 +119,18 @@ variable "backup_region" {
   default     = "us-east-1"
 }
 
+variable "alert_email" {
+  description = "Email address for security alerts"
+  type        = string
+  default     = ""
+}
+
+variable "ses_sender_email" {
+  description = "Verified sender email address for SES"
+  type        = string
+  default     = ""
+}
+
 variable "admin_email" {
   description = "Admin user email address"
   type        = string
@@ -129,17 +141,5 @@ variable "admin_password" {
   description = "Admin user password (min 12 chars)"
   type        = string
   sensitive   = true
-  default     = ""
-}
-
-variable "alert_email" {
-  description = "Email address for security alerts"
-  type        = string
-  default     = ""
-}
-
-variable "ses_sender_email" {
-  description = "Verified sender email address for SES"
-  type        = string
   default     = ""
 }

@@ -11,18 +11,21 @@ resource "aws_cloudtrail" "agent_audit" {
     include_management_events = true
 
     data_resource {
-      type   = "AWS::Lambda::Function"
-      values = ["arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function/${var.project_name}-*"]
-    }
-
-    data_resource {
       type   = "AWS::S3::Object"
       values = ["${aws_s3_bucket.rag_documents.arn}/*"]
     }
   }
 
+  depends_on = [
+    aws_s3_bucket_policy.audit_logs_policy
+  ]
+
   tags = {
     Name = "${var.project_name}-audit-trail"
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -48,6 +51,11 @@ resource "aws_s3_bucket_policy" "audit_logs_policy" {
         }
         Action   = "s3:GetBucketAcl"
         Resource = aws_s3_bucket.audit_logs.arn
+        Condition = {
+          StringEquals = {
+            "AWS:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
       },
       {
         Sid    = "AWSCloudTrailWrite"
@@ -59,10 +67,15 @@ resource "aws_s3_bucket_policy" "audit_logs_policy" {
         Resource = "${aws_s3_bucket.audit_logs.arn}/*"
         Condition = {
           StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
+            "s3:x-amz-acl" = "bucket-owner-full-control",
+            "AWS:SourceAccount" = data.aws_caller_identity.current.account_id
           }
         }
       }
     ]
   })
+
+  depends_on = [
+    aws_s3_bucket.audit_logs
+  ]
 }

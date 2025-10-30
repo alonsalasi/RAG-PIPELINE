@@ -5,7 +5,14 @@ resource "aws_security_group" "lambda_sg" {
   description = "Security group for Lambda functions - HTTPS egress only"
   vpc_id      = aws_vpc.main[0].id
 
-  # No ingress - Lambda doesn't need inbound connections
+  # Ingress - Allow traffic from itself for VPC endpoints
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    self        = true
+    description = "Allow HTTPS from Lambda to VPC endpoints"
+  }
 
   # Egress - HTTPS only to AWS services
   egress {

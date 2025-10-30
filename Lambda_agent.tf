@@ -9,21 +9,13 @@ resource "null_resource" "build_and_push_agent_image" {
     requirements_hash = filemd5("${path.module}/Lambda/agent_requirements.txt")
     source_code_hash  = filemd5("${path.module}/Lambda/agent_executor.py")
     repo_url          = aws_ecr_repository.agent_lambda_repo.repository_url
-    rebuild_trigger   = "2024-01-15-019"
+    rebuild_trigger   = "2024-01-15-021"
   }
 
-  # --- START WINDOWS FIX ---
   provisioner "local-exec" {
-    # Use PowerShell, which is standard on modern Windows
     interpreter = ["powershell", "-Command"]
-    
-    # This is a single-line PowerShell command.
-    # 1. Logs into ECR
-    # 2. Builds the image with TWO tags: ":latest" and our unique ":<hash>"
-    # 3. Pushes BOTH tags to ECR
-    command = "aws ecr get-login-password --region ${data.aws_region.current.name} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com; docker build --platform linux/amd64 --provenance=false -t ${aws_ecr_repository.agent_lambda_repo.repository_url}:latest -f Lambda/agent.Dockerfile ./Lambda; docker push ${aws_ecr_repository.agent_lambda_repo.repository_url}:latest"
+    command = "cd Lambda; .\\agent_no_cache_build_push.bat; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
   }
-  # --- END WINDOWS FIX ---
 
   depends_on = [aws_ecr_repository.agent_lambda_repo]
 }
@@ -35,8 +27,8 @@ resource "aws_lambda_function" "agent_executor" {
   function_name = "${var.project_name}-agent-executor"
   role          = aws_iam_role.lambda_agent_role.arn
   package_type  = "Image"
-  timeout       = 300
-  memory_size   = 1024
+  timeout       = 60
+  memory_size   = 3008
 
   image_uri = "${aws_ecr_repository.agent_lambda_repo.repository_url}:latest"
   kms_key_arn = aws_kms_key.agent_encryption.arn
@@ -54,7 +46,6 @@ resource "aws_lambda_function" "agent_executor" {
     variables = {
       S3_BUCKET                = aws_s3_bucket.rag_documents.bucket
       VECTOR_STORE_PATH        = "vector_store/default"
-      AWS_REGION               = data.aws_region.current.name
       SECRETS_ARN              = aws_secretsmanager_secret.bedrock_config.arn
       BEDROCK_AGENT_ID         = aws_bedrockagent_agent.rag_agent.agent_id
       BEDROCK_AGENT_ALIAS_NAME = "production"
@@ -72,8 +63,7 @@ resource "aws_lambda_function" "agent_executor" {
 
   depends_on = [
     null_resource.build_and_push_agent_image,
-    aws_iam_role.lambda_agent_role,
-    aws_cloudwatch_log_group.lambda_agent_logs
+    aws_iam_role.lambda_agent_role
   ]
 
   tags = {

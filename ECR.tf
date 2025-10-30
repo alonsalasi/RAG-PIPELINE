@@ -6,8 +6,12 @@ resource "aws_ecr_repository" "ingestion_lambda_repo" {
   }
 
   tags = {
-    Name        = "RAG Ingestion Lambda Repository"
+    Name        = "${var.project_name}-ingestion-lambda-repository"
     Environment = var.environment
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -21,7 +25,11 @@ resource "aws_ecr_repository" "agent_lambda_repo" {
   }
 
   tags = {
-    Name        = "RAG Agent Lambda Repository"
+    Name        = "${var.project_name}-agent-lambda-repository"
     Environment = var.environment
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }

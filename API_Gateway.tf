@@ -42,14 +42,6 @@ resource "aws_apigatewayv2_route" "rag_api_route_list_files" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
-resource "aws_apigatewayv2_route" "rag_api_catchall" {
-  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
-  route_key          = "ANY /{proxy+}"
-  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
-  authorization_type = "JWT"
-  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
-}
-
 resource "aws_apigatewayv2_route" "rag_api_route_get_upload_url" {
   api_id             = aws_apigatewayv2_api.rag_api_gateway.id
   route_key          = "GET /get-upload-url"
@@ -82,16 +74,71 @@ resource "aws_apigatewayv2_route" "rag_api_route_get_image" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
+resource "aws_apigatewayv2_route" "rag_api_route_upload" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /upload"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_delete_file" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "DELETE /delete-file"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_cancel_upload" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "DELETE /cancel-upload"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_processing_status" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /processing-status"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id = aws_apigatewayv2_api.rag_api_gateway.id
   
-  # Updated dependencies for agent-only mode
+  triggers = {
+    redeployment = sha1(join(",", [
+      jsonencode(aws_apigatewayv2_route.rag_api_route_list_files),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_get_upload_url),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_agent_query),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_agent_analyze),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_get_image),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_upload),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_delete_file),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_cancel_upload),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_processing_status),
+    ]))
+  }
+  
   depends_on = [
     aws_apigatewayv2_route.rag_api_route_list_files,
     aws_apigatewayv2_route.rag_api_route_get_upload_url,
     aws_apigatewayv2_route.rag_api_route_agent_query,
     aws_apigatewayv2_route.rag_api_route_agent_analyze,
+    aws_apigatewayv2_route.rag_api_route_get_image,
+    aws_apigatewayv2_route.rag_api_route_upload,
+    aws_apigatewayv2_route.rag_api_route_delete_file,
+    aws_apigatewayv2_route.rag_api_route_cancel_upload,
+    aws_apigatewayv2_route.rag_api_route_processing_status,
+    aws_apigatewayv2_integration.rag_api_integration
   ]
+  
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_cloudwatch_log_group" "api_access_logs" {
@@ -105,9 +152,10 @@ resource "aws_cloudwatch_log_group" "api_access_logs" {
 }
 
 resource "aws_apigatewayv2_stage" "rag_api_stage" {
-  api_id      = aws_apigatewayv2_api.rag_api_gateway.id
-  name        = var.environment
-  auto_deploy = true
+  api_id        = aws_apigatewayv2_api.rag_api_gateway.id
+  name          = var.environment
+  deployment_id = aws_apigatewayv2_deployment.rag_api_deployment.id
+  auto_deploy   = false
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access_logs.arn
@@ -115,7 +163,7 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
       requestId             = "$context.requestId"
       requestTime           = "$context.requestTime"
       httpMethod            = "$context.httpMethod"
-      path                  = "$context.routeKey" # This will now show the specific route
+      path                  = "$context.routeKey"
       status                = "$context.status"
       integrationLatency    = "$context.integrationLatency"
       integrationStatus     = "$context.integrationStatus"
@@ -129,9 +177,14 @@ resource "aws_apigatewayv2_stage" "rag_api_stage" {
   }
 
   depends_on = [
-    aws_apigatewayv2_deployment.rag_api_deployment, # Stage depends on deployment
+    aws_apigatewayv2_deployment.rag_api_deployment,
     aws_api_gateway_account.apigw_account_settings,
+    aws_cloudwatch_log_group.api_access_logs
   ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lambda_permission" "apigw_lambda_permission" {

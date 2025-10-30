@@ -120,6 +120,10 @@ resource "aws_vpc_endpoint" "s3_gateway" {
   tags = {
     Name = "${var.project_name}-s3-endpoint"
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # VPC Endpoints for AWS Services
@@ -134,6 +138,10 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
 
   tags = {
     Name = "${var.project_name}-bedrock-runtime-endpoint"
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 

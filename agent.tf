@@ -68,19 +68,11 @@ resource "aws_bedrockagent_agent" "rag_agent" {
   agent_name              = "${var.project_name}-rag-agent"
   agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
   
-  foundation_model        = "anthropic.claude-3-haiku-20240307-v1:0"
+  foundation_model        = "amazon.nova-pro-v1:0"
   
   description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
-  instruction = <<EOF
-You are a helpful document assistant with two main capabilities:
-
-1. Document Search: For document-related questions, use the search_documents tool to find relevant information. Answer based ONLY on the search results and always cite the source document.
-
-2. Email Sending: When asked to send an email, use the send_email tool. You can send emails to any recipient with a subject and body. Always confirm the email was sent successfully.
-
-Be helpful and professional in all interactions.
-EOF
+  instruction = "You are an expert data analyst that extracts and reasons over information from documents provided via RAG. Your goal is to give the most complete, accurate, and evidence-based answer possible using the retrieved documents. Follow these rules strictly: 1. Always synthesize information — if the answer is implied or can be inferred logically from the data, include it clearly. 2. Never respond with 'I cannot find an answer' unless the concept is entirely missing. Instead, give your best reasoned inference based on related info. 3. Include exact quotes or data from the PDF when relevant (e.g., engine specs, configurations, tables, or key phrases). 4. If multiple possible answers exist, list them all and clarify context (e.g., different trims or regions). 5. FOR IMAGE REQUESTS: If user asks to show/see/display/view images or pictures, return ONLY the IMAGE_URL lines from search results. NO text before or after. NO descriptions. NO explanations. Just copy the IMAGE_URL lines exactly. 6. Your output should be concise but information-rich, and structured whenever possible (e.g., bullet points or JSON-like blocks). 7. When unsure, reason based on evidence in the documents and state the degree of certainty if relevant. Act as a domain expert and research analyst — accurate, confident, and precise."
 
   guardrail_configuration {
     guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
@@ -89,6 +81,10 @@ EOF
 
   tags = {
     Name = "${var.project_name}-rag-agent"
+  }
+
+  lifecycle {
+    ignore_changes = [guardrail_configuration]
   }
 }
 
@@ -221,7 +217,7 @@ resource "null_resource" "prepare_agent" {
   }
 
   provisioner "local-exec" {
-    command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.name}"
+    command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.name} --profile ${var.aws_profile}"
   }
 
   depends_on = [
@@ -230,17 +226,22 @@ resource "null_resource" "prepare_agent" {
   ]
 }
 
-resource "time_sleep" "wait_for_agent_ready" {
-  depends_on      = [null_resource.prepare_agent]
-  create_duration = "30s"
+resource "null_resource" "update_production_alias" {
+  triggers = {
+    instruction = aws_bedrockagent_agent.rag_agent.instruction
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["powershell", "-Command"]
+    command = "$alias = aws bedrock-agent list-agent-aliases --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --profile ${var.aws_profile} | ConvertFrom-Json; $prodAlias = $alias.agentAliasSummaries | Where-Object {$_.agentAliasName -eq 'production'}; if ($prodAlias) { aws bedrock-agent delete-agent-alias --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --agent-alias-id $prodAlias.agentAliasId --profile ${var.aws_profile}; Start-Sleep 10 }; aws bedrock-agent create-agent-alias --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --agent-alias-name production --description 'Production alias for RAG agent' --profile ${var.aws_profile}"
+  }
+
+  depends_on = [null_resource.prepare_agent]
 }
 
-# =========================================================
-# Production Alias
-# =========================================================
-resource "aws_bedrockagent_agent_alias" "rag_agent_alias" {
-  agent_alias_name = "production"
-  agent_id         = aws_bedrockagent_agent.rag_agent.agent_id
-  description      = "Production alias for RAG agent"
-  depends_on       = [time_sleep.wait_for_agent_ready]
+resource "time_sleep" "wait_for_agent_ready" {
+  depends_on      = [null_resource.prepare_agent]
+  create_duration = "60s"
 }
+
+# Production alias is created by null_resource.update_production_alias

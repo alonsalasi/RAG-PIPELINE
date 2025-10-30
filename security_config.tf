@@ -17,6 +17,10 @@ resource "aws_config_delivery_channel" "main" {
   name           = "${var.project_name}-config-delivery"
   s3_bucket_name = aws_s3_bucket.config_logs.bucket
   depends_on     = [aws_config_configuration_recorder.main]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_config_configuration_recorder_status" "main" {
@@ -65,7 +69,7 @@ resource "aws_iam_role" "config_role" {
 
 resource "aws_iam_role_policy_attachment" "config_policy" {
   role       = aws_iam_role.config_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/ConfigRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
 }
 
 resource "aws_iam_role_policy" "config_s3_policy" {
@@ -112,29 +116,6 @@ resource "aws_guardduty_detector" "main" {
   tags = {
     Name = "${var.project_name}-guardduty"
   }
-}
-
-# =========================================================
-# Secrets Manager for Sensitive Configuration
-# =========================================================
-resource "aws_secretsmanager_secret" "bedrock_config" {
-  name                    = "${var.project_name}-bedrock-config"
-  description             = "Bedrock Agent configuration"
-  kms_key_id              = aws_kms_key.agent_encryption.arn
-  recovery_window_in_days = 7
-
-  tags = {
-    Name = "${var.project_name}-bedrock-config"
-  }
-}
-
-resource "aws_secretsmanager_secret_version" "bedrock_config" {
-  secret_id = aws_secretsmanager_secret.bedrock_config.id
-  secret_string = jsonencode({
-    agent_id    = aws_bedrockagent_agent.rag_agent.agent_id
-    agent_alias = "production"
-    model_id    = "amazon.titan-embed-text-v1"
-  })
 }
 
 # =========================================================
@@ -233,24 +214,10 @@ resource "aws_cloudwatch_metric_alarm" "api_4xx_errors" {
   dimensions = {
     ApiId = aws_apigatewayv2_api.rag_api_gateway.id
   }
-}
 
-resource "aws_cloudwatch_metric_alarm" "waf_blocked_requests" {
-  alarm_name          = "${var.project_name}-waf-blocked-requests"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "BlockedRequests"
-  namespace           = "AWS/WAFV2"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 100
-  alarm_description   = "High number of WAF blocked requests"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
-
-  dimensions = {
-    WebACL = aws_wafv2_web_acl.api_protection.name
-    Region = data.aws_region.current.name
-    Rule   = "ALL"
+  lifecycle {
+    create_before_destroy = true
   }
 }
+
+# WAF alarm removed - WAF not compatible with API Gateway v2

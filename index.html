@@ -4,11 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Document Assistant - Secure</title>
-  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
   <style>
-    /* Same styles as before */
     :root { --primary-color: #007bff; --secondary-color: #6c757d; --bg-light: #f8f9fa; --bg-white: #ffffff; --border-color: #dee2e6; --text-dark: #343a40; --text-light: #6c757d; --error-color: #dc3545; }
-    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; margin:0; padding:0; background-color:var(--bg-light); display:flex; height:100vh; color:var(--text-dark); overflow:hidden;}
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; margin:0; padding:0; background-color:var(--bg-light); height:100vh; color:var(--text-dark); overflow:hidden;}
+    body.logged-in { display:flex; }
     .sidebar { width:320px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; flex-shrink:0; gap:20px;}
     .container { flex-grow:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light);}
     .sidebar h3 { margin:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
@@ -20,7 +21,23 @@
     .upload-box label:hover { background:var(--bg-light); border-color:var(--primary-color);}
     .upload-box button { width:100%; padding:10px; background:#667eea; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:.9em;}
     .upload-box button:hover { background:#5568d3;}
-    #upload-status { font-size:.8em; color:#333; margin-top:10px; text-align:center; font-weight:500;}
+    .upload-box button.cancel { background:#dc3545; margin-top:8px;}
+    .upload-box button.cancel:hover { background:#c82333;}
+    #upload-status { font-size:.8em; color:#333; margin-top:10px; font-weight:500;}
+    .progress-item { margin:8px 0; padding:8px; background:#f8f9fa; border-radius:6px; position:relative; }
+    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+    .progress-bar-bg { height:6px; background:#e9ecef; border-radius:3px; overflow:hidden;}
+    .progress-bar-fill { height:100%; background:linear-gradient(90deg, #667eea, #764ba2); transition:width .3s; border-radius:3px;}
+    .progress-status { font-size:.75em; color:#6c757d; margin-top:4px;}
+    .progress-item { position:relative; }
+    .progress-item .delete-btn { position:absolute; top:4px; right:4px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:12px; padding:4px 6px; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; z-index:10; }
+    .progress-item .delete-btn:hover { color:white; background:#dc3545; }
+    .progress-container { max-height:200px; overflow-y:auto; margin-top:10px;}
+    .progress-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .progress-header h4 { margin:0; font-size:.9em; color:#495057; }
+    .toggle-btn { background:none; border:none; cursor:pointer; font-size:1.2em; padding:0 4px; color:#6c757d; }
+    .toggle-btn:hover { color:#495057; }
+    .progress-container.collapsed { display:none; }
     #file-list { list-style:none; padding:0; margin:0; flex-grow:1;}
     #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-break:break-all; display:flex; justify-content:space-between; align-items:center;}
     .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
@@ -41,46 +58,81 @@
     .files-section h3 { margin-bottom:10px;}
     .spinner { width:16px; height:16px; border:2px solid currentColor; border-bottom-color:transparent; border-radius:50%; display:inline-block; animation:spin 1s linear infinite;}
     @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
-    #login-screen { display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);}
-    .login-box { background:white; padding:40px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.2); max-width:400px; width:100%;}
-    .login-box h2 { margin-top:0; color:var(--text-dark);}
-    .login-box input { width:100%; padding:12px; margin-bottom:15px; border:1px solid var(--border-color); border-radius:6px; font-size:1em;}
-    .login-box button { width:100%; padding:12px; background:var(--primary-color); color:white; border:none; border-radius:6px; cursor:pointer; font-size:1em; font-weight:600;}
+    #login-screen, #change-password-screen, #mfa-screen, #totp-setup-screen { display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding:20px;}
+    .login-box { background:white; padding:50px 40px; border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,0.3); max-width:420px; width:100%; box-sizing:border-box;}
+    .login-box h2 { margin:0 0 30px 0; color:var(--text-dark); text-align:center; font-size:1.8em; font-weight:700;}
+    .login-box input { width:100%; padding:14px 16px; margin-bottom:16px; border:2px solid var(--border-color); border-radius:8px; font-size:1em; box-sizing:border-box; transition:border-color 0.3s;}
+    .login-box input:focus { outline:none; border-color:var(--primary-color);}
+    .login-box button { width:100%; padding:14px; background:var(--primary-color); color:white; border:none; border-radius:8px; cursor:pointer; font-size:1.05em; font-weight:600; margin-top:10px; transition:background 0.3s;}
     .login-box button:hover { background:#0056b3;}
-    .error-msg { color:var(--error-color); font-size:0.9em; margin-top:10px;}
+    .login-box button:disabled { background:#ccc; cursor:not-allowed;}
+    .error-msg { color:var(--error-color); font-size:0.9em; margin-top:15px; text-align:center; padding:10px; background:#fff5f5; border-radius:6px; border:1px solid #ffdddd;}
     #app { display:none;}
   </style>
 </head>
 <body>
 
-<!-- Login Screen -->
 <div id="login-screen">
   <div class="login-box">
-    <h2>🔐 Secure Login</h2>
-    <input type="email" id="login-email" placeholder="Email" />
-    <input type="password" id="login-password" placeholder="Password" />
+    <h2>&#128274; Secure Login</h2>
+    <input type="text" id="login-email" placeholder="Username" autocomplete="username" />
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
     <button id="login-btn">Sign In</button>
-    <div id="login-error" class="error-msg"></div>
+    <div id="login-error" class="error-msg" style="display:none;"></div>
   </div>
 </div>
 
-<!-- Main App (hidden until authenticated) -->
+<div id="change-password-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128273; Change Password</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">You must change your temporary password</p>
+    <input type="password" id="new-password" placeholder="New Password" autocomplete="new-password" />
+    <input type="password" id="confirm-password" placeholder="Confirm Password" autocomplete="new-password" />
+    <button id="change-password-btn">Change Password</button>
+    <div id="change-password-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="mfa-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128274; Enter Verification Code</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">Enter the code from your authenticator app</p>
+    <input type="text" id="mfa-code" placeholder="Enter 6-digit code" autocomplete="off" maxlength="6" />
+    <button id="verify-mfa-btn">Verify</button>
+    <div id="mfa-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="totp-setup-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128274; Setup Authenticator</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">Scan this QR code with your authenticator app</p>
+    <div id="qrcode" style="display:flex; justify-content:center; margin:20px 0;"></div>
+    <p style="text-align:center; font-size:0.85em; color:#666; margin:10px 0;">Or enter this code manually:</p>
+    <div style="background:#f5f5f5; padding:10px; border-radius:6px; margin:10px 0; word-break:break-all; text-align:center;"><strong id="secret-code" style="color:#333; font-size:0.9em;"></strong></div>
+    <input type="text" id="totp-verify-code" placeholder="Enter 6-digit code to verify" autocomplete="off" maxlength="6" />
+    <button id="verify-totp-setup-btn">Verify & Complete Setup</button>
+    <div id="totp-setup-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
 <div id="app">
 <div class="sidebar">
   <div class="upload-section">
-    <h3>📤 Upload Document</h3>
+    <h3>&#128228; Upload Document</h3>
     <div class="upload-box">
       <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple>
       <label for="file-input" id="file-label">Click to select files...</label>
       <button type="button" id="upload-button">Upload</button>
+      <button type="button" id="cancel-button" class="cancel" style="display:none;">Cancel Upload</button>
       <div id="upload-status"></div>
     </div>
   </div>
   
   <div class="files-section">
     <h3>
-      📚 Documents
-      <button id="refresh-btn" class="btn" style="background:#6c757d; padding:6px 12px; font-size:.85em;">🔄</button>
+      &#128218; Documents
+      <button id="refresh-btn" class="btn" style="background:#6c757d; padding:6px 12px; font-size:.85em;">&#128260;</button>
     </h3>
     <ul id="file-list"></ul>
     <div id="file-list-status"></div>
@@ -107,78 +159,273 @@
 </div>
 
 <script>
-  // REPLACE THESE WITH YOUR TERRAFORM OUTPUTS
-  const COGNITO_USER_POOL_ID = 'YOUR_USER_POOL_ID';
-  const COGNITO_CLIENT_ID = 'YOUR_CLIENT_ID';
-  const COGNITO_REGION = 'us-west-2';
-  const API_GATEWAY_URL = 'YOUR_API_GATEWAY_URL';
+  const COGNITO_USER_POOL_ID = 'us-east-1_47wv9bVGN';
+  const COGNITO_CLIENT_ID = '6v0ae4nidnu8ija0gjlv85slck';
+  const COGNITO_REGION = 'us-east-1';
+  const API_GATEWAY_URL = 'https://rm8vvz79d0.execute-api.us-east-1.amazonaws.com/production';
 
-  const poolData = {
-    UserPoolId: COGNITO_USER_POOL_ID,
-    ClientId: COGNITO_CLIENT_ID
-  };
+  const poolData = { UserPoolId: COGNITO_USER_POOL_ID, ClientId: COGNITO_CLIENT_ID };
   const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
   let cognitoUser = null;
   let idToken = null;
 
-  // Authentication
-  document.getElementById('login-btn').addEventListener('click', () => {
+  let sessionTimer = null;
+  
+  function startSessionTimer() {
+    if (sessionTimer) clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => {
+      alert('Your session has expired. Please login again.');
+      if (cognitoUser) cognitoUser.signOut();
+      location.reload();
+    }, 60 * 60 * 1000);
+  }
+  
+  function checkExistingSession() {
+    cognitoUser = userPool.getCurrentUser();
+    if (cognitoUser) {
+      cognitoUser.getSession((err, session) => {
+        if (!err && session.isValid()) {
+          idToken = session.getIdToken().getJwtToken();
+          const email = cognitoUser.getUsername();
+          document.getElementById('user-email').textContent = email;
+          document.body.classList.add('logged-in');
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('app').style.display = 'flex';
+          fetchUploadedFiles();
+          clearChat();
+          startSessionTimer();
+        }
+      });
+    }
+  }
+  
+  // Wait for DOM to be ready before checking session
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkExistingSession);
+  } else {
+    checkExistingSession();
+  }
+
+  function performLogin() {
     const email = document.getElementById('login-email').value;
     const password = document.getElementById('login-password').value;
+    const errorDiv = document.getElementById('login-error');
     
-    const authenticationData = {
-      Username: email,
-      Password: password,
-    };
+    const authenticationData = { Username: email, Password: password };
     const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
-    
-    const userData = {
-      Username: email,
-      Pool: userPool
-    };
+    const userData = { Username: email, Pool: userPool };
     cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
     
     cognitoUser.authenticateUser(authenticationDetails, {
       onSuccess: (result) => {
         idToken = result.getIdToken().getJwtToken();
         document.getElementById('user-email').textContent = email;
+        document.body.classList.add('logged-in');
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('app').style.display = 'flex';
         fetchUploadedFiles();
         clearChat();
+        startSessionTimer();
       },
       onFailure: (err) => {
-        document.getElementById('login-error').textContent = err.message || 'Login failed';
+        errorDiv.textContent = err.message || 'Login failed';
+        errorDiv.style.display = 'block';
+      },
+      newPasswordRequired: (userAttributes, requiredAttributes) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('change-password-screen').style.display = 'flex';
+      },
+      mfaSetup: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('totp-setup-screen').style.display = 'flex';
+        
+        cognitoUser.associateSoftwareToken({
+          associateSecretCode: (secretCode) => {
+            const email = document.getElementById('login-email').value;
+            const issuer = 'AI Document Assistant';
+            const otpauth = `otpauth://totp/${issuer}:${email}?secret=${secretCode}&issuer=${issuer}`;
+            
+            document.getElementById('qrcode').innerHTML = '';
+            new QRCode(document.getElementById('qrcode'), {
+              text: otpauth,
+              width: 200,
+              height: 200
+            });
+            
+            document.getElementById('secret-code').textContent = secretCode;
+          },
+          onFailure: (err) => {
+            const errorDiv = document.getElementById('login-error');
+            errorDiv.textContent = 'MFA setup failed: ' + err.message;
+            errorDiv.style.display = 'block';
+          }
+        });
+      },
+      mfaRequired: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('mfa-screen').style.display = 'flex';
+      },
+      totpRequired: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('mfa-screen').style.display = 'flex';
+      }
+    });
+  }
+
+  document.getElementById('login-btn').addEventListener('click', performLogin);
+  document.getElementById('login-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') performLogin();
+  });
+
+  document.getElementById('change-password-btn').addEventListener('click', () => {
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+    const errorDiv = document.getElementById('change-password-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (newPassword !== confirmPassword) {
+      errorDiv.textContent = 'Passwords do not match';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    if (newPassword.length < 8) {
+      errorDiv.textContent = 'Password must be at least 8 characters';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        document.getElementById('change-password-screen').style.display = 'none';
+        document.getElementById('totp-setup-screen').style.display = 'flex';
+        
+        cognitoUser.associateSoftwareToken({
+          associateSecretCode: (secretCode) => {
+            const issuer = 'AI Document Assistant';
+            const otpauth = `otpauth://totp/${issuer}:${email}?secret=${secretCode}&issuer=${issuer}`;
+            
+            document.getElementById('qrcode').innerHTML = '';
+            new QRCode(document.getElementById('qrcode'), {
+              text: otpauth,
+              width: 200,
+              height: 200
+            });
+            
+            document.getElementById('secret-code').textContent = secretCode;
+          },
+          onFailure: (err) => {
+            errorDiv.textContent = 'MFA setup failed: ' + err.message;
+            errorDiv.style.display = 'block';
+          }
+        });
+      },
+      onFailure: (err) => {
+        errorDiv.innerHTML = '<strong>Password Change Failed</strong><br>' + err.message + '<br><br>If MFA is required, please contact your administrator to set up MFA before changing your password.';
+        errorDiv.style.display = 'block';
       }
     });
   });
 
+  document.getElementById('confirm-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('change-password-btn').click();
+  });
+
+  document.getElementById('verify-mfa-btn').addEventListener('click', () => {
+    const code = document.getElementById('mfa-code').value;
+    const errorDiv = document.getElementById('mfa-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (!code) {
+      errorDiv.textContent = 'Please enter the verification code';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.sendMFACode(code, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        document.getElementById('user-email').textContent = email;
+        document.body.classList.add('logged-in');
+        document.getElementById('mfa-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        fetchUploadedFiles();
+        clearChat();
+        startSessionTimer();
+      },
+      onFailure: (err) => {
+        errorDiv.textContent = 'Invalid code: ' + err.message;
+        errorDiv.style.display = 'block';
+      }
+    }, 'SOFTWARE_TOKEN_MFA');
+  });
+
+  document.getElementById('mfa-code').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('verify-mfa-btn').click();
+  });
+
+  document.getElementById('verify-totp-setup-btn').addEventListener('click', () => {
+    const code = document.getElementById('totp-verify-code').value;
+    const errorDiv = document.getElementById('totp-setup-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (!code) {
+      errorDiv.textContent = 'Please enter the verification code';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.verifySoftwareToken(code, 'My TOTP Device', {
+      onSuccess: () => {
+        cognitoUser.setUserMfaPreference(null, { PreferredMfa: true, Enabled: true }, (err) => {
+          if (err) {
+            errorDiv.textContent = 'Failed to set MFA preference: ' + err.message;
+            errorDiv.style.display = 'block';
+            return;
+          }
+          
+          cognitoUser.getSession((err, session) => {
+            if (!err && session.isValid()) {
+              idToken = session.getIdToken().getJwtToken();
+              document.getElementById('user-email').textContent = email;
+              document.body.classList.add('logged-in');
+              document.getElementById('totp-setup-screen').style.display = 'none';
+              document.getElementById('app').style.display = 'flex';
+              fetchUploadedFiles();
+              clearChat();
+              startSessionTimer();
+            } else {
+              errorDiv.textContent = 'Session error: ' + (err ? err.message : 'Unknown error');
+              errorDiv.style.display = 'block';
+            }
+          });
+        });
+      },
+      onFailure: (err) => {
+        if (err.message && err.message.includes('already been used')) {
+          errorDiv.textContent = 'Code already used. Wait 30 seconds for the next code.';
+        } else {
+          errorDiv.textContent = 'Invalid code: ' + err.message;
+        }
+        errorDiv.style.display = 'block';
+      }
+    });
+  });
+
+  document.getElementById('totp-verify-code').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('verify-totp-setup-btn').click();
+  });
+
   document.getElementById('logout-btn').addEventListener('click', () => {
+    if (sessionTimer) clearTimeout(sessionTimer);
+    cognitoUser = userPool.getCurrentUser();
     if (cognitoUser) {
       cognitoUser.signOut();
     }
     location.reload();
   });
 
-  // Check if already logged in
-  cognitoUser = userPool.getCurrentUser();
-  if (cognitoUser) {
-    cognitoUser.getSession((err, session) => {
-      if (!err && session.isValid()) {
-        idToken = session.getIdToken().getJwtToken();
-        cognitoUser.getUserAttributes((err, attributes) => {
-          const email = attributes.find(attr => attr.Name === 'email')?.Value || 'User';
-          document.getElementById('user-email').textContent = email;
-          document.getElementById('login-screen').style.display = 'none';
-          document.getElementById('app').style.display = 'flex';
-          fetchUploadedFiles();
-          clearChat();
-        });
-      }
-    });
-  }
-
-  // Rest of your existing JavaScript code with Authorization header added
   const CHAT_LOG = document.getElementById('chat-log');
   const UPLOAD_STATUS = document.getElementById('upload-status');
   const USER_INPUT = document.getElementById('user-input');
@@ -186,10 +433,14 @@
   const FILE_LIST_STATUS = document.getElementById('file-list-status');
   const SEND_BUTTON = document.getElementById('send-button');
   const UPLOAD_BUTTON = document.getElementById('upload-button');
+  const CANCEL_BUTTON = document.getElementById('cancel-button');
   const FILE_INPUT = document.getElementById('file-input');
   const FILE_LABEL = document.getElementById('file-label');
   const REFRESH_BTN = document.getElementById('refresh-btn');
   const CLEAR_CHAT = document.getElementById('clear-chat');
+  
+  let uploadControllers = [];
+  let uploadedFiles = [];
   
   let sessionId = generateSessionId();
   
@@ -198,10 +449,7 @@
   }
 
   function getAuthHeaders() {
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${idToken}`
-    };
+    return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
   }
 
   function appendMessage(role, content, sources=null, isError=false, images=null){
@@ -210,19 +458,88 @@
     if(isError) div.classList.add('error');
     div.innerHTML = content.replace(/\n/g,'<br>');
     
-    // Display images if present
     if(images && images.length){
       const imgContainer = document.createElement('div');
-      imgContainer.style.marginTop = '10px';
-      images.forEach(imgUrl => {
+      imgContainer.style.marginTop = '15px';
+      imgContainer.style.display = 'grid';
+      imgContainer.style.gridTemplateColumns = 'repeat(auto-fit, minmax(280px, 1fr))';
+      imgContainer.style.gap = '20px';
+      
+      images.forEach((imgUrl, index) => {
+        const imgWrapper = document.createElement('div');
+        imgWrapper.style.position = 'relative';
+        imgWrapper.style.border = '1px solid #e0e0e0';
+        imgWrapper.style.borderRadius = '12px';
+        imgWrapper.style.overflow = 'hidden';
+        imgWrapper.style.backgroundColor = '#fafafa';
+        imgWrapper.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+        imgWrapper.style.transition = 'transform 0.2s, box-shadow 0.2s';
+        imgWrapper.style.cursor = 'pointer';
+        
+        // Add hover effect
+        imgWrapper.onmouseenter = () => {
+          imgWrapper.style.transform = 'translateY(-2px)';
+          imgWrapper.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
+        };
+        imgWrapper.onmouseleave = () => {
+          imgWrapper.style.transform = 'translateY(0)';
+          imgWrapper.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+        };
+        
+        // Extract brand name from URL for labeling
+        let brandName = 'Image';
+        if (imgUrl.includes('Cherry')) brandName = 'Chery';
+        else if (imgUrl.includes('Hyundai')) brandName = 'Hyundai';
+        else if (images.length > 1) brandName = `Image ${index + 1}`;
+        
+        // Create header with brand name
+        const header = document.createElement('div');
+        header.style.padding = '12px 16px';
+        header.style.backgroundColor = '#fff';
+        header.style.borderBottom = '1px solid #e0e0e0';
+        header.style.fontWeight = '600';
+        header.style.fontSize = '14px';
+        header.style.color = '#333';
+        header.style.textAlign = 'center';
+        header.textContent = brandName;
+        
         const img = document.createElement('img');
         img.src = imgUrl;
-        img.style.maxWidth = '100%';
-        img.style.borderRadius = '8px';
-        img.style.marginTop = '5px';
-        img.style.cursor = 'pointer';
-        img.onclick = () => window.open(imgUrl, '_blank');
-        imgContainer.appendChild(img);
+        img.style.width = '100%';
+        img.style.height = 'auto';
+        img.style.display = 'block';
+        img.style.maxHeight = '300px';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = '#fff';
+        
+        imgWrapper.onclick = () => window.open(imgUrl, '_blank');
+        
+        // Add loading state
+        const loadingDiv = document.createElement('div');
+        loadingDiv.style.padding = '40px';
+        loadingDiv.style.textAlign = 'center';
+        loadingDiv.style.color = '#666';
+        loadingDiv.innerHTML = '<div class="spinner" style="margin:0 auto 10px;"></div>Loading image...';
+        
+        img.onload = () => {
+          if (loadingDiv.parentNode) {
+            imgWrapper.removeChild(loadingDiv);
+          }
+        };
+        img.onerror = () => {
+          imgWrapper.innerHTML = `
+            <div style="padding:12px 16px;background:#fff;border-bottom:1px solid #e0e0e0;font-weight:600;font-size:14px;color:#333;text-align:center;">${brandName}</div>
+            <div style="padding:40px;text-align:center;color:#999;background:#f9f9f9;">
+              <div style="font-size:24px;margin-bottom:8px;">&#128247;</div>
+              <div>Image failed to load</div>
+            </div>
+          `;
+        };
+        
+        imgWrapper.appendChild(header);
+        imgWrapper.appendChild(loadingDiv);
+        imgWrapper.appendChild(img);
+        imgContainer.appendChild(imgWrapper);
       });
       div.appendChild(imgContainer);
     }
@@ -242,9 +559,7 @@
   async function fetchUploadedFiles(){
     showLoading(FILE_LIST_STATUS,'Loading files...');
     try{
-      const res = await fetch(`${API_GATEWAY_URL}/list-files`, {
-        headers: getAuthHeaders()
-      });
+      const res = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
       const data = await res.json();
       renderFileList(data.filenames || []);
     }catch(e){
@@ -259,10 +574,14 @@
     if(!query) return;
     appendMessage('user', query);
     USER_INPUT.value='';
-    const loading = document.createElement('div');
-    loading.className='message assistant-message';
-    showLoading(loading, 'Agent thinking...');
-    CHAT_LOG.appendChild(loading);
+    const responseDiv = document.createElement('div');
+    responseDiv.className='message assistant-message';
+    responseDiv.textContent = '';
+    CHAT_LOG.appendChild(responseDiv);
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+    
+    // Show thinking indicator
+    responseDiv.innerHTML = '<span class="spinner"></span> Processing...';
     
     try{
       const res = await fetch(`${API_GATEWAY_URL}/agent-query`, {
@@ -271,16 +590,85 @@
         body: JSON.stringify({query, sessionId})
       });
       const data = await res.json();
-      CHAT_LOG.removeChild(loading);
+      CHAT_LOG.removeChild(responseDiv);
       if(res.ok) {
-        appendMessage('assistant', data.response, data.source_documents || data.sources, false, data.images);
+        // Parse IMAGE_URL markers from response and convert to actual images
+        let responseText = data.response;
+        let imageUrls = [];
+        
+        // Extract IMAGE_URL markers with metadata
+        const imagePattern = /IMAGE_URL:([^|\n]+)(?:\|PAGE:([^|\n]+))?(?:\|SOURCE:([^|\n]+))?(?:\|DESC:([^\n]+))?/g;
+        let match;
+        const imageData = [];
+        while ((match = imagePattern.exec(responseText)) !== null) {
+          const s3Key = match[1].trim();
+          const page = match[2] || '';
+          const source = match[3] || '';
+          const description = match[4] || '';
+          
+          // Generate presigned URL for the image
+          try {
+            const imgRes = await fetch(`${API_GATEWAY_URL}/get-image?key=${encodeURIComponent(s3Key)}`, {
+              headers: getAuthHeaders()
+            });
+            if (imgRes.ok) {
+              const imgData = await imgRes.json();
+              imageUrls.push(imgData.url);
+              imageData.push({ url: imgData.url, source, page, description });
+            }
+          } catch (e) {
+            console.error('Failed to get image URL:', e);
+          }
+        }
+        
+        // Remove IMAGE_URL markers from response text
+        responseText = responseText.replace(/IMAGE_URL:[^\n]*/g, '').trim();
+        
+        // Use parsed images or fallback to data.images
+        const finalImages = imageUrls.length > 0 ? imageUrls : (data.images || []);
+        const showImages = finalImages.length > 0 && 
+                          !responseText.toLowerCase().includes('cannot show') &&
+                          !responseText.toLowerCase().includes('do not have the capability');
+        
+        // If showing images, remove Claude's description to avoid redundancy
+        if (showImages) {
+          // Remove common image description patterns more aggressively
+          responseText = responseText.replace(/The image depicts.*?\./gs, '');
+          responseText = responseText.replace(/This image shows.*?\./gs, '');
+          responseText = responseText.replace(/In this image.*?\./gs, '');
+          responseText = responseText.replace(/The.*?appears to be.*?\./gs, '');
+          responseText = responseText.replace(/Here is.*?image.*?:/gi, '');
+          responseText = responseText.replace(/The vehicle has.*?\./gs, '');
+          responseText = responseText.replace(/The car has.*?\./gs, '');
+          responseText = responseText.replace(/The.*?design.*?\./gs, '');
+          responseText = responseText.replace(/The.*?features.*?\./gs, '');
+          responseText = responseText.replace(/The.*?scene.*?\./gs, '');
+          responseText = responseText.replace(/The.*?atmosphere.*?\./gs, '');
+          responseText = responseText.replace(/The.*?lighting.*?\./gs, '');
+          responseText = responseText.replace(/The.*?colors.*?\./gs, '');
+          responseText = responseText.replace(/Overall.*?\./gs, '');
+          responseText = responseText.replace(/There are no people.*?\./gs, '');
+          responseText = responseText.replace(/The focus is.*?\./gs, '');
+          responseText = responseText.replace(/The.*?highlights.*?\./gs, '');
+          responseText = responseText.replace(/The.*?capturing.*?\./gs, '');
+          responseText = responseText.replace(/The.*?showcasing.*?\./gs, '');
+          responseText = responseText.trim();
+          
+          // If no meaningful text remains, provide simple intro
+          if (!responseText || responseText.length < 20) {
+            responseText = finalImages.length > 1 ? 'Here are the images:' : 'Here is the image:';
+          }
+        }
+        
+        appendMessage('assistant', responseText, data.source_documents || data.sources, false, showImages ? finalImages : null);
       } else {
         appendMessage('assistant', `Error: ${data.error || 'API request failed.'}`, null, true);
       }
     }catch(e){
-      CHAT_LOG.removeChild(loading);
+      CHAT_LOG.removeChild(responseDiv);
       appendMessage('assistant', 'Critical Error: Could not connect to the API.', null, true);
     }
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
   }
   
   function clearChat() {
@@ -295,7 +683,30 @@
       filenames.sort().forEach(fullName=>{
         const clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_') : fullName;
         const li = document.createElement('li');
-        li.textContent = clean;
+        const span = document.createElement('span');
+        span.textContent = clean;
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.innerHTML = '&#128465;&#65039;';
+        deleteBtn.title = 'Delete file';
+        deleteBtn.onclick = async () => {
+          if (!confirm(`Delete ${clean}?`)) return;
+          try {
+            const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            });
+            if (res.ok) {
+              fetchUploadedFiles();
+            } else {
+              alert('Failed to delete file');
+            }
+          } catch (e) {
+            alert('Error deleting file: ' + e.message);
+          }
+        };
+        li.appendChild(span);
+        li.appendChild(deleteBtn);
         FILE_LIST_UL.appendChild(li);
       });
       FILE_LIST_STATUS.textContent = `${filenames.length} document(s) available.`;
@@ -303,6 +714,272 @@
       FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
     }
   }
+
+  FILE_INPUT.addEventListener('change', () => {
+    const files = FILE_INPUT.files;
+    if (files.length) {
+      FILE_LABEL.textContent = `${files.length} file(s) selected`;
+    } else {
+      FILE_LABEL.textContent = 'Click to select files...';
+    }
+  });
+
+  async function pollForProcessing(fileName, updateProgress, controller, progressId) {
+    const maxAttempts = 120;
+    const pollInterval = 3000;
+    
+    for (let i = 0; i < maxAttempts; i++) {
+      if (controller.signal.aborted) {
+        await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        }).catch(() => {});
+        updateProgress(0, '✗ Cancelled');
+        return false;
+      }
+      
+      try {
+        const res = await fetch(`${API_GATEWAY_URL}/processing-status?fileName=${encodeURIComponent(fileName)}`, {
+          headers: getAuthHeaders()
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          const { status, progress: serverProgress, message } = data;
+          
+          if (status === 'completed') {
+            updateProgress(100, '✓ Complete');
+            setTimeout(() => {
+              const item = document.getElementById(progressId);
+              if (item && item.parentNode) {
+                item.remove();
+              }
+            }, 3000);
+            return true;
+          } else if (status === 'failed') {
+            updateProgress(0, '✗ Processing failed');
+            return false;
+          } else {
+            const displayProgress = Math.max(50, serverProgress || (50 + (i / maxAttempts) * 45));
+            updateProgress(displayProgress, message || `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+          }
+        } else {
+          const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
+          updateProgress(progress, `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      } catch (e) {
+        console.error('Poll error:', e);
+        const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
+        updateProgress(progress, `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      }
+    }
+    
+    updateProgress(95, '⚠ Processing timeout');
+    return false;
+  }
+
+  UPLOAD_BUTTON.addEventListener('click', async () => {
+    const files = FILE_INPUT.files;
+    if (!files.length) {
+      UPLOAD_STATUS.textContent = 'Please select files first';
+      return;
+    }
+    
+    UPLOAD_STATUS.innerHTML = '<div class="progress-header"><h4>Upload Progress</h4><button class="toggle-btn" onclick="toggleProgress()" title="Minimize/Expand">▼</button></div><div class="progress-container" id="progress-container"></div>';
+    UPLOAD_BUTTON.disabled = true;
+    CANCEL_BUTTON.style.display = 'block';
+    uploadControllers = [];
+    uploadedFiles = [];
+    const progressContainer = document.getElementById('progress-container');
+    
+    const uploadPromises = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const progressId = `progress-${i}`;
+      const controller = new AbortController();
+      uploadControllers.push(controller);
+      
+      const progressItem = document.createElement('div');
+      progressItem.className = 'progress-item';
+      progressItem.id = progressId;
+      progressItem.innerHTML = `
+        <div class="progress-name">${file.name}</div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:0%"></div></div>
+        <div class="progress-status">Preparing...</div>
+        <button class="delete-btn" onclick="cancelSingleFile('${progressId}', '${file.name.replace(/'/g, "\\'")}')">✖</button>
+      `;
+      progressContainer.appendChild(progressItem);
+      
+      const uploadFile = async (file, progressId, controller) => {
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+        try {
+          const updateProgress = (percent, status) => {
+            const item = document.getElementById(progressId);
+            if (item) {
+              item.querySelector('.progress-bar-fill').style.width = percent + '%';
+              item.querySelector('.progress-status').textContent = status;
+            }
+          };
+          
+          if (controller.signal.aborted) {
+            // Create cancellation marker before throwing
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(10, 'Getting upload URL...');
+          const urlRes = await fetch(`${API_GATEWAY_URL}/upload`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ fileName: file.name }),
+            signal: controller.signal
+          });
+          
+          if (!urlRes.ok) throw new Error('Failed to get upload URL');
+          const { signedUrl } = await urlRes.json();
+          
+          if (controller.signal.aborted) {
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(30, 'Uploading to S3...');
+          const uploadRes = await fetch(signedUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/pdf' },
+            body: file,
+            mode: 'cors',
+            signal: controller.signal
+          });
+          
+          if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status}`);
+          uploadedFiles.push(file.name);
+          
+          if (controller.signal.aborted) {
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(50, 'Processing document...');
+          await pollForProcessing(file.name, updateProgress, controller, progressId);
+        } catch (e) {
+          const item = document.getElementById(progressId);
+          if (item) {
+            item.querySelector('.progress-status').textContent = '✗ ' + e.message;
+            item.querySelector('.progress-status').style.color = '#dc3545';
+          }
+          if (e.name !== 'AbortError' && e.message !== 'Cancelled') throw e;
+        }
+      };
+      
+      uploadPromises.push(uploadFile(file, progressId, controller));
+    }
+    
+    try {
+      await Promise.all(uploadPromises);
+      FILE_INPUT.value = '';
+      FILE_LABEL.textContent = 'Click to select files...';
+      setTimeout(() => { fetchUploadedFiles(); UPLOAD_STATUS.innerHTML = ''; CANCEL_BUTTON.style.display = 'none'; }, 3000);
+    } catch (e) {
+      console.error('Upload error:', e);
+    } finally {
+      UPLOAD_BUTTON.disabled = false;
+      if (uploadControllers.every(c => c.signal.aborted)) {
+        CANCEL_BUTTON.style.display = 'none';
+      }
+    }
+  });
+  
+  window.cancelSingleFile = async (progressId, fileName) => {
+    const index = parseInt(progressId.replace('progress-', ''));
+    const controller = uploadControllers[index];
+    
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+      
+      try {
+        await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+      } catch (e) {
+        console.error('Failed to cancel:', fileName, e);
+      }
+      
+      const item = document.getElementById(progressId);
+      if (item) {
+        item.querySelector('.progress-status').textContent = '✗ Cancelled';
+        item.querySelector('.progress-status').style.color = '#dc3545';
+        item.querySelector('.delete-btn').remove();
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+          if (item && item.parentNode) {
+            item.remove();
+          }
+        }, 3000);
+      }
+    }
+  };
+  
+  CANCEL_BUTTON.addEventListener('click', async () => {
+    if (!confirm('Cancel all uploads and delete uploaded files?')) return;
+    
+    CANCEL_BUTTON.disabled = true;
+    CANCEL_BUTTON.textContent = 'Cancelling...';
+    
+    // Abort all controllers and create cancellation markers
+    const cancelPromises = uploadControllers.map(async (controller, index) => {
+      if (!controller.signal.aborted) {
+        controller.abort();
+        const file = FILE_INPUT.files[index];
+        if (file) {
+          try {
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            });
+          } catch (e) {
+            console.error('Failed to cancel:', file.name, e);
+          }
+        }
+      }
+    });
+    
+    await Promise.all(cancelPromises);
+    
+    uploadedFiles = [];
+    UPLOAD_STATUS.innerHTML = '<span style="color:#dc3545;">All uploads cancelled</span>';
+    setTimeout(() => { UPLOAD_STATUS.innerHTML = ''; }, 3000);
+    CANCEL_BUTTON.textContent = 'Cancel Upload';
+    CANCEL_BUTTON.disabled = false;
+    CANCEL_BUTTON.style.display = 'none';
+    FILE_INPUT.value = '';
+    FILE_LABEL.textContent = 'Click to select files...';
+    fetchUploadedFiles();
+  });
+
+  window.toggleProgress = () => {
+    const container = document.getElementById('progress-container');
+    const btn = document.querySelector('.toggle-btn');
+    if (container && btn) {
+      container.classList.toggle('collapsed');
+      btn.textContent = container.classList.contains('collapsed') ? '▶' : '▼';
+    }
+  };
 
   SEND_BUTTON.addEventListener('click', handleQuerySubmission);
   USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
