@@ -4,7 +4,7 @@
 project_name = "pdfquery"
 environment  = "production"
 aws_region   = "us-east-1"
-aws_profile  = "leidos"
+aws_profile  = "default"
 
 # Security Configuration - MAXIMUM SECURITY ENABLED
 enable_lambda_vpc          = true   # Lambda in private subnets with NAT Gateway
@@ -38,3 +38,6 @@ alert_email = "alon.salasi@leidos.com"  # Set to receive security alerts: "secur
 
 # SES Configuration
 ses_sender_email = ""  # Verified sender email for agent to send emails: "noreply@company.com"
+
+# Google Vision API (optional - for better handwriting recognition)
+google_vision_api_key = ""  # Leave empty to use standard OCR, or add your Google Vision API key

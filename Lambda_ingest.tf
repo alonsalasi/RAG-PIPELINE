@@ -6,7 +6,7 @@ resource "null_resource" "build_and_push_ingestion_image" {
     handler_hash      = filemd5("${path.module}/Lambda/lambda_ingest_handler.py")
     worker_hash       = filemd5("${path.module}/Lambda/worker.py")
     repo_url          = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger   = "2024-01-15-001"
+    rebuild_trigger   = "2024-01-15-security-fixes"
   }
   
   provisioner "local-exec" {
@@ -47,6 +47,7 @@ resource "aws_lambda_function" "ingestion_worker" {
       MAX_PARALLEL_OCR = 4
       DPI              = 150
       SECRETS_ARN      = aws_secretsmanager_secret.bedrock_config.arn
+      PROJECT_NAME     = var.project_name
     }
   }
 

@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "aws_profile" {
   description = "AWS CLI profile to use"
   type        = string
-  default     = "leidos"
+  default     = "default"
 }
 
 variable "region" {
@@ -139,6 +139,13 @@ variable "admin_email" {
 
 variable "admin_password" {
   description = "Admin user password (min 12 chars)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "google_vision_api_key" {
+  description = "Google Vision API key for handwriting recognition (optional)"
   type        = string
   sensitive   = true
   default     = ""

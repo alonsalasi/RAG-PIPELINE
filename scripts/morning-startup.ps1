@@ -4,7 +4,7 @@
 # Enable script execution
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 
-Write-Host "☀️ Morning Startup - Recreating infrastructure..." -ForegroundColor Cyan
+Write-Host "Morning Startup - Recreating infrastructure..." -ForegroundColor Cyan
 Write-Host ""
 
 $ErrorActionPreference = "Stop"
@@ -35,12 +35,12 @@ terraform apply `
   -auto-approve
 
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "❌ Startup failed" -ForegroundColor Red
+  Write-Host "Startup failed" -ForegroundColor Red
   exit 1
 }
 
 Write-Host ""
-Write-Host "✅ Startup complete! Resources recreated:" -ForegroundColor Green
+Write-Host "Startup complete! Resources recreated:" -ForegroundColor Green
 Write-Host "  - 2x NAT Gateways" -ForegroundColor Gray
 Write-Host "  - 2x Private Route Tables" -ForegroundColor Gray
 Write-Host "  - 8x VPC Endpoints (7 interface + 1 gateway)" -ForegroundColor Gray
@@ -52,10 +52,10 @@ Write-Host ""
 Write-Host "Validating resources..." -ForegroundColor Yellow
 $natCount = (aws ec2 describe-nat-gateways --filter "Name=state,Values=available" --query 'NatGateways | length(@)' --output text)
 if ($natCount -ge 2) {
-  Write-Host "✓ NAT Gateways operational" -ForegroundColor Green
+  Write-Host "NAT Gateways operational" -ForegroundColor Green
 } else {
-  Write-Host "⚠ NAT Gateways may not be ready" -ForegroundColor Yellow
+  Write-Host "NAT Gateways may not be ready" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "💡 System is now fully operational" -ForegroundColor Green
-Write-Host "💡 Lambda functions can access AWS services" -ForegroundColor Green
+Write-Host "System is now fully operational" -ForegroundColor Green
+Write-Host "Lambda functions can access AWS services" -ForegroundColor Green

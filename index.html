@@ -576,12 +576,9 @@
     USER_INPUT.value='';
     const responseDiv = document.createElement('div');
     responseDiv.className='message assistant-message';
-    responseDiv.textContent = '';
+    responseDiv.innerHTML = '<span class="spinner"></span> Processing your query...';
     CHAT_LOG.appendChild(responseDiv);
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
-    
-    // Show thinking indicator
-    responseDiv.innerHTML = '<span class="spinner"></span> Processing...';
     
     try{
       const res = await fetch(`${API_GATEWAY_URL}/agent-query`, {
@@ -589,11 +586,20 @@
         headers: getAuthHeaders(),
         body: JSON.stringify({query, sessionId})
       });
+      
+      if(!res.ok) {
+        CHAT_LOG.removeChild(responseDiv);
+        appendMessage('assistant', 'Error: Failed to process query', null, true);
+        return;
+      }
+      
       const data = await res.json();
+      const fullResponse = data.response || '';
+      
       CHAT_LOG.removeChild(responseDiv);
-      if(res.ok) {
+      if(fullResponse) {
         // Parse IMAGE_URL markers from response and convert to actual images
-        let responseText = data.response;
+        let responseText = fullResponse;
         let imageUrls = [];
         
         // Extract IMAGE_URL markers with metadata
@@ -660,12 +666,12 @@
           }
         }
         
-        appendMessage('assistant', responseText, data.source_documents || data.sources, false, showImages ? finalImages : null);
+        appendMessage('assistant', responseText, null, false, showImages ? finalImages : null);
       } else {
-        appendMessage('assistant', `Error: ${data.error || 'API request failed.'}`, null, true);
+        appendMessage('assistant', 'No response received', null, true);
       }
     }catch(e){
-      CHAT_LOG.removeChild(responseDiv);
+      if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
       appendMessage('assistant', 'Critical Error: Could not connect to the API.', null, true);
     }
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
@@ -691,17 +697,25 @@
         deleteBtn.title = 'Delete file';
         deleteBtn.onclick = async () => {
           if (!confirm(`Delete ${clean}?`)) return;
+          deleteBtn.disabled = true;
+          deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
           try {
             const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`, {
               method: 'DELETE',
               headers: getAuthHeaders()
             });
             if (res.ok) {
-              fetchUploadedFiles();
+              deleteBtn.innerHTML = '✓';
+              deleteBtn.style.color = '#28a745';
+              setTimeout(() => fetchUploadedFiles(), 500);
             } else {
+              deleteBtn.innerHTML = '✗';
+              deleteBtn.disabled = false;
               alert('Failed to delete file');
             }
           } catch (e) {
+            deleteBtn.innerHTML = '✗';
+            deleteBtn.disabled = false;
             alert('Error deleting file: ' + e.message);
           }
         };

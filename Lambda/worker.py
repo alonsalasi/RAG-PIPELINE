@@ -7,6 +7,8 @@ import logging
 import numpy as np
 import base64
 import time
+import requests
+from botocore.client import Config
 from langchain_aws import BedrockEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.docstore.document import Document
@@ -18,14 +20,106 @@ from PIL import Image
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Clients
-s3 = boto3.client("s3")
-textract = boto3.client("textract")
-bedrock_runtime = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+# Clients with timeouts and proper error handling
+try:
+    s3 = boto3.client("s3", config=Config(connect_timeout=5, read_timeout=60))
+    textract = boto3.client("textract", config=Config(connect_timeout=5, read_timeout=300))
+    
+    region = os.environ.get("AWS_REGION")
+    if not region:
+        raise ValueError("AWS_REGION environment variable must be set")
+    
+    bedrock_runtime = boto3.client(
+        "bedrock-runtime",
+        region_name=region,
+        config=Config(connect_timeout=5, read_timeout=60)
+    )
+except Exception as e:
+    logger.error(f"Failed to initialize AWS clients: {e}")
+    raise
 
+# Validate required environment variables
 BUCKET = os.environ.get("S3_BUCKET")
 if not BUCKET:
+    logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
+
+# Google Vision API key (loaded from Secrets Manager)
+GOOGLE_VISION_KEY = None
+
+def get_google_vision_key():
+    """Lazy load Google Vision API key from Secrets Manager."""
+    global GOOGLE_VISION_KEY
+    if GOOGLE_VISION_KEY is None:
+        try:
+            project_name = os.environ.get('PROJECT_NAME')
+            if not project_name:
+                logger.info("PROJECT_NAME not set, skipping Google Vision")
+                GOOGLE_VISION_KEY = None
+                return GOOGLE_VISION_KEY
+            
+            secret_name = f"{project_name}-google-vision-key"
+            secretsmanager = boto3.client('secretsmanager')
+            response = secretsmanager.get_secret_value(SecretId=secret_name)
+            secret = json.loads(response['SecretString'])
+            GOOGLE_VISION_KEY = secret.get('api_key')
+            
+            if GOOGLE_VISION_KEY and GOOGLE_VISION_KEY not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
+                logger.info("Google Vision API key loaded")
+            else:
+                logger.info("Google Vision API key not configured, using standard OCR")
+                GOOGLE_VISION_KEY = None
+        except Exception as e:
+            logger.warning(f"Could not load Google Vision key: {e}")
+            GOOGLE_VISION_KEY = None
+    return GOOGLE_VISION_KEY
+
+def detect_handwriting_with_google_vision(image_bytes):
+    """Use Google Vision to detect handwriting in an image."""
+    api_key = get_google_vision_key()
+    if not api_key:
+        return None
+    
+    try:
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        
+        payload = {
+            "requests": [{
+                "image": {"content": image_base64},
+                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
+            }]
+        }
+        
+        response = requests.post(url, json=payload, timeout=30)
+        if response.status_code == 200:
+            result = response.json()
+            if 'responses' in result and result['responses']:
+                text = result['responses'][0].get('fullTextAnnotation', {}).get('text', '')
+                if text.strip():
+                    logger.info(f"Google Vision extracted {len(text)} chars")
+                    return text
+        else:
+            logger.warning(f"Google Vision API error: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"Google Vision failed: {e}")
+    
+    return None
+
+def is_handwritten_page(page_image):
+    """Detect if a page contains handwriting by checking OCR confidence."""
+    try:
+        import pytesseract
+        data = pytesseract.image_to_data(page_image, output_type=pytesseract.Output.DICT, timeout=10)
+        confidences = [int(c) for c in data['conf'] if c != '-1' and str(c).isdigit()]
+        if not confidences:
+            return False
+        avg_confidence = sum(confidences) / len(confidences)
+        # Low confidence (<70) suggests handwriting or poor quality
+        return avg_confidence < 70
+    except Exception as e:
+        logger.warning(f"Handwriting detection failed: {e}")
+        return False
 
 class ProcessingCancelled(Exception):
     """Exception raised when processing is cancelled by user."""
@@ -128,25 +222,68 @@ def process_message(record):
             if not body:
                 logger.warning("Empty SQS body, skipping.")
                 return
-            s3_event = json.loads(body)
+            try:
+                s3_event = json.loads(body)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON in SQS body: {e}")
+                return
+            
+            if "Records" not in s3_event or not s3_event["Records"]:
+                logger.error("No Records in S3 event")
+                return
+            
             s3_record = s3_event["Records"][0]
             s3_bucket = s3_record["s3"]["bucket"]["name"]
             s3_key = s3_record["s3"]["object"]["key"]
+        
+        # Validate S3 key to prevent path traversal and injection attacks
+        if not s3_key or '..' in s3_key or s3_key.startswith('/') or '\\' in s3_key:
+            logger.error(f"Invalid S3 key detected: path traversal attempt")
+            return
+        
+        # Additional validation for allowed prefixes
+        if not s3_key.startswith('uploads/'):
+            logger.error(f"S3 key not in allowed uploads prefix")
+            return
 
         logger.info(f"Processing file: s3://{s3_bucket}/{s3_key}")
-        base_name = os.path.splitext(os.path.basename(s3_key))[0]
+        # Sanitize base_name
+        filename = os.path.basename(s3_key)
+        base_name = os.path.splitext(filename)[0]
+        # Remove any remaining path separators
+        base_name = base_name.replace('/', '_').replace('\\', '_')
         
         # Check cancellation marker
         check_cancelled(base_name)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Sanitize filename to prevent path traversal
-            safe_filename = os.path.basename(s3_key).replace('..', '').replace('/', '').replace('\\', '')
-            if not safe_filename or safe_filename.startswith('.'):
+            # Secure filename handling to prevent path traversal
+            safe_filename = os.path.basename(s3_key)
+            # Remove any dangerous characters
+            safe_filename = ''.join(c for c in safe_filename if c.isalnum() or c in '._-')
+            if not safe_filename or safe_filename.startswith('.') or len(safe_filename) > 255:
                 safe_filename = 'document.pdf'
+            
             local_path = os.path.join(tmpdir, safe_filename)
-            s3.download_file(s3_bucket, s3_key, local_path)
-            logger.info(f"Downloaded {os.path.getsize(local_path)} bytes to {local_path}")
+            # Verify the resolved path is within tmpdir (prevent path traversal)
+            if not os.path.abspath(local_path).startswith(os.path.abspath(tmpdir)):
+                logger.error("Path traversal attempt detected")
+                raise ValueError("Invalid file path - security violation")
+            
+            try:
+                s3.download_file(s3_bucket, s3_key, local_path)
+                file_size = os.path.getsize(local_path)
+                logger.info(f"Downloaded {file_size} bytes")
+                
+                # Validate file size (prevent DoS)
+                max_size = 100 * 1024 * 1024  # 100MB limit
+                if file_size > max_size:
+                    logger.error(f"File too large: {file_size} bytes (max: {max_size})")
+                    return
+                    
+            except Exception as e:
+                logger.error(f"Failed to download file from S3: {e}")
+                return
 
             # ---- Extract images from PDF ----
             image_metadata = []
@@ -172,28 +309,28 @@ def process_message(record):
                                         else:
                                             img_data = obj._data
                                         
-                                        # Check and upscale small images
+                                        # Check and upscale small images with proper resource management
+                                        img = None
                                         try:
                                             img = Image.open(io.BytesIO(img_data))
                                             width, height = img.size
                                             
-                                            # Skip tiny images (likely icons)
                                             if width < 50 or height < 50:
                                                 logger.info(f"Skipping tiny image: {width}x{height}")
                                                 continue
                                             
-                                            # Upscale small images for better analysis
                                             if width < 300 or height < 300:
                                                 scale = max(300 / width, 300 / height)
                                                 new_size = (int(width * scale), int(height * scale))
                                                 img = img.resize(new_size, Image.Resampling.LANCZOS)
                                                 logger.info(f"Upscaled {width}x{height} to {img.size}")
                                                 
-                                                buffer = io.BytesIO()
-                                                img.save(buffer, format='JPEG', quality=95)
-                                                img_data = buffer.getvalue()
-                                        except Exception as size_e:
-                                            logger.warning(f"Image size check failed: {size_e}")
+                                                with io.BytesIO() as buffer:
+                                                    img.save(buffer, format='JPEG', quality=95)
+                                                    img_data = buffer.getvalue()
+                                        finally:
+                                            if img:
+                                                img.close()
                                         
                                         # Save image to S3
                                         img_name = f"{base_name}_page{page_num}_img{len(image_metadata)}.jpg"
@@ -210,11 +347,12 @@ def process_message(record):
                                         try:
                                             description = analyze_image_with_claude(img_data)
                                             if description == "Image content could not be analyzed":
-                                                raise Exception("Claude analysis returned generic message")
+                                                raise ValueError("Claude analysis returned generic message")
                                         except Exception as e:
                                             logger.error(f"Claude analysis failed: {e}")
                                             # Fallback: generic description
-                                            description = f"Image from page {page_num} of {os.path.basename(s3_key).replace('.pdf', '')}"
+                                            base_name_clean = os.path.basename(s3_key).replace('.pdf', '')
+                                            description = f"Image from page {page_num} of {base_name_clean}"
                                         
                                         image_metadata.append({
                                             'page': page_num,
@@ -248,8 +386,8 @@ def process_message(record):
                             logger.info(f"Page {i} extracted via pypdf: {len(text)} chars")
                             full_text += text + "\n"
                         else:
-                            logger.info(f"Page {i} has minimal text, using OCR")
-                            # Use OCR for this page
+                            logger.info(f"Page {i} has minimal text, checking for handwriting")
+                            # Check if handwritten and use Google Vision if available
                             try:
                                 from pdf2image import convert_from_path
                                 import io as iolib
@@ -261,49 +399,90 @@ def process_message(record):
                                 images = convert_from_path(local_path, first_page=i, last_page=i, dpi=200)
                                 if images:
                                     import pytesseract
+                                    page_image = images[0]
                                     
                                     # Check cancellation before OCR
                                     check_cancelled(base_name)
                                     
-                                    # Quick test with fast OCR to check quality
-                                    test_data = pytesseract.image_to_data(images[0], lang='heb+eng+tur', output_type=pytesseract.Output.DICT, timeout=30)
-                                    confidences = [int(c) for c in test_data['conf'] if c != '-1' and str(c).isdigit()]
-                                    avg_confidence = sum(confidences) / len(confidences) if confidences else 100
-                                    
-                                    # If high confidence (>70), use fast OCR. If low, use preprocessing
-                                    if avg_confidence > 70:
-                                        # Fast path for printed text
-                                        ocr_text = pytesseract.image_to_string(images[0], lang='heb+eng+tur', timeout=60)
-                                        logger.info(f"Page {i} Fast OCR (conf={avg_confidence:.1f}): {len(ocr_text)} chars")
-                                    else:
-                                        # Slow path with preprocessing for handwritten/low quality
-                                        logger.info(f"Page {i} Low confidence ({avg_confidence:.1f}), using enhanced OCR")
-                                        from PIL import ImageEnhance, ImageFilter, Image
-                                        import cv2
+                                    try:
+                                        # Check if handwritten
+                                        is_handwritten = is_handwritten_page(page_image)
                                         
-                                        # Check cancellation before enhanced OCR
-                                        check_cancelled(base_name)
-                                        
-                                        # Higher DPI for handwriting
-                                        images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
-                                        img = images[0].convert('L')
-                                        
-                                        # Enhance contrast
-                                        enhancer = ImageEnhance.Contrast(img)
-                                        img = enhancer.enhance(2.0)
-                                        img = img.filter(ImageFilter.SHARPEN)
-                                        
-                                        # Denoise and binarize
-                                        img_array = np.array(img)
-                                        img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
-                                        _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                                        img = Image.fromarray(img_array)
-                                        
-                                        ocr_text = pytesseract.image_to_string(img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
-                                        logger.info(f"Page {i} Enhanced OCR extracted: {len(ocr_text)} chars")
-                                    
-                                    if ocr_text.strip():
-                                        full_text += ocr_text + "\n"
+                                        if is_handwritten:
+                                            logger.info(f"Page {i} detected as handwritten, trying Google Vision")
+                                            # Try Google Vision for handwriting
+                                            img_byte_arr = io.BytesIO()
+                                            page_image.save(img_byte_arr, format='PNG')
+                                            google_text = detect_handwriting_with_google_vision(img_byte_arr.getvalue())
+                                            
+                                            if google_text:
+                                                full_text += google_text + "\n"
+                                                logger.info(f"Page {i} Google Vision extracted: {len(google_text)} chars")
+                                            else:
+                                                logger.info(f"Page {i} Google Vision unavailable, using enhanced OCR")
+                                                # Fallback to enhanced OCR
+                                                from PIL import ImageEnhance, ImageFilter
+                                                import cv2
+                                                
+                                                check_cancelled(base_name)
+                                                
+                                                hq_images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
+                                                img = hq_images[0].convert('L')
+                                                enhancer = ImageEnhance.Contrast(img)
+                                                img = enhancer.enhance(2.0)
+                                                img = img.filter(ImageFilter.SHARPEN)
+                                                img_array = np.array(img)
+                                                img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
+                                                _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                                processed_img = Image.fromarray(img_array)
+                                                ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
+                                                full_text += ocr_text + "\n"
+                                                logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
+                                                processed_img.close()
+                                                img.close()
+                                                for hq_img in hq_images:
+                                                    hq_img.close()
+                                        else:
+                                            # Not handwritten, use standard OCR
+                                            test_data = pytesseract.image_to_data(page_image, lang='heb+eng+tur', output_type=pytesseract.Output.DICT, timeout=30)
+                                            confidences = [int(c) for c in test_data['conf'] if c != '-1' and str(c).isdigit()]
+                                            avg_confidence = sum(confidences) / len(confidences) if confidences else 100
+                                            
+                                            if avg_confidence > 70:
+                                                # Fast path for printed text
+                                                ocr_text = pytesseract.image_to_string(page_image, lang='heb+eng+tur', timeout=60)
+                                                full_text += ocr_text + "\n"
+                                                logger.info(f"Page {i} Fast OCR (conf={avg_confidence:.1f}): {len(ocr_text)} chars")
+                                            else:
+                                                # Low confidence printed text
+                                                logger.info(f"Page {i} Low confidence ({avg_confidence:.1f}), using enhanced OCR")
+                                                from PIL import ImageEnhance, ImageFilter
+                                                import cv2
+                                                
+                                                check_cancelled(base_name)
+                                                
+                                                hq_images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
+                                                img = hq_images[0].convert('L')
+                                                enhancer = ImageEnhance.Contrast(img)
+                                                img = enhancer.enhance(2.0)
+                                                img = img.filter(ImageFilter.SHARPEN)
+                                                img_array = np.array(img)
+                                                img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
+                                                _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                                processed_img = Image.fromarray(img_array)
+                                                ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
+                                                full_text += ocr_text + "\n"
+                                                logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
+                                                processed_img.close()
+                                                img.close()
+                                                for hq_img in hq_images:
+                                                    hq_img.close()
+                                    finally:
+                                        # Clean up page image
+                                        if page_image:
+                                            page_image.close()
+                                        for img in images:
+                                            img.close()
                             except Exception as ocr_e:
                                 logger.error(f"OCR failed for page {i}: {ocr_e}")
                                 
@@ -330,9 +509,11 @@ def process_message(record):
             
             # Add metadata to chunks including image info
             docs = []
+            doc_name = os.path.basename(s3_key).replace('.pdf', '')
             for i, chunk in enumerate(chunks):
+                # Prepend document name to chunk for better context
                 doc = Document(
-                    page_content=chunk,
+                    page_content=f"Document: {doc_name}\n{chunk}",
                     metadata={
                         "source": os.path.basename(s3_key),
                         "chunk_id": i,
@@ -349,7 +530,7 @@ def process_message(record):
                     # Use the AI-generated description as the searchable content
                     description = img_meta.get('description', 'Image content')
                     img_doc = Document(
-                        page_content=f"Image on page {img_meta['page']}: {description}",
+                        page_content=f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}",
                         metadata={
                             "source": os.path.basename(s3_key),
                             "type": "image",
@@ -367,21 +548,64 @@ def process_message(record):
             # Check cancellation before embedding
             check_cancelled(base_name)
             
-            # ---- Create FAISS index per file ----
-            embed = BedrockEmbeddings(model_id="amazon.titan-embed-text-v1", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-            logger.info("Building FAISS index...")
-            store = FAISS.from_documents(docs, embed)
-
-            # ---- Save index with filename ----
-            base_name = os.path.splitext(os.path.basename(s3_key))[0]
-            store.save_local(tmpdir)
+            # ---- Master Index Approach ----
+            region = os.environ.get("AWS_REGION")
+            if not region:
+                logger.error("AWS_REGION environment variable not set")
+                raise ValueError("AWS_REGION must be configured")
             
-            index_path = os.path.join(tmpdir, "index.faiss")
-            pkl_path = os.path.join(tmpdir, "index.pkl")
+            model_id = os.environ.get("EMBEDDINGS_MODEL_ID", "cohere.embed-multilingual-v3")
+            embed = BedrockEmbeddings(model_id=model_id, region_name=region)
             
-            s3.upload_file(index_path, BUCKET, f"vector_store/{base_name}/index.faiss")
-            s3.upload_file(pkl_path, BUCKET, f"vector_store/{base_name}/index.pkl")
-            logger.info(f"Uploaded FAISS index to s3://{BUCKET}/vector_store/{base_name}/")
+            master_index_dir = os.path.join(tmpdir, "master_index")
+            os.makedirs(master_index_dir, exist_ok=True)
+            
+            master_index_path = os.path.join(master_index_dir, "index.faiss")
+            master_pkl_path = os.path.join(master_index_dir, "index.pkl")
+            
+            # Try to download existing master index
+            master_exists = False
+            try:
+                s3.download_file(BUCKET, "vector_store/master/index.faiss", master_index_path)
+                s3.download_file(BUCKET, "vector_store/master/index.pkl", master_pkl_path)
+                logger.info("Downloaded existing master index")
+                master_exists = True
+            except s3.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == '404':
+                    logger.info("No existing master index, creating new one")
+                else:
+                    raise
+            
+            # Load or create master index
+            if master_exists:
+                logger.info("Loading existing master index...")
+                master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
+                logger.info(f"Master index loaded with {master_store.index.ntotal} existing vectors")
+                
+                # Add new documents to master index
+                logger.info(f"Adding {len(docs)} new documents to master index...")
+                master_store.add_documents(docs)
+                logger.info(f"Master index now has {master_store.index.ntotal} total vectors")
+            else:
+                logger.info(f"Creating new master index with {len(docs)} documents...")
+                master_store = FAISS.from_documents(docs, embed)
+            
+            # Save updated master index
+            master_store.save_local(master_index_dir)
+            
+            # Verify files exist
+            if not os.path.exists(master_index_path) or not os.path.exists(master_pkl_path):
+                logger.error("Master index files not created")
+                raise Exception("Failed to create master index files")
+            
+            # Upload master index
+            try:
+                s3.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
+                s3.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
+                logger.info(f"Uploaded master index to s3://{BUCKET}/vector_store/master/")
+            except Exception as e:
+                logger.error(f"Failed to upload master index: {e}")
+                raise
 
             # ---- Mark as processed ----
             marker_key = f"processed/{base_name}.json"
@@ -407,4 +631,5 @@ def process_message(record):
         return  # Exit cleanly without saving anything
     except Exception as e:
         logger.error(f"Failed processing record: {e}")
-        raise e
+        # Don't re-raise to prevent infinite retries
+        return

@@ -20,3 +20,21 @@ resource "aws_secretsmanager_secret_version" "bedrock_config" {
     model_id    = "amazon.titan-embed-text-v1"
   })
 }
+
+resource "aws_secretsmanager_secret" "google_vision_key" {
+  name                    = "${var.project_name}-google-vision-key"
+  description             = "Google Vision API key for handwriting recognition"
+  kms_key_id              = aws_kms_key.agent_encryption.arn
+  recovery_window_in_days = 7
+
+  tags = {
+    Name = "${var.project_name}-google-vision-key"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "google_vision_key" {
+  secret_id = aws_secretsmanager_secret.google_vision_key.id
+  secret_string = jsonencode({
+    api_key = var.google_vision_api_key != "" ? var.google_vision_api_key : "NOT_CONFIGURED"
+  })
+}

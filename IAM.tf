@@ -68,7 +68,10 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
       {
         Effect = "Allow",
         Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-        Resource = "arn:aws:logs:*:*:*"
+        Resource = [
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*",
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*:*"
+        ]
       },
       {
         Effect = "Allow",
@@ -88,32 +91,70 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
       {
         Effect = "Allow",
         Action = ["textract:DetectDocumentText", "textract:AnalyzeDocument"],
-        Resource = "*"
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = data.aws_region.current.name
+          }
+        }
       },
       {
         Effect = "Allow",
-        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:GetFoundationModel",
+          "bedrock:ListFoundationModels"
+        ],
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = data.aws_region.current.name
+          }
+        }
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+          "aws-marketplace:Unsubscribe"
+        ],
         Resource = "*"
       },
       {
         Effect = "Allow",
         Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
-        Resource = "*"
+        Resource = [
+          aws_kms_key.agent_encryption.arn,
+          "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:key/*"
+        ]
       },
       {
         Effect = "Allow",
         Action = ["secretsmanager:GetSecretValue"],
-        Resource = "*"
+        Resource = [
+          aws_secretsmanager_secret.bedrock_config.arn,
+          aws_secretsmanager_secret.google_vision_key.arn
+        ]
       },
       {
         Effect = "Allow",
         Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
-        Resource = "*"
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = data.aws_region.current.name
+          }
+        }
       },
       {
         Effect = "Allow",
         Action = ["sqs:SendMessage"],
-        Resource = "*"
+        Resource = [
+          aws_sqs_queue.rag_ingestion_queue.arn,
+          "${aws_sqs_queue.rag_ingestion_queue.arn}-dlq"
+        ]
       }
     ]
   })

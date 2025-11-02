@@ -20,6 +20,7 @@ resource "aws_config_delivery_channel" "main" {
 
   lifecycle {
     create_before_destroy = true
+    prevent_destroy       = false
   }
 }
 

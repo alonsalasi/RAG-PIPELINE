@@ -18,17 +18,7 @@ resource "aws_bedrock_guardrail" "rag_guardrail" {
     filters_config {
       input_strength  = "MEDIUM"
       output_strength = "MEDIUM"
-      type            = "VIOLENCE"
-    }
-    filters_config {
-      input_strength  = "MEDIUM"
-      output_strength = "MEDIUM"
       type            = "SEXUAL"
-    }
-    filters_config {
-      input_strength  = "MEDIUM"
-      output_strength = "MEDIUM"
-      type            = "INSULTS"
     }
   }
 
@@ -68,11 +58,18 @@ resource "aws_bedrockagent_agent" "rag_agent" {
   agent_name              = "${var.project_name}-rag-agent"
   agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
   
-  foundation_model        = "amazon.nova-pro-v1:0"
+  foundation_model        = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
   
   description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
-  instruction = "You are an expert data analyst that extracts and reasons over information from documents provided via RAG. Your goal is to give the most complete, accurate, and evidence-based answer possible using the retrieved documents. Follow these rules strictly: 1. Always synthesize information — if the answer is implied or can be inferred logically from the data, include it clearly. 2. Never respond with 'I cannot find an answer' unless the concept is entirely missing. Instead, give your best reasoned inference based on related info. 3. Include exact quotes or data from the PDF when relevant (e.g., engine specs, configurations, tables, or key phrases). 4. If multiple possible answers exist, list them all and clarify context (e.g., different trims or regions). 5. FOR IMAGE REQUESTS: If user asks to show/see/display/view images or pictures, return ONLY the IMAGE_URL lines from search results. NO text before or after. NO descriptions. NO explanations. Just copy the IMAGE_URL lines exactly. 6. Your output should be concise but information-rich, and structured whenever possible (e.g., bullet points or JSON-like blocks). 7. When unsure, reason based on evidence in the documents and state the degree of certainty if relevant. Act as a domain expert and research analyst — accurate, confident, and precise."
+  instruction = <<EOF
+You are a car catalog assistant. For EVERY user query:
+1. ALWAYS call search_documents function with the user's query
+2. If the result contains lines starting with 'IMAGE_URL:', return ONLY those lines
+3. Otherwise, provide a helpful answer based on the search results
+
+IMPORTANT: You MUST call search_documents for every query. Never say you cannot find images without calling search_documents first.
+EOF
 
   guardrail_configuration {
     guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
@@ -226,14 +223,14 @@ resource "null_resource" "prepare_agent" {
   ]
 }
 
-resource "null_resource" "update_production_alias" {
-  triggers = {
-    instruction = aws_bedrockagent_agent.rag_agent.instruction
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["powershell", "-Command"]
-    command = "$alias = aws bedrock-agent list-agent-aliases --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --profile ${var.aws_profile} | ConvertFrom-Json; $prodAlias = $alias.agentAliasSummaries | Where-Object {$_.agentAliasName -eq 'production'}; if ($prodAlias) { aws bedrock-agent delete-agent-alias --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --agent-alias-id $prodAlias.agentAliasId --profile ${var.aws_profile}; Start-Sleep 10 }; aws bedrock-agent create-agent-alias --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --agent-alias-name production --description 'Production alias for RAG agent' --profile ${var.aws_profile}"
+# Import existing production alias: terraform import aws_bedrockagent_agent_alias.production 19RBXR8RAY,8YWB06TOFD
+resource "aws_bedrockagent_agent_alias" "production" {
+  agent_id         = aws_bedrockagent_agent.rag_agent.agent_id
+  agent_alias_name = "production"
+  description      = "Production alias for RAG agent"
+  
+  routing_configuration {
+    agent_version = "41"
   }
 
   depends_on = [null_resource.prepare_agent]
