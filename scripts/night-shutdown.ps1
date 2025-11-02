@@ -9,29 +9,35 @@ Write-Host ""
 
 $ErrorActionPreference = "Continue"
 
-# Destroy NAT Gateways, VPC Endpoints, GuardDuty, and AWS Config
-Write-Host "Destroying NAT Gateways, VPC Endpoints, GuardDuty, and AWS Config..." -ForegroundColor Yellow
-terraform destroy `
-  -target='aws_nat_gateway.main[0]' `
-  -target='aws_nat_gateway.main[1]' `
-  -target='aws_eip.nat[0]' `
-  -target='aws_eip.nat[1]' `
-  -target='aws_vpc_endpoint.bedrock_runtime[0]' `
-  -target='aws_vpc_endpoint.bedrock_agent_runtime[0]' `
-  -target='aws_vpc_endpoint.sqs[0]' `
-  -target='aws_vpc_endpoint.sns[0]' `
-  -target='aws_vpc_endpoint.secretsmanager[0]' `
-  -target='aws_vpc_endpoint.kms[0]' `
-  -target='aws_vpc_endpoint.logs[0]' `
-  -target='aws_guardduty_detector.main' `
-  -target='aws_config_configuration_recorder_status.main' `
-  -target='aws_config_delivery_channel.main' `
-  -target='aws_config_configuration_recorder.main' `
-  -auto-approve
+# Check current state
+Write-Host "Checking current resources..." -ForegroundColor Yellow
+$natGateways = aws ec2 describe-nat-gateways --filter "Name=state,Values=available" --query 'NatGateways[*].NatGatewayId' --output text --profile default
+$vpcEndpoints = aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=vpc-009ac5a412a717f97" --query 'VpcEndpoints[*].VpcEndpointId' --output text --profile default
 
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "❌ Shutdown encountered errors" -ForegroundColor Yellow
+if ($natGateways) {
+  Write-Host "Deleting NAT Gateways..." -ForegroundColor Yellow
+  foreach ($nat in $natGateways.Split()) {
+    aws ec2 delete-nat-gateway --nat-gateway-id $nat --profile default
+    Write-Host "  Deleted $nat" -ForegroundColor Gray
+  }
 }
+
+if ($vpcEndpoints) {
+  Write-Host "Deleting VPC Endpoints..." -ForegroundColor Yellow
+  aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $vpcEndpoints.Split() --profile default | Out-Null
+  Write-Host "  Deleted VPC Endpoints" -ForegroundColor Gray
+}
+
+Write-Host "Disabling GuardDuty..." -ForegroundColor Yellow
+$detectorId = aws guardduty list-detectors --query 'DetectorIds[0]' --output text --profile default
+if ($detectorId -and $detectorId -ne "None") {
+  aws guardduty delete-detector --detector-id $detectorId --profile default | Out-Null
+  Write-Host "  Disabled GuardDuty" -ForegroundColor Gray
+}
+
+Write-Host "Disabling AWS Config..." -ForegroundColor Yellow
+aws configservice stop-configuration-recorder --configuration-recorder-name pdfquery-config-recorder --profile default 2>$null
+Write-Host "  Stopped Config Recorder" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "✅ Shutdown complete! Resources destroyed:" -ForegroundColor Green
