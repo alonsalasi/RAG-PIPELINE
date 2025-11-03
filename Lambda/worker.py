@@ -16,27 +16,47 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import faiss
 from PIL import Image
 
-# Logging setup
-logger = logging.getLogger()
+# Logging setup with structured format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Clients with timeouts and proper error handling
-try:
-    s3 = boto3.client("s3", config=Config(connect_timeout=5, read_timeout=60))
-    textract = boto3.client("textract", config=Config(connect_timeout=5, read_timeout=300))
-    
-    region = os.environ.get("AWS_REGION")
-    if not region:
-        raise ValueError("AWS_REGION environment variable must be set")
-    
-    bedrock_runtime = boto3.client(
-        "bedrock-runtime",
-        region_name=region,
-        config=Config(connect_timeout=5, read_timeout=60)
-    )
-except Exception as e:
-    logger.error(f"Failed to initialize AWS clients: {e}")
-    raise
+# Thread-safe client initialization
+_clients_lock = None
+_s3_client = None
+_textract_client = None
+_bedrock_client = None
+_secretsmanager_client = None
+
+def get_s3_client():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3", config=Config(connect_timeout=5, read_timeout=60))
+    return _s3_client
+
+def get_textract_client():
+    global _textract_client
+    if _textract_client is None:
+        _textract_client = boto3.client("textract", config=Config(connect_timeout=5, read_timeout=300))
+    return _textract_client
+
+def get_bedrock_client():
+    global _bedrock_client
+    if _bedrock_client is None:
+        region = os.environ.get("AWS_REGION")
+        if not region:
+            raise ValueError("AWS_REGION environment variable must be set")
+        _bedrock_client = boto3.client("bedrock-runtime", region_name=region, config=Config(connect_timeout=5, read_timeout=60))
+    return _bedrock_client
+
+def get_secretsmanager_client():
+    global _secretsmanager_client
+    if _secretsmanager_client is None:
+        _secretsmanager_client = boto3.client('secretsmanager')
+    return _secretsmanager_client
 
 # Validate required environment variables
 BUCKET = os.environ.get("S3_BUCKET")
@@ -44,35 +64,35 @@ if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
 
-# Google Vision API key (loaded from Secrets Manager)
-GOOGLE_VISION_KEY = None
+# Google Vision API key cache
+_google_vision_key = None
+_google_vision_checked = False
 
 def get_google_vision_key():
     """Lazy load Google Vision API key from Secrets Manager."""
-    global GOOGLE_VISION_KEY
-    if GOOGLE_VISION_KEY is None:
+    global _google_vision_key, _google_vision_checked
+    if not _google_vision_checked:
+        _google_vision_checked = True
         try:
             project_name = os.environ.get('PROJECT_NAME')
             if not project_name:
                 logger.info("PROJECT_NAME not set, skipping Google Vision")
-                GOOGLE_VISION_KEY = None
-                return GOOGLE_VISION_KEY
+                return None
             
             secret_name = f"{project_name}-google-vision-key"
-            secretsmanager = boto3.client('secretsmanager')
-            response = secretsmanager.get_secret_value(SecretId=secret_name)
+            sm_client = get_secretsmanager_client()
+            response = sm_client.get_secret_value(SecretId=secret_name)
             secret = json.loads(response['SecretString'])
-            GOOGLE_VISION_KEY = secret.get('api_key')
+            api_key = secret.get('api_key')
             
-            if GOOGLE_VISION_KEY and GOOGLE_VISION_KEY not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
+            if api_key and api_key not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
                 logger.info("Google Vision API key loaded")
+                _google_vision_key = api_key
             else:
-                logger.info("Google Vision API key not configured, using standard OCR")
-                GOOGLE_VISION_KEY = None
+                logger.info("Google Vision API key not configured")
         except Exception as e:
-            logger.warning(f"Could not load Google Vision key: {e}")
-            GOOGLE_VISION_KEY = None
-    return GOOGLE_VISION_KEY
+            logger.warning(f"Could not load Google Vision key: {type(e).__name__}")
+    return _google_vision_key
 
 def detect_handwriting_with_google_vision(image_bytes):
     """Use Google Vision to detect handwriting in an image."""
@@ -126,90 +146,72 @@ class ProcessingCancelled(Exception):
     pass
 
 def analyze_image_with_claude(image_data):
-    """Analyze image using Claude 3 Sonnet with vision capabilities."""
+    """Analyze image using Claude 3 Haiku with vision capabilities."""
+    if not image_data or len(image_data) == 0:
+        raise ValueError("Empty image data provided")
+    
     try:
-        logger.info(f"Starting Claude image analysis, image size: {len(image_data)} bytes")
+        logger.info(f"Starting Claude image analysis, size: {len(image_data)} bytes")
         
-        # Convert image to base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
-        logger.info(f"Image converted to base64, length: {len(image_base64)}")
         
-        # Prepare the request for Claude
         request_body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 300,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": "Analyze this image and provide: 1) ALL visible text/words/numbers exactly as written, 2) ALL colors present (be specific: white, silver, black, red, etc), 3) CATEGORY: Is this a 'FULL VEHICLE' (complete car/truck/SUV visible) or 'VEHICLE PART' (wheel, engine, interior, etc) or 'OTHER'?, 4) Brand/logo if clearly visible (spell exactly), 5) Key visual features. Format as: TEXT: [all text seen] COLORS: [all colors] CATEGORY: [FULL VEHICLE or VEHICLE PART or OTHER] TYPE: [specific type like sedan, SUV, wheel, dashboard] BRAND: [brand name or 'none visible'] DETAILS: [other features]. Be thorough and precise."
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": image_base64
                         }
-                    ]
-                }
-            ]
+                    },
+                    {
+                        "type": "text",
+                        "text": "Analyze this image and provide: 1) ALL visible text/words/numbers exactly as written, 2) ALL colors present (be specific: white, silver, black, red, etc), 3) CATEGORY: Is this a 'FULL VEHICLE' (complete car/truck/SUV visible) or 'VEHICLE PART' (wheel, engine, interior, etc) or 'OTHER'?, 4) Brand/logo if clearly visible (spell exactly), 5) Key visual features. Format as: TEXT: [all text seen] COLORS: [all colors] CATEGORY: [FULL VEHICLE or VEHICLE PART or OTHER] TYPE: [specific type like sedan, SUV, wheel, dashboard] BRAND: [brand name or 'none visible'] DETAILS: [other features]. Be thorough and precise."
+                    }
+                ]
+            }]
         }
         
-        logger.info(f"Calling Claude 3 Sonnet...")
+        bedrock = get_bedrock_client()
+        response = bedrock.invoke_model(
+            modelId="anthropic.claude-3-haiku-20240307-v1:0",
+            body=json.dumps(request_body)
+        )
         
-        # Use Claude models that don't require marketplace subscription
-        model_ids = [
-            "anthropic.claude-3-haiku-20240307-v1:0"
-        ]
-        
-        response = None
-        for model_id in model_ids:
-            try:
-                logger.info(f"Trying model: {model_id}")
-                response = bedrock_runtime.invoke_model(
-                    modelId=model_id,
-                    body=json.dumps(request_body)
-                )
-                logger.info(f"Successfully used model: {model_id}")
-                break
-            except Exception as model_error:
-                logger.warning(f"Model {model_id} failed: {model_error}")
-                continue
-        
-        if not response:
-            raise Exception("All Claude models failed")
-        
-        # Parse response
         response_body = json.loads(response['body'].read())
         description = response_body['content'][0]['text']
         
-        logger.info(f"Claude analysis successful: {description[:100]}...")
+        logger.info(f"Claude analysis complete: {len(description)} chars")
         return description
         
     except Exception as e:
-        logger.error(f"Claude analysis failed: {str(e)}")
-        logger.error(f"Error type: {type(e).__name__}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise e  # Re-raise to trigger fallback
+        logger.error(f"Claude analysis failed: {type(e).__name__}")
+        raise
 
 def check_cancelled(base_name):
     """Check if processing was cancelled."""
+    if not base_name or not isinstance(base_name, str):
+        return False
+    
+    s3_client = get_s3_client()
     try:
-        s3.head_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
+        s3_client.head_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
         logger.info(f"Processing cancelled: {base_name}")
-        s3.delete_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
+        s3_client.delete_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
         raise ProcessingCancelled(f"Processing cancelled for {base_name}")
-    except s3.exceptions.ClientError as e:
+    except s3_client.exceptions.ClientError as e:
         if e.response['Error']['Code'] == '404':
             return False
+        logger.error(f"Error checking cancellation: {type(e).__name__}")
         raise
 
 def process_message(record):
+    start_time = time.time()
     try:
         # Check if this is a direct S3 event or SQS message
         if "s3" in record:
@@ -220,12 +222,12 @@ def process_message(record):
             # SQS message with S3 event in body
             body = record.get("body")
             if not body:
-                logger.warning("Empty SQS body, skipping.")
+                logger.warning("Empty SQS body, skipping")
                 return
             try:
                 s3_event = json.loads(body)
             except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON in SQS body: {e}")
+                logger.error(f"Invalid JSON in SQS body | Error: {type(e).__name__}")
                 return
             
             if "Records" not in s3_event or not s3_event["Records"]:
@@ -246,12 +248,13 @@ def process_message(record):
             logger.error(f"S3 key not in allowed uploads prefix")
             return
 
-        logger.info(f"Processing file: s3://{s3_bucket}/{s3_key}")
+        logger.info(f"Processing started | Bucket: {s3_bucket} | Key: {s3_key}")
         # Sanitize base_name
         filename = os.path.basename(s3_key)
         base_name = os.path.splitext(filename)[0]
         # Remove any remaining path separators
         base_name = base_name.replace('/', '_').replace('\\', '_')
+        logger.info(f"File info | Filename: {filename} | BaseName: {base_name}")
         
         # Check cancellation marker
         check_cancelled(base_name)
@@ -259,31 +262,30 @@ def process_message(record):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Secure filename handling to prevent path traversal
             safe_filename = os.path.basename(s3_key)
-            # Remove any dangerous characters
             safe_filename = ''.join(c for c in safe_filename if c.isalnum() or c in '._-')
             if not safe_filename or safe_filename.startswith('.') or len(safe_filename) > 255:
                 safe_filename = 'document.pdf'
             
             local_path = os.path.join(tmpdir, safe_filename)
-            # Verify the resolved path is within tmpdir (prevent path traversal)
             if not os.path.abspath(local_path).startswith(os.path.abspath(tmpdir)):
                 logger.error("Path traversal attempt detected")
                 raise ValueError("Invalid file path - security violation")
             
+            s3_client = get_s3_client()
             try:
-                s3.download_file(s3_bucket, s3_key, local_path)
+                download_start = time.time()
+                s3_client.download_file(s3_bucket, s3_key, local_path)
                 file_size = os.path.getsize(local_path)
-                logger.info(f"Downloaded {file_size} bytes")
+                logger.info(f"Download complete | Size: {file_size} bytes | Time: {time.time() - download_start:.2f}s")
                 
-                # Validate file size (prevent DoS)
-                max_size = 100 * 1024 * 1024  # 100MB limit
+                max_size = 100 * 1024 * 1024
                 if file_size > max_size:
-                    logger.error(f"File too large: {file_size} bytes (max: {max_size})")
-                    return
+                    logger.error(f"File too large: {file_size} bytes")
+                    raise ValueError(f"File exceeds maximum size of {max_size} bytes")
                     
-            except Exception as e:
-                logger.error(f"Failed to download file from S3: {e}")
-                return
+            except (IOError, OSError) as e:
+                logger.error(f"File download failed: {type(e).__name__}")
+                raise
 
             # ---- Extract images from PDF ----
             image_metadata = []
@@ -312,31 +314,35 @@ def process_message(record):
                                         # Check and upscale small images with proper resource management
                                         img = None
                                         try:
-                                            img = Image.open(io.BytesIO(img_data))
-                                            width, height = img.size
-                                            
-                                            if width < 50 or height < 50:
-                                                logger.info(f"Skipping tiny image: {width}x{height}")
-                                                continue
-                                            
-                                            if width < 300 or height < 300:
-                                                scale = max(300 / width, 300 / height)
-                                                new_size = (int(width * scale), int(height * scale))
-                                                img = img.resize(new_size, Image.Resampling.LANCZOS)
-                                                logger.info(f"Upscaled {width}x{height} to {img.size}")
+                                            with Image.open(io.BytesIO(img_data)) as img:
+                                                width, height = img.size
                                                 
-                                                with io.BytesIO() as buffer:
-                                                    img.save(buffer, format='JPEG', quality=95)
-                                                    img_data = buffer.getvalue()
-                                        finally:
-                                            if img:
-                                                img.close()
+                                                if width < 50 or height < 50:
+                                                    logger.info(f"Skipping tiny image: {width}x{height}")
+                                                    continue
+                                                
+                                                if width < 300 or height < 300:
+                                                    scale = max(300 / width, 300 / height)
+                                                    new_size = (int(width * scale), int(height * scale))
+                                                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                                                    logger.info(f"Upscaled {width}x{height} to {img.size}")
+                                                    
+                                                    buffer = io.BytesIO()
+                                                    try:
+                                                        img.save(buffer, format='JPEG', quality=95)
+                                                        img_data = buffer.getvalue()
+                                                    finally:
+                                                        buffer.close()
+                                        except Exception as img_err:
+                                            logger.warning(f"Image processing error: {type(img_err).__name__}")
+                                            continue
                                         
                                         # Save image to S3
                                         img_name = f"{base_name}_page{page_num}_img{len(image_metadata)}.jpg"
                                         img_key = f"images/{base_name}/{img_name}"
                                         
-                                        s3.put_object(
+                                        s3_client = get_s3_client()
+                                        s3_client.put_object(
                                             Bucket=BUCKET,
                                             Key=img_key,
                                             Body=img_data,
@@ -364,11 +370,11 @@ def process_message(record):
                                         logger.info(f"Extracted image from page {page_num}: {img_key}")
                                         logger.info(f"Image description: {description[:100]}...")
                                     except Exception as img_e:
-                                        logger.warning(f"Failed to extract image: {img_e}")
+                                        logger.warning(f"Failed to extract image: {type(img_e).__name__}")
                     
-                    logger.info(f"Extracted {len(image_metadata)} images from PDF")
+                    logger.info(f"Image extraction complete | Count: {len(image_metadata)} | File: {base_name}")
                 except Exception as e:
-                    logger.warning(f"Image extraction failed: {e}")
+                    logger.warning(f"Image extraction failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
             
             # ---- OCR-based text extraction ----
             full_text = ""
@@ -427,21 +433,23 @@ def process_message(record):
                                                 check_cancelled(base_name)
                                                 
                                                 hq_images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
-                                                img = hq_images[0].convert('L')
-                                                enhancer = ImageEnhance.Contrast(img)
-                                                img = enhancer.enhance(2.0)
-                                                img = img.filter(ImageFilter.SHARPEN)
-                                                img_array = np.array(img)
-                                                img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
-                                                _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                                                processed_img = Image.fromarray(img_array)
-                                                ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
-                                                full_text += ocr_text + "\n"
-                                                logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
-                                                processed_img.close()
-                                                img.close()
-                                                for hq_img in hq_images:
-                                                    hq_img.close()
+                                                try:
+                                                    img = hq_images[0].convert('L')
+                                                    enhancer = ImageEnhance.Contrast(img)
+                                                    img = enhancer.enhance(2.0)
+                                                    img = img.filter(ImageFilter.SHARPEN)
+                                                    img_array = np.array(img)
+                                                    img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
+                                                    _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                                    processed_img = Image.fromarray(img_array)
+                                                    ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
+                                                    full_text += ocr_text + "\n"
+                                                    logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
+                                                    processed_img.close()
+                                                    img.close()
+                                                finally:
+                                                    for hq_img in hq_images:
+                                                        hq_img.close()
                                         else:
                                             # Not handwritten, use standard OCR
                                             test_data = pytesseract.image_to_data(page_image, lang='heb+eng+tur', output_type=pytesseract.Output.DICT, timeout=30)
@@ -497,15 +505,17 @@ def process_message(record):
             full_text = full_text.replace('Scanned by CamScanner', '').strip()
             
             if not full_text.strip() or len(full_text.strip()) < 100:
-                logger.warning(f"Insufficient text extracted ({len(full_text)} chars); skipping embedding.")
+                logger.warning(f"Insufficient text | Length: {len(full_text)} chars | File: {base_name}")
                 return
 
             # Check cancellation before chunking
             check_cancelled(base_name)
             
             # Split text into chunks
+            chunk_start = time.time()
             splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
             chunks = splitter.split_text(full_text)
+            logger.info(f"Text chunking complete | Chunks: {len(chunks)} | Time: {time.time() - chunk_start:.2f}s")
             
             # Add metadata to chunks including image info
             docs = []
@@ -543,7 +553,7 @@ def process_message(record):
                     docs.append(img_doc)
                     logger.info(f"Added image document: {description[:50]}...")
             
-            logger.info(f"Created {len(docs)} chunks")
+            logger.info(f"Document preparation complete | Total docs: {len(docs)} | Text chunks: {len(chunks)} | Images: {len(image_metadata)}")
 
             # Check cancellation before embedding
             check_cancelled(base_name)
@@ -577,18 +587,21 @@ def process_message(record):
                     raise
             
             # Load or create master index
+            embed_start = time.time()
             if master_exists:
-                logger.info("Loading existing master index...")
+                logger.info("Loading existing master index")
                 master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
-                logger.info(f"Master index loaded with {master_store.index.ntotal} existing vectors")
+                existing_count = master_store.index.ntotal
+                logger.info(f"Master index loaded | Existing vectors: {existing_count}")
                 
                 # Add new documents to master index
-                logger.info(f"Adding {len(docs)} new documents to master index...")
                 master_store.add_documents(docs)
-                logger.info(f"Master index now has {master_store.index.ntotal} total vectors")
+                new_count = master_store.index.ntotal
+                logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
             else:
-                logger.info(f"Creating new master index with {len(docs)} documents...")
+                logger.info(f"Creating new master index | Documents: {len(docs)}")
                 master_store = FAISS.from_documents(docs, embed)
+                logger.info(f"Master index created | Vectors: {master_store.index.ntotal} | Time: {time.time() - embed_start:.2f}s")
             
             # Save updated master index
             master_store.save_local(master_index_dir)
@@ -599,15 +612,16 @@ def process_message(record):
                 raise Exception("Failed to create master index files")
             
             # Upload master index
+            upload_start = time.time()
             try:
-                s3.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
-                s3.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
-                logger.info(f"Uploaded master index to s3://{BUCKET}/vector_store/master/")
+                s3_client.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
+                s3_client.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
+                logger.info(f"Master index uploaded | Bucket: {BUCKET} | Time: {time.time() - upload_start:.2f}s")
             except Exception as e:
-                logger.error(f"Failed to upload master index: {e}")
+                logger.error(f"Master index upload failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
                 raise
 
-            # ---- Mark as processed ----
+            # Mark as processed
             marker_key = f"processed/{base_name}.json"
             marker_content = {
                 "source_file": s3_key,
@@ -618,18 +632,22 @@ def process_message(record):
                 "completed_at": int(time.time())
             }
             
-            s3.put_object(
+            s3_client = get_s3_client()
+            s3_client.put_object(
                 Bucket=BUCKET,
                 Key=marker_key,
                 Body=json.dumps(marker_content),
                 ContentType="application/json"
             )
-            logger.info(f"Processing complete marker written to s3://{BUCKET}/{marker_key}")
+            total_time = time.time() - start_time
+            logger.info(f"Processing complete | File: {base_name} | Total time: {total_time:.2f}s | Marker: {marker_key}")
 
     except ProcessingCancelled as e:
-        logger.info(f"Processing cancelled successfully: {e}")
-        return  # Exit cleanly without saving anything
-    except Exception as e:
-        logger.error(f"Failed processing record: {e}")
-        # Don't re-raise to prevent infinite retries
+        logger.info(f"Processing cancelled | File: {base_name} | Time: {time.time() - start_time:.2f}s")
         return
+    except (ValueError, IOError, OSError) as e:
+        logger.error(f"Processing failed | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:100]} | Time: {time.time() - start_time:.2f}s")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:200]} | Time: {time.time() - start_time:.2f}s")
+        raise

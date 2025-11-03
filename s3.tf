@@ -60,12 +60,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
     }
 
     noncurrent_version_transition {
-      noncurrent_days = 90
-      storage_class   = "GLACIER"
+      noncurrent_days = 60
+      storage_class   = "GLACIER_IR"
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 365
+      noncurrent_days = 120
     }
   }
 
@@ -101,8 +101,8 @@ resource "aws_s3_bucket_cors_configuration" "rag_documents_cors" {
 
   cors_rule {
     allowed_methods = ["PUT", "POST", "GET", "HEAD"]
-    allowed_origins = ["*"]
-    allowed_headers = ["*"] 
+    allowed_origins = ["https://${aws_cloudfront_distribution.rag_frontend_cdn.domain_name}"]
+    allowed_headers = ["Content-Type", "Content-MD5", "Content-Disposition"]
     expose_headers = ["ETag", "Content-Length"]
     max_age_seconds = 3000
   }

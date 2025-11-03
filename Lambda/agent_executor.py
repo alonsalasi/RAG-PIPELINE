@@ -7,16 +7,27 @@ import uuid
 from urllib.parse import unquote_plus
 from decimal import Decimal
 from functools import wraps
+import contextvars
 
 # -----------------------------------------------------------
-# Logging
+# Logging with Correlation ID
 # -----------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - [%(correlation_id)s] - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Changed from DEBUG to INFO for production
+logger.setLevel(logging.INFO)
+
+# Context variable for correlation ID
+correlation_id_var = contextvars.ContextVar('correlation_id', default='no-correlation-id')
+
+class CorrelationIdFilter(logging.Filter):
+    def filter(self, record):
+        record.correlation_id = correlation_id_var.get()
+        return True
+
+logger.addFilter(CorrelationIdFilter())
 
 # -----------------------------------------------------------
 # Security Utils
@@ -62,62 +73,52 @@ def retry_with_backoff(max_retries=3):
 # AWS Setup
 # -----------------------------------------------------------
 from botocore.client import Config
-s3 = boto3.client("s3", config=Config(signature_version='s3v4', connect_timeout=5, read_timeout=60))
-# Get S3 bucket from environment - no hardcoded values
+
+# Thread-safe client initialization
+_s3_client = None
+_bedrock_client = None
+_embeddings_client = None
+_faiss_cache = {}
+
+def get_s3_client():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3", config=Config(signature_version='s3v4', connect_timeout=5, read_timeout=60))
+    return _s3_client
+
+def get_bedrock_client():
+    """Get Bedrock client with proper error handling."""
+    global _bedrock_client
+    if _bedrock_client is None:
+        region = os.getenv("AWS_REGION")
+        if not region:
+            raise ValueError("AWS_REGION must be configured")
+        _bedrock_client = boto3.client(
+            "bedrock-agent-runtime",
+            region_name=region,
+            config=Config(connect_timeout=5, read_timeout=60)
+        )
+        logger.info(f"Bedrock client initialized: {region}")
+    return _bedrock_client
+
+def get_embeddings_client():
+    """Get embeddings client with proper error handling."""
+    global _embeddings_client
+    if _embeddings_client is None:
+        from langchain_aws import BedrockEmbeddings
+        region = os.getenv("AWS_REGION")
+        if not region:
+            raise ValueError("AWS_REGION must be configured")
+        model_id = os.getenv("EMBEDDINGS_MODEL_ID", "cohere.embed-multilingual-v3")
+        _embeddings_client = BedrockEmbeddings(model_id=model_id, region_name=region)
+        logger.info(f"Embeddings client initialized: {model_id}")
+    return _embeddings_client
+
+# Get S3 bucket from environment
 BUCKET = os.getenv("S3_BUCKET")
 if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
-
-BEDROCK_CLIENT = None
-def get_bedrock_client():
-    """Get Bedrock client with proper error handling."""
-    global BEDROCK_CLIENT
-    if BEDROCK_CLIENT is None:
-        try:
-            region = os.getenv("AWS_REGION")
-            if not region:
-                logger.error("AWS_REGION environment variable not set")
-                raise ValueError("AWS_REGION must be configured")
-            
-            BEDROCK_CLIENT = boto3.client(
-                "bedrock-agent-runtime",
-                region_name=region,
-                config=Config(connect_timeout=5, read_timeout=60)
-            )
-            logger.info(f"Bedrock client initialized for region: {region}")
-        except Exception as e:
-            logger.error(f"Failed to initialize Bedrock client: {sanitize_for_logging(str(e))}")
-            raise
-    return BEDROCK_CLIENT
-
-# Cache for FAISS indexes in /tmp (persists across warm invocations)
-FAISS_CACHE = {}
-
-# Reuse embeddings client across invocations
-EMBEDDINGS_CLIENT = None
-
-def get_embeddings_client():
-    """Get embeddings client with proper error handling."""
-    global EMBEDDINGS_CLIENT
-    if EMBEDDINGS_CLIENT is None:
-        try:
-            from langchain_aws import BedrockEmbeddings
-            region = os.getenv("AWS_REGION")
-            if not region:
-                logger.error("AWS_REGION environment variable not set")
-                raise ValueError("AWS_REGION must be configured")
-            
-            model_id = os.getenv("EMBEDDINGS_MODEL_ID", "cohere.embed-multilingual-v3")
-            EMBEDDINGS_CLIENT = BedrockEmbeddings(
-                model_id=model_id,
-                region_name=region
-            )
-            logger.info(f"Embeddings client initialized with model: {model_id}")
-        except Exception as e:
-            logger.error(f"Failed to initialize embeddings client: {sanitize_for_logging(str(e))}")
-            raise
-    return EMBEDDINGS_CLIENT
 
 @retry_with_backoff(max_retries=2)
 def preload_master_index():
@@ -127,18 +128,18 @@ def preload_master_index():
     
     cache_key = "master_index"
     cache_dir = "/tmp/master_index"
+    s3_client = get_s3_client()
     
     try:
-        s3.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-    except s3.exceptions.ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-        if error_code == '404':
+        s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+    except s3_client.exceptions.ClientError as e:
+        if e.response.get('Error', {}).get('Code') == '404':
             logger.info("No master index to preload")
         else:
-            logger.warning(f"Error checking master index: {sanitize_for_logging(str(e))}")
+            logger.warning(f"Error checking master index: {type(e).__name__}")
         return
     except Exception as e:
-        logger.error(f"Unexpected error checking master index: {sanitize_for_logging(str(e))}")
+        logger.error(f"Unexpected error: {type(e).__name__}")
         return
     
     if os.path.exists(cache_dir):
@@ -149,36 +150,48 @@ def preload_master_index():
     index_file = os.path.join(cache_dir, "index.faiss")
     pkl_file = os.path.join(cache_dir, "index.pkl")
     
-    s3.download_file(BUCKET, "vector_store/master/index.faiss", index_file)
-    s3.download_file(BUCKET, "vector_store/master/index.pkl", pkl_file)
+    s3_client.download_file(BUCKET, "vector_store/master/index.faiss", index_file)
+    s3_client.download_file(BUCKET, "vector_store/master/index.pkl", pkl_file)
     
     embeddings = get_embeddings_client()
     master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-    FAISS_CACHE[cache_key] = master_index
+    _faiss_cache[cache_key] = master_index
     
-    logger.info(f"Preloaded master index with {master_index.index.ntotal} vectors")
+    logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors")
 
 try:
     preload_master_index()
 except Exception as e:
-    logger.error(f"Critical: Startup preload failed: {sanitize_for_logging(str(e))}")
-    # Don't raise - allow Lambda to start even if preload fails
+    logger.error(f"Startup preload failed: {type(e).__name__}")
 
 
-def list_all_s3_objects(bucket, prefix):
-    """List all S3 objects with pagination support."""
+def list_all_s3_objects(bucket, prefix, max_keys=1000):
+    """List all S3 objects with pagination support and limits."""
+    if not bucket or not isinstance(bucket, str):
+        raise ValueError("Invalid bucket name")
+    if not prefix or not isinstance(prefix, str):
+        raise ValueError("Invalid prefix")
+    
+    s3_client = get_s3_client()
     objects = []
     continuation_token = None
+    total_fetched = 0
     
-    while True:
-        params = {'Bucket': bucket, 'Prefix': prefix}
+    while total_fetched < max_keys:
+        params = {
+            'Bucket': bucket,
+            'Prefix': prefix,
+            'MaxKeys': min(1000, max_keys - total_fetched)
+        }
         if continuation_token:
             params['ContinuationToken'] = continuation_token
         
-        response = s3.list_objects_v2(**params)
-        objects.extend(response.get('Contents', []))
+        response = s3_client.list_objects_v2(**params)
+        batch = response.get('Contents', [])
+        objects.extend(batch)
+        total_fetched += len(batch)
         
-        if not response.get('IsTruncated', False):
+        if not response.get('IsTruncated', False) or total_fetched >= max_keys:
             break
         continuation_token = response.get('NextContinuationToken')
     
@@ -188,14 +201,21 @@ def batch_delete_s3_objects(bucket, keys):
     """Delete multiple S3 objects in batches of 1000."""
     if not keys:
         return 0
+    if not bucket or not isinstance(bucket, str):
+        raise ValueError("Invalid bucket name")
     
+    s3_client = get_s3_client()
     deleted_count = 0
-    # S3 batch delete supports max 1000 objects per request
+    
     for i in range(0, len(keys), 1000):
         batch = keys[i:i+1000]
         delete_dict = {'Objects': [{'Key': k} for k in batch], 'Quiet': True}
-        s3.delete_objects(Bucket=bucket, Delete=delete_dict)
-        deleted_count += len(batch)
+        try:
+            s3_client.delete_objects(Bucket=bucket, Delete=delete_dict)
+            deleted_count += len(batch)
+        except Exception as e:
+            logger.error(f"Batch delete failed: {type(e).__name__}")
+            raise
     
     return deleted_count
 
@@ -223,15 +243,16 @@ def handle_get_upload_url():
     try:
         timestamp = int(time.time())
         key = f"uploads/upload_{timestamp}.pdf"
-        url = s3.generate_presigned_url(
+        s3_client = get_s3_client()
+        url = s3_client.generate_presigned_url(
             "put_object",
             Params={"Bucket": BUCKET, "Key": key, "ContentType": "application/pdf"},
-            ExpiresIn=3600,
+            ExpiresIn=7200,
         )
-        logger.info(f"Generated upload URL for key: {sanitize_for_logging(key)}")
+        logger.info(f"Upload URL generated | Key: {sanitize_for_logging(key)} | Expires: 7200s")
         return cors_response({"uploadUrl": url, "key": key})
     except Exception as e:
-        logger.error(f"Failed to generate upload URL: {sanitize_for_logging(str(e))}")
+        logger.error(f"Upload URL generation failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Failed to generate upload URL"}, 500)
 
 
@@ -241,8 +262,9 @@ def handle_get_upload_url():
 def handle_list_files():
     """List processed PDFs available for querying."""
     try:
-        logger.info("Listing processed PDFs...")
-        response = s3.list_objects_v2(Bucket=BUCKET, Prefix="processed/")
+        logger.info("Listing processed files | Bucket: {BUCKET} | Prefix: processed/")
+        s3_client = get_s3_client()
+        response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="processed/", MaxKeys=1000)
         files = []
         if "Contents" in response:
             for obj in response["Contents"]:
@@ -255,10 +277,10 @@ def handle_list_files():
                         "size": obj["Size"]
                     })
         
-        logger.info(f"Found {len(files)} processed files")
+        logger.info(f"List files complete | Count: {len(files)} | Truncated: {response.get('IsTruncated', False)}")
         return cors_response({"files": files})
     except Exception as e:
-        logger.error(f"Failed to list files: {sanitize_for_logging(str(e))}")
+        logger.error(f"List files failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Failed to list files"}, 500)
 
 
@@ -269,48 +291,53 @@ def handle_delete_file(filename):
     """Delete a processed PDF and its associated data."""
     try:
         filename = validate_filename(filename)
-        logger.info(f"Deleting file: {sanitize_for_logging(filename)}")
+        logger.info(f"Delete operation started | File: {sanitize_for_logging(filename)}")
+        
+        s3_client = get_s3_client()
         
         # Delete processed JSON
         processed_key = f"processed/{filename}.json"
         try:
-            s3.delete_object(Bucket=BUCKET, Key=processed_key)
-            logger.info(f"Deleted processed file: {sanitize_for_logging(processed_key)}")
+            s3_client.delete_object(Bucket=BUCKET, Key=processed_key)
+            logger.info(f"Deleted processed JSON | Key: {sanitize_for_logging(processed_key)}")
         except Exception as e:
-            logger.warning(f"Could not delete processed file {processed_key}: {sanitize_for_logging(str(e))}")
+            logger.warning(f"Could not delete processed | Key: {processed_key} | Error: {type(e).__name__}")
         
-        # Delete original PDF from uploads
-        upload_objects = list_all_s3_objects(BUCKET, "uploads/")
+        # Delete uploads (limit search)
+        upload_objects = list_all_s3_objects(BUCKET, f"uploads/{filename}", max_keys=100)
+        logger.info(f"Found {len(upload_objects)} upload objects")
         for obj in upload_objects:
-            if filename in obj["Key"]:
-                s3.delete_object(Bucket=BUCKET, Key=obj["Key"])
-                logger.info(f"Deleted upload: {sanitize_for_logging(obj['Key'])}")
+            try:
+                s3_client.delete_object(Bucket=BUCKET, Key=obj["Key"])
+            except Exception as e:
+                logger.warning(f"Delete upload failed | Key: {obj['Key']} | Error: {type(e).__name__}")
         
         # Delete images
-        image_objects = list_all_s3_objects(BUCKET, f"images/{filename}/")
+        image_objects = list_all_s3_objects(BUCKET, f"images/{filename}/", max_keys=500)
         image_keys = [obj["Key"] for obj in image_objects]
         if image_keys:
             deleted_count = batch_delete_s3_objects(BUCKET, image_keys)
-            logger.info(f"Deleted {deleted_count} images for {sanitize_for_logging(filename)}")
+            logger.info(f"Deleted images | Count: {deleted_count} | File: {filename}")
         
         # Delete vector store data
-        vector_objects = list_all_s3_objects(BUCKET, f"vector_store/{filename}/")
+        vector_objects = list_all_s3_objects(BUCKET, f"vector_store/{filename}/", max_keys=100)
         vector_keys = [obj["Key"] for obj in vector_objects]
         if vector_keys:
             deleted_count = batch_delete_s3_objects(BUCKET, vector_keys)
-            logger.info(f"Deleted {deleted_count} vector store objects for {sanitize_for_logging(filename)}")
+            logger.info(f"Deleted vector objects | Count: {deleted_count} | File: {filename}")
         
         # Clear FAISS cache
-        if filename in FAISS_CACHE:
-            del FAISS_CACHE[filename]
-            logger.info(f"Cleared FAISS cache for {sanitize_for_logging(filename)}")
+        if filename in _faiss_cache:
+            del _faiss_cache[filename]
+            logger.info(f"Cleared FAISS cache | File: {sanitize_for_logging(filename)}")
         
+        logger.info(f"Delete operation complete | File: {filename}")
         return cors_response({"message": f"Successfully deleted {filename}"})
     except ValueError as e:
-        logger.warning(f"Invalid filename for deletion: {sanitize_for_logging(str(e))}")
+        logger.warning(f"Invalid filename | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": str(e)}, 400)
     except Exception as e:
-        logger.error(f"Failed to delete file {sanitize_for_logging(filename)}: {sanitize_for_logging(str(e))}")
+        logger.error(f"Delete failed | File: {filename} | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Failed to delete file"}, 500)
 
 
@@ -325,20 +352,21 @@ def intelligent_search(query, top_k=10):
         
         # Load master index
         cache_key = "master_index"
-        if cache_key not in FAISS_CACHE:
-            logger.info("Loading master index for search...")
+        if cache_key not in _faiss_cache:
+            logger.info("Loading master index")
             cache_dir = "/tmp/master_index"
             
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir, exist_ok=True)
-                s3.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
-                s3.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
+                s3_client = get_s3_client()
+                s3_client.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
+                s3_client.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
             
             embeddings = get_embeddings_client()
             master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-            FAISS_CACHE[cache_key] = master_index
+            _faiss_cache[cache_key] = master_index
         
-        master_index = FAISS_CACHE[cache_key]
+        master_index = _faiss_cache[cache_key]
         query_lower = query.lower()
         
         # STREET-SMART AUTOMOTIVE INTELLIGENCE
@@ -543,22 +571,23 @@ def intelligent_search(query, top_k=10):
             # Add image URL if it's an image
             if metadata.get('type') == 'image' and 'image_key' in metadata:
                 try:
-                    image_url = s3.generate_presigned_url(
+                    s3_client = get_s3_client()
+                    image_url = s3_client.generate_presigned_url(
                         'get_object',
                         Params={'Bucket': BUCKET, 'Key': metadata['image_key']},
-                        ExpiresIn=3600
+                        ExpiresIn=7200
                     )
                     result['image_url'] = image_url
                 except Exception as e:
-                    logger.warning(f"Failed to generate image URL: {sanitize_for_logging(str(e))}")
+                    logger.warning(f"Failed to generate image URL: {type(e).__name__}")
             
             formatted_results.append(result)
         
-        logger.info(f"Street-smart search completed: {len(formatted_results)} highly relevant results")
+        logger.info(f"Search completed: {len(formatted_results)} results")
         return formatted_results
         
     except Exception as e:
-        logger.error(f"Street-smart search failed: {sanitize_for_logging(str(e))}")
+        logger.error(f"Search failed: {type(e).__name__}")
         return []
 
 
@@ -572,10 +601,11 @@ def handle_search(query):
             return cors_response({"error": "Query is required"}, 400)
         
         query = query.strip()
-        logger.info(f"Processing search query: {sanitize_for_logging(query)}")
+        logger.info(f"Search started | Query: {sanitize_for_logging(query)} | Length: {len(query)}")
         
         results = intelligent_search(query, top_k=10)
         
+        logger.info(f"Search complete | Results: {len(results)} | Query: {sanitize_for_logging(query)[:50]}")
         return cors_response({
             "results": results,
             "query": query,
@@ -583,7 +613,7 @@ def handle_search(query):
         })
         
     except Exception as e:
-        logger.error(f"Search request failed: {sanitize_for_logging(str(e))}")
+        logger.error(f"Search failed | Query: {sanitize_for_logging(query)[:50]} | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Search failed"}, 500)
 
 
@@ -1038,17 +1068,18 @@ def handle_search_action(event):
         
         # Load master index
         cache_key = "master_index"
-        if cache_key not in FAISS_CACHE:
+        if cache_key not in _faiss_cache:
             cache_dir = "/tmp/master_index"
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir, exist_ok=True)
-                s3.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
-                s3.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
+                s3_client = get_s3_client()
+                s3_client.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
+                s3_client.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
             embeddings = get_embeddings_client()
             master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-            FAISS_CACHE[cache_key] = master_index
+            _faiss_cache[cache_key] = master_index
         
-        master_index = FAISS_CACHE[cache_key]
+        master_index = _faiss_cache[cache_key]
         
         # Extract key terms
         query_lower = query.lower()
@@ -1076,38 +1107,40 @@ def handle_search_action(event):
             content = doc.page_content.lower()
             metadata = doc.metadata
             is_image = metadata.get('type') == 'image'
+            doc_source = metadata.get('source', '').lower()
             
-            # Calculate relevance score
-            relevance = 0
+            # Calculate relevance score starting with semantic similarity
+            relevance = (1.0 - semantic_score) * 50
             
-            # Brand matching (critical)
+            # Brand matching - boost if found, don't exclude if not
             if found_brand:
-                if found_brand in content:
-                    relevance += 100
+                if found_brand in doc_source:
+                    relevance += 100  # Strong match in document name
+                elif found_brand in content:
+                    relevance += 60   # Good match in content
                 else:
-                    continue  # Skip if brand specified but not found
+                    relevance -= 30   # Penalty but don't exclude
             
-            # Color matching (critical)
+            # Color matching - boost if found, don't exclude if not
             if found_color:
                 if found_color in content:
-                    relevance += 100
+                    relevance += 80   # Strong boost for color match
                 else:
-                    continue  # Skip if color specified but not found
+                    relevance -= 20   # Small penalty but don't exclude
             
             # Content type preference
             if wants_images:
                 if is_image:
-                    relevance += 50
+                    relevance += 40
                 else:
-                    relevance -= 20
+                    relevance -= 10
             else:
                 if not is_image:
-                    relevance += 30
+                    relevance += 20
             
-            # Semantic similarity bonus
-            relevance += (1.0 - semantic_score) * 20
-            
-            scored_results.append((doc, relevance, semantic_score))
+            # Only include if relevance is positive (filters out very poor matches)
+            if relevance > 0:
+                scored_results.append((doc, relevance, semantic_score))
         
         # Sort by relevance score
         scored_results.sort(key=lambda x: x[1], reverse=True)
@@ -1143,8 +1176,7 @@ def handle_search_action(event):
             
             result = "\n\n".join(result_parts) if result_parts else "No results found."
         
-        logger.info(f"Returning {len(scored_results)} filtered results")
-        logger.info(f"Result preview: {result[:500]}...")
+        logger.info(f"Returning {len(scored_results)} results")
         
         return {
             "messageVersion": "1.0",
@@ -1161,7 +1193,7 @@ def handle_search_action(event):
             }
         }
     except Exception as e:
-        logger.error(f"Search failed: {sanitize_for_logging(str(e))}")
+        logger.error(f"Search failed: {type(e).__name__}")
         return {
             "messageVersion": "1.0",
             "response": {
@@ -1284,12 +1316,12 @@ def handle_agent_query(event):
         try:
             body = json.loads(body_str) if body_str else {}
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in request body: {sanitize_for_logging(str(e))}")
+            logger.error(f"Invalid JSON | Error: {type(e).__name__} | Details: {str(e)[:100]}")
             return cors_response({"error": "Invalid JSON in request body"}, 400)
         
         query = body.get("query", "")
         session_id = body.get("sessionId", f"session-{int(time.time())}")
-        logger.info(f"⏱️ TIMING: Request parsing took {time.time() - parse_start:.2f}s")
+        logger.info(f"Agent query started | Session: {session_id[:20]}... | Query length: {len(query)} | Parse time: {time.time() - parse_start:.2f}s")
         
         # Validate inputs
         if not query or not isinstance(query, str):
@@ -1298,10 +1330,7 @@ def handle_agent_query(event):
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
         
-        # Sanitize inputs for logging to prevent log injection
-        logger.info(f"⏱️ TIMING: Starting agent query - Total elapsed: {time.time() - total_start:.2f}s")
-        logger.info(f" Query: {sanitize_for_logging(query)}")
-        logger.info(f" Session: {sanitize_for_logging(session_id, 50)}")
+        logger.info(f"Agent invocation | Query: {sanitize_for_logging(query)[:100]} | Session: {sanitize_for_logging(session_id, 50)}")
 
         config_start = time.time()
         agent_id = os.getenv("BEDROCK_AGENT_ID")
@@ -1311,8 +1340,7 @@ def handle_agent_query(event):
             logger.error("BEDROCK_AGENT_ID or BEDROCK_AGENT_ALIAS_ID environment variable not set")
             return cors_response({"error": "Agent configuration error"}, 500)
         
-        logger.info(f" Agent ID: {sanitize_for_logging(agent_id, 50)}")
-        logger.info(f" Agent Alias ID: {sanitize_for_logging(alias_id, 50)}")
+        logger.info(f"Agent config | AgentId: {sanitize_for_logging(agent_id, 50)} | AliasId: {sanitize_for_logging(alias_id, 50)}")
         
         try:
             bedrock_agent_runtime = get_bedrock_client()
@@ -1320,8 +1348,7 @@ def handle_agent_query(event):
             logger.error(f" Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
         
-        logger.info(f"⏱️ TIMING: Agent config/setup took {time.time() - config_start:.2f}s")
-        logger.info(f" Invoking agent")
+        logger.info(f"Agent setup complete | Time: {time.time() - config_start:.2f}s")
         
         invoke_start = time.time()
         try:
@@ -1336,8 +1363,7 @@ def handle_agent_query(event):
             logger.error(f" Agent invocation failed: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to invoke agent"}, 500)
         
-        logger.info(f"⏱️ TIMING: Agent invocation took {time.time() - invoke_start:.2f}s")
-        logger.info(f" Agent invoked successfully, processing response stream")
+        logger.info(f"Agent invoked | Time: {time.time() - invoke_start:.2f}s | Processing response stream")
         
         answer = ""
         stream_start = time.time()
@@ -1356,7 +1382,7 @@ def handle_agent_query(event):
             logger.error(f" Failed to process response stream: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to process agent response"}, 500)
         
-        logger.info(f"⏱️ TIMING: Stream processing took {time.time() - stream_start:.2f}s")
+        logger.info(f"Stream processed | Time: {time.time() - stream_start:.2f}s | Response length: {len(answer)}")
         
         # Extract IMAGE_URL entries and generate presigned URLs
         images = []
@@ -1366,7 +1392,7 @@ def handle_agent_query(event):
             matches = re.findall(image_pattern, answer)
             
             if matches:
-                logger.info(f" Found {len(matches)} IMAGE_URL entries")
+                logger.info(f"Image URLs found | Count: {len(matches)}")
                 for s3_key in matches:
                     s3_key = s3_key.strip()
                     if not s3_key or not s3_key.startswith('images/'):
@@ -1378,22 +1404,20 @@ def handle_agent_query(event):
                             ExpiresIn=3600
                         )
                         images.append(url)
-                        logger.info(f" Generated presigned URL for {s3_key}")
+                        logger.info(f"Presigned URL generated | Key: {s3_key}")
                     except Exception as e:
-                        logger.error(f" Failed to generate URL for {s3_key}: {e}")
+                        logger.error(f"URL generation failed | Key: {s3_key} | Error: {type(e).__name__}")
         except Exception as e:
             logger.error(f" Image extraction failed: {e}")
         
-        logger.info(f" Agent response length: {len(answer)} characters")
-        logger.info(f"⏱️ TIMING: ===== TOTAL REQUEST TIME: {time.time() - total_start:.2f}s =====")
+        logger.info(f"Agent query complete | Response: {len(answer)} chars | Images: {len(images)} | Total time: {time.time() - total_start:.2f}s")
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     
     except json.JSONDecodeError as e:
-        logger.error(f" JSON decode error: {sanitize_for_logging(str(e))}")
+        logger.error(f"JSON decode error | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Invalid request format"}, 400)
     except Exception as e:
-        logger.error(f" Agent query failed: {type(e).__name__}")
-        logger.error(f" Error details: {sanitize_for_logging(str(e))}")
+        logger.error(f"Agent query failed | Error: {type(e).__name__} | Details: {str(e)[:200]} | Time: {time.time() - total_start:.2f}s")
         return cors_response({"error": "Agent query failed"}, 500)
 
 
@@ -1414,27 +1438,27 @@ def handle_get_image(event):
             logger.warning(f"Attempted access to non-image key: {sanitize_for_logging(image_key)}")
             return cors_response({"error": "Invalid image key"}, 403)
         
-        # Check if object exists
+        s3_client = get_s3_client()
         try:
-            s3.head_object(Bucket=BUCKET, Key=image_key)
+            s3_client.head_object(Bucket=BUCKET, Key=image_key)
             logger.info(f"Image exists: {image_key}")
-        except s3.exceptions.NoSuchKey:
+        except s3_client.exceptions.NoSuchKey:
             logger.error(f"Image not found: {image_key}")
             return cors_response({"error": "Image not found"}, 404)
         except Exception as e:
-            logger.error(f"Failed to check image existence: {sanitize_for_logging(str(e))}")
+            logger.error(f"Failed to check image: {type(e).__name__}")
             return cors_response({"error": "Failed to verify image"}, 500)
         
         try:
-            url = s3.generate_presigned_url(
+            url = s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": BUCKET, "Key": image_key},
-                ExpiresIn=3600
+                ExpiresIn=7200
             )
-            logger.info(f"Generated presigned URL for: {image_key}")
+            logger.info(f"Generated presigned URL: {image_key}")
             return cors_response({"url": url})
         except Exception as e:
-            logger.error(f"Failed to generate presigned URL: {sanitize_for_logging(str(e))}")
+            logger.error(f"Failed to generate URL: {type(e).__name__}")
             return cors_response({"error": "Failed to generate image URL"}, 500)
             
     except Exception as e:
@@ -1455,52 +1479,51 @@ def handle_processing_status(event):
         base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
         logger.info(f" Checking status for file: {sanitize_for_logging(file_name)}")
         
-        # Check if cancelled - don't delete marker, just report status
+        s3_client = get_s3_client()
+        
+        # Check if cancelled
         try:
-            s3.head_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
+            s3_client.head_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
             return cors_response({
                 "status": "cancelled",
                 "progress": 0,
                 "message": "Processing was cancelled"
             })
-        except s3.exceptions.NoSuchKey:
-            pass  # Not cancelled, continue checking
+        except s3_client.exceptions.NoSuchKey:
+            pass
         except Exception as e:
-            logger.error(f"Error checking cancellation: {e}")
-            pass  # Continue checking other statuses
+            logger.error(f"Error checking cancellation: {type(e).__name__}")
         
-        # Check if processing is complete - look for processed marker
+        # Check if processing is complete
         try:
-            logger.info(f" Attempting to get: s3://{BUCKET}/processed/{base_name}.json")
-            processed_obj = s3.get_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
+            logger.info(f"Checking: s3://{BUCKET}/processed/{base_name}.json")
+            processed_obj = s3_client.get_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
             processed_data = json.loads(processed_obj['Body'].read().decode('utf-8'))
-            logger.info(f" Found completion marker for {base_name}")
+            logger.info(f"Found completion marker: {base_name}")
             return cors_response({
                 "status": "completed",
                 "progress": 100,
                 "message": "Processing complete",
                 "data": processed_data
             })
-        except s3.exceptions.NoSuchKey:
-            logger.info(f" Processed marker not found")
-            pass  # Not processed yet, continue checking
+        except s3_client.exceptions.NoSuchKey:
+            logger.info(f"Processed marker not found")
         except Exception as e:
-            logger.error(f"Error checking processed status: {e}")
-            pass  # Continue checking other statuses
+            logger.error(f"Error checking processed: {type(e).__name__}")
         
-        # Check if file exists in uploads (still processing)
+        # Check if file exists in uploads
         try:
-            s3.head_object(Bucket=BUCKET, Key=f"uploads/{file_name}")
-            logger.info(f" File in uploads, processing in progress")
+            s3_client.head_object(Bucket=BUCKET, Key=f"uploads/{file_name}")
+            logger.info(f"File in uploads, processing")
             return cors_response({
                 "status": "processing",
                 "progress": 75,
                 "message": "Extracting text and creating vector embeddings..."
             })
-        except s3.exceptions.NoSuchKey:
-            pass  # Not in uploads, file not found
+        except s3_client.exceptions.NoSuchKey:
+            pass
         except Exception as e:
-            logger.error(f"Error checking uploads: {e}")
+            logger.error(f"Error checking uploads: {type(e).__name__}")
         
         # File not found anywhere
         return cors_response({
@@ -1519,17 +1542,21 @@ def handle_processing_status(event):
 # -----------------------------------------------------------
 def lambda_handler(event, context):
     """Main Lambda handler for API Gateway and Bedrock Agent requests."""
-    logger.info(f" Lambda triggered: {json.dumps(event)[:500]}")
+    # Set correlation ID for request tracking
+    request_id = context.request_id if hasattr(context, 'request_id') else str(uuid.uuid4())
+    correlation_id_var.set(request_id)
+    
+    logger.info(f"Lambda triggered | RequestId: {request_id} | Event: {json.dumps(event)[:500]}")
     
     # Handle warmup ping from EventBridge
     if event.get("source") == "aws.events" and event.get("detail-type") == "Scheduled Event":
-        logger.info(" Warmup ping received, keeping Lambda warm")
+        logger.info("Warmup ping received")
         return {"statusCode": 200, "body": json.dumps({"status": "warm"})}
     
     # Check if this is a Bedrock Agent action invocation
     if "messageVersion" in event and "agent" in event:
-        logger.info(" Bedrock Agent action invocation detected")
         api_path = event.get("apiPath", "")
+        logger.info(f"Bedrock Agent action | Path: {api_path}")
         if api_path == "/search":
             return handle_search_action(event)
         elif api_path == "/send-email":
@@ -1553,7 +1580,7 @@ def lambda_handler(event, context):
     # API Gateway invocations
     path = event.get("path", "")
     method = event.get("httpMethod", "")
-    logger.info(f" Raw path: {path} | Method: {method}")
+    logger.info(f"API Gateway request | Method: {method} | Path: {path}")
 
     if path.startswith("/production/"):
         path = "/" + path[12:]
@@ -1562,7 +1589,8 @@ def lambda_handler(event, context):
     elif path.startswith("/prod/"):
         path = "/" + path[5:]
     
-    logger.info(f"Cleaned path: {path}")
+    if path != event.get("path", ""):
+        logger.info(f"Path normalized | Original: {event.get('path')} | Cleaned: {path}")
 
     if method == "OPTIONS":
         return cors_response()
@@ -1585,9 +1613,9 @@ def lambda_handler(event, context):
         elif path == "/processing-status" and method == "GET":
             return handle_processing_status(event)
         else:
-            logger.error(f"Unhandled route: {path}")
+            logger.error(f"Unhandled route | Path: {path} | Method: {method}")
             return cors_response({"error": f"Unhandled route: {path}"}, 404)
 
     except Exception as e:
-        logger.error(f"Lambda error: {type(e).__name__}")
+        logger.error(f"Lambda error | Type: {type(e).__name__} | Message: {str(e)[:200]}")
         return cors_response({"error": "Internal server error"}, 500)

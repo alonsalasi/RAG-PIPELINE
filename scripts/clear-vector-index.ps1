@@ -1,7 +1,11 @@
 # Clear old vector index to force rebuild with new embeddings
 Write-Host "Clearing old vector index..." -ForegroundColor Yellow
 
-$bucket = "leidos-rag-documents-production"
+$bucket = $env:S3_BUCKET
+if (-not $bucket) {
+    $bucket = "pdfquery-rag-documents-production"
+    Write-Host "Using default bucket: $bucket" -ForegroundColor Gray
+}
 
 try {
     # Delete master index files

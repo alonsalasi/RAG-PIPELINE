@@ -5,8 +5,8 @@ resource "aws_apigatewayv2_api" "rag_api_gateway" {
 
   cors_configuration {
     allow_origins = ["https://${aws_cloudfront_distribution.rag_frontend_cdn.domain_name}"]
-    allow_methods = ["*"]
-    allow_headers = ["*"]
+    allow_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Amz-Security-Token"]
     max_age       = 300
   }
 }

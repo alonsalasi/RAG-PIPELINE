@@ -1,0 +1,83 @@
+LEIDOS RAG PROJECT - SECURITY SUMMARY
+=====================================
+
+NETWORK SECURITY
+- VPC isolation: Lambda functions run in private subnets with no direct internet access
+- NAT Gateways: Controlled outbound internet access for external API calls
+- VPC Endpoints: Private AWS service access (Bedrock, S3, SQS, SNS, Secrets Manager, KMS, CloudWatch)
+- Security Groups: Restrict traffic between resources
+
+AUTHENTICATION & AUTHORIZATION
+- Amazon Cognito: User authentication with JWT tokens
+- Token validity: 4-hour access/ID tokens, 30-day refresh tokens
+- IAM roles: Least-privilege access for Lambda execution
+- Presigned URLs: Time-limited S3 access (2-hour expiration)
+
+DATA PROTECTION
+- Encryption at rest: S3 server-side encryption enabled
+- Encryption in transit: HTTPS/TLS for all API communications
+- Secrets Manager: Secure storage for API keys (Google Vision)
+- KMS: Key management for encryption operations
+
+API SECURITY
+- CORS restrictions: Limited to specific CloudFront domain (no wildcard)
+- Allowed methods: Only GET, POST, DELETE, OPTIONS (no PUT/PATCH)
+- Allowed headers: Restricted to required headers only
+- API Gateway: Rate limiting and throttling enabled
+
+INPUT VALIDATION
+- Filename validation: Sanitization against path traversal attacks
+- Bucket name validation: Prevents injection attacks
+- S3 key validation: Enforces "images/" prefix for image access
+- Query parameter validation: Type checking and sanitization
+
+ACCESS CONTROL
+- S3 bucket policies: Restrict access to authorized principals only
+- Image key validation: Prevents unauthorized file access (403 on invalid paths)
+- File deletion: Validates ownership before deletion
+- CloudFront: CDN with origin access control
+
+MONITORING & LOGGING
+- CloudWatch Logs: Centralized logging with structured format
+- Correlation IDs: Request tracking across distributed system
+- GuardDuty: Threat detection for AWS account
+- AWS Config: Resource compliance monitoring
+- Error logging: Sanitized logs prevent sensitive data exposure
+
+RESOURCE PROTECTION
+- Thread-safe clients: Prevents race conditions and data corruption
+- Resource cleanup: Proper context managers prevent memory leaks
+- Exception handling: Specific exception types prevent information disclosure
+- Pagination limits: Prevents DoS via large S3 listings (max 1000 keys)
+
+SECRETS MANAGEMENT
+- No hardcoded credentials: All secrets in Secrets Manager or environment variables
+- API keys: Retrieved at runtime from Secrets Manager
+- Token rotation: Cognito handles automatic token refresh
+- Environment variables: Used for non-sensitive configuration only
+
+LIFECYCLE & COMPLIANCE
+- S3 lifecycle policies: Automatic data archival (7→30→90 days)
+- Data retention: Automated deletion after 90 days
+- Cost optimization: Night shutdown of expensive resources reduces attack surface
+- Backup strategy: GLACIER_IR for archived data recovery
+
+BEDROCK AGENT SECURITY
+- Action validation: Whitelisted API paths (/search, /send-email)
+- Input sanitization: All agent inputs validated before processing
+- Response filtering: Structured responses prevent data leakage
+- Session isolation: Unique session IDs per user conversation
+
+ADDITIONAL MEASURES
+- Lambda timeout limits: Prevents runaway executions
+- Memory limits: Resource constraints prevent abuse
+- SQS dead-letter queues: Failed message isolation
+- Batch failure handling: Prevents message loss during errors
+- CloudFront caching: Reduces backend exposure and DDoS risk
+
+SECURITY BEST PRACTICES APPLIED
+- Defense in depth: Multiple security layers
+- Least privilege: Minimal IAM permissions
+- Fail secure: Errors return generic messages, not stack traces
+- Audit trail: Comprehensive logging for forensics
+- Zero trust: Validate all inputs and requests

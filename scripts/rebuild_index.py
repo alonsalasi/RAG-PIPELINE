@@ -4,28 +4,34 @@ Run this once after deploying the new Lambda code.
 """
 import boto3
 import json
+import os
 
-# Trigger rebuild by invoking the delete file handler with a non-existent file
-# This will cause rebuild_master_index() to run
-lambda_client = boto3.client('lambda', region_name='us-east-1')
+# Get configuration from environment
+REGION = os.environ.get('AWS_REGION', 'us-east-1')
+FUNCTION_NAME = os.environ.get('LAMBDA_FUNCTION_NAME', 'pdfquery-agent-executor')
 
-# Simulate API Gateway event to trigger rebuild
-event = {
-    "path": "/production/delete-file",
-    "httpMethod": "DELETE",
-    "queryStringParameters": {
-        "fileName": "_trigger_rebuild_dummy.json"
+try:
+    lambda_client = boto3.client('lambda', region_name=REGION)
+    
+    # Simulate API Gateway event to trigger rebuild
+    event = {
+        "path": "/production/delete-file",
+        "httpMethod": "DELETE",
+        "queryStringParameters": {
+            "fileName": "_trigger_rebuild_dummy.json"
+        }
     }
-}
-
-print("Triggering master index rebuild...")
-response = lambda_client.invoke(
-    FunctionName='pdfquery-agent-executor',
-    InvocationType='RequestResponse',
-    Payload=json.dumps(event)
-)
-
-result = json.loads(response['Payload'].read())
-print(f"Response: {result}")
-print("\nMaster index has been rebuilt with IMAGE_URL embedded in content!")
-print("Now test: 'show me a cherry car in red'")
+    
+    print(f"Triggering master index rebuild on {FUNCTION_NAME}...")
+    response = lambda_client.invoke(
+        FunctionName=FUNCTION_NAME,
+        InvocationType='RequestResponse',
+        Payload=json.dumps(event)
+    )
+    
+    result = json.loads(response['Payload'].read())
+    print(f"Response: {result}")
+    print("\nMaster index rebuild triggered!")
+    print("Test query: 'show me a cherry car in red'")
+except Exception as e:
+    print(f"Error: {type(e).__name__}: {str(e)}")
