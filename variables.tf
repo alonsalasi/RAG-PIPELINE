@@ -144,8 +144,15 @@ variable "admin_password" {
   default     = ""
 }
 
-variable "google_vision_api_key" {
-  description = "Google Vision API key for handwriting recognition (optional)"
+variable "abbyy_application_id" {
+  description = "ABBYY Cloud Application ID for handwriting recognition (optional)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "abbyy_password" {
+  description = "ABBYY Cloud API password for handwriting recognition (optional)"
   type        = string
   sensitive   = true
   default     = ""

@@ -1081,98 +1081,34 @@ def handle_search_action(event):
         
         master_index = _faiss_cache[cache_key]
         
-        # Extract key terms
-        query_lower = query.lower()
-        original_lower = original_input.lower()
+        # Pure semantic search - let embeddings handle everything
+        logger.info(f"Performing semantic search for: {sanitize_for_logging(query)}")
         
-        # Brand detection
-        brands = ['hyundai', 'cherry', 'chery', 'honda', 'toyota', 'ford', 'bmw', 'mercedes']
-        found_brand = next((b for b in brands if b in query_lower or b in original_lower), None)
+        # Get top results based purely on semantic similarity
+        results = master_index.similarity_search_with_score(query, k=10)
         
-        # Color detection  
-        colors = ['black', 'red', 'white', 'silver', 'blue', 'gray', 'grey', 'green', 'yellow']
-        found_color = next((c for c in colors if c in query_lower or c in original_lower), None)
-        
-        # Content type detection
-        wants_images = any(word in original_lower for word in ['show', 'display', 'image', 'picture', 'see'])
-        
-        logger.info(f"Detected - Brand: {found_brand}, Color: {found_color}, Images: {wants_images}")
-        
-        # Get search results
-        all_results = master_index.similarity_search_with_score(query, k=50)
-        
-        # Smart filtering with scoring
-        scored_results = []
-        for doc, semantic_score in all_results:
-            content = doc.page_content.lower()
-            metadata = doc.metadata
-            is_image = metadata.get('type') == 'image'
-            doc_source = metadata.get('source', '').lower()
-            
-            # Calculate relevance score starting with semantic similarity
-            relevance = (1.0 - semantic_score) * 50
-            
-            # Brand matching - boost if found, don't exclude if not
-            if found_brand:
-                if found_brand in doc_source:
-                    relevance += 100  # Strong match in document name
-                elif found_brand in content:
-                    relevance += 60   # Good match in content
-                else:
-                    relevance -= 30   # Penalty but don't exclude
-            
-            # Color matching - boost if found, don't exclude if not
-            if found_color:
-                if found_color in content:
-                    relevance += 80   # Strong boost for color match
-                else:
-                    relevance -= 20   # Small penalty but don't exclude
-            
-            # Content type preference
-            if wants_images:
-                if is_image:
-                    relevance += 40
-                else:
-                    relevance -= 10
-            else:
-                if not is_image:
-                    relevance += 20
-            
-            # Only include if relevance is positive (filters out very poor matches)
-            if relevance > 0:
-                scored_results.append((doc, relevance, semantic_score))
-        
-        # Sort by relevance score
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        
-        if not scored_results:
-            result = f"No {found_brand or ''} {found_color or ''} {'images' if wants_images else 'information'} found.".strip()
+        if not results:
+            result = "No relevant information found."
         else:
-            # Return top results
-            top_results = scored_results[:5]
             result_parts = []
+            import re
             
-            if wants_images:
-                # Extract IMAGE_URL from content or generate from metadata
-                import re
-                for doc, relevance, semantic in top_results:
-                    content = doc.page_content
-                    metadata = doc.metadata
-                    
-                    # Try to extract from content first
+            for doc, semantic_score in results:
+                content = doc.page_content
+                metadata = doc.metadata
+                
+                # Check if this is an image result
+                if 'IMAGE_URL:' in content:
                     image_urls = re.findall(r'IMAGE_URL:\s*([^\n|]+)', content)
-                    if image_urls:
-                        for url in image_urls:
-                            result_parts.append(f"IMAGE_URL: {url.strip()}")
-                    # If not in content, check metadata for s3_key
-                    elif 's3_key' in metadata:
-                        s3_key = metadata['s3_key']
-                        page = metadata.get('page', 'unknown')
-                        source = metadata.get('source', 'unknown')
-                        result_parts.append(f"IMAGE_URL: {s3_key}|PAGE: {page}|SOURCE: {source}")
-            else:
-                for doc, relevance, semantic in top_results:
-                    result_parts.append(doc.page_content)
+                    for url in image_urls:
+                        result_parts.append(f"IMAGE_URL: {url.strip()}")
+                elif 's3_key' in metadata and metadata.get('type') == 'image':
+                    s3_key = metadata['s3_key']
+                    page = metadata.get('page', 'unknown')
+                    source = metadata.get('source', 'unknown')
+                    result_parts.append(f"IMAGE_URL: {s3_key}|PAGE: {page}|SOURCE: {source}")
+                else:
+                    result_parts.append(content)
             
             result = "\n\n".join(result_parts) if result_parts else "No results found."
         

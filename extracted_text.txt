@@ -1,0 +1,51 @@
+Data type: <class 'tuple'>
+Data structure: (<langchain_community.docstore.in_memory.InMemoryDocstore object at 0x0000022F2EBC8810>, {0: '90dc0dd8-7849-4552-ac05-60ea29e1dfcf', 1: '524dec03-c50d-4d12-b9a9-53204c49e9f0', 2: 'd07c8a9d-d5ca-4378-bcad-1c0759351b18', 3: 'b9553ef0-1455-4ceb-aabd-375c9d954bf2', 4: 'a93d7f34-df4e-4158-809c-2989aade714d', 5: 'fbdd9b85-94e8-4b19-85dd-ff62b6586632', 6: '0c39328e-f244-42bc-97f4-c3d09f95ed13', 7: 'ee26efd8-74e5-45d7-b689-466844b1824e', 8: 'b38bd9ff-f118-4322-9b29-4b602e98cff2', 9: 'b507252a-dc0b-4142-810c-da267d25c16f', 10: '3d58c550-0977-4676-bd69-99cc1a5de39d', 11: '58a60d44-c80d-441d-bdff-1092db054d95', 12: '48e52830-9eeb-42cd-a5b1-7a7492814ef6', 13: '9790038b-1bfe-439f-a5ef-deeb9054a5be', 14: '98dc1efc-f806-4e95-979a-959c851dee06', 15: 'dd731649-c351-44a7-9b9b-21b3fe5841e3', 16: '100d2677-9cfb-4418-a3a2-bb48bb8eb7cd', 17: '7b1255ec-0253-48b7-a9f2-36afc8b53295', 18: '8b1b0996-c5de-469f-84d4-1ba522e1e992', 19: '8f54ec7c-6500-4be1-8881-e23b689c7752', 20: 'cd972d60-064d-40bc-8111-03035eb7074e', 21: 'a0be44ad-6ab7-4ece-afd4-a3bc7d12d896', 22: '651a4939-22a6-4559-893a-380440d255b4', 23: '6af8df51-142f-4210-bc45-91953f57d39a', 24: 'abc6d078-cc69-4774-b8b1-f780935edc4d', 25: '98b21ee7-adca-4908-ac55-949900f9916f', 26: 'a808071a-a842-46ca-a8f2-d2b181c08ea0', 27: '5638e0a9-ec33-4bb0-8a00-98104f668772', 28: '3f1630ef-03a0-49eb-857a-753c7cf9aae1', 29: 'a949809b-f316-42ff-9749-faa063149f5d', 30: '646f2106-6cd3-4c61-bf36-af4cfb702c4c', 31: 'ae275448-2fca-44b9-91b0-d4e124f7194e', 32: '2979bf3d-1b55-4c2f-9366-15ebe75f465a', 33: 'b1d5e0bd-4fe3-4fb6-b5f4-4a8a41da7702', 34: 'a3feb5a8-7a39-40e0-9d9b-691141f2ba2a', 35: 'e3e9dd6f-ef6d-4fcc-9ca8-332085cd50e8', 36: 'de6ebbb0-373e-42eb-8ffe-caa0b3157c58', 37: '1ead91ad-0b45-4744-96d0-9701c32d1386', 38: 'c16ce81e-c249-4ae3-9743-09bacce08d60', 39: '8c9fed8a-f2fa-4f0e-8c91-51f2207abec8', 40: '5a6cd006-2947-42f7-b1e8-df9174f3d063', 41: 'ff55d54c-ffe1-4c73-9a4c-f045a2c4adce', 42: '1c8414cc-1cbd-4881-abf3-f60dc2fed339', 43: 'ed4e4f96-9fa3-4b73-a38f-84d47231f94b', 44: '14fe0462-15ad-4c29-ab94-fd22bcc9f955', 45: 'aceab527-2325-4140-9463-48acbe3840e6', 46: '069f702a-4794-45f8-ab30-4641c402ef2a', 47: '15cb40c6-2554-4539-bc83-c39eb6b600ab', 48: 'fb27b2b5-414c-43cf-82ef-2c75b66fd613', 49: 'f6416570-b2e6-4a55-8f02-f41da3201f00', 50: 'b050ecca-206d-4ad8-b03d-eba164e48497', 51: '6d54bb29-7415-43ae-a921-130f60e414d1'})
+Total documents: 52
+
+================================================================================
+
+--- Chunk 1 (ID: 1ead91ad-0b45-4744-96d0-9701c32d1386) ---
+Source: handwrite-test.pdf
+Chunk: 0 of 15
+
+Content:
+Document: handwrite-test
+ï»¿v-vAn                                                                                                                                
+                                                                                                                                     
+                                      _------                                                                                        
+                                      _____________________________________________,AA J&__jAAa/^                                    
+                                                                                                                                     
+                                                                                                 
+================================================================================
+
+--- Chunk 2 (ID: c16ce81e-c249-4ae3-9743-09bacce08d60) ---
+Source: handwrite-test.pdf
+Chunk: 1 of 15
+
+Content:
+Document: handwrite-test
+â /<&>& wkJsSL.                                    
+                                                                                                                                     
+                                      ______ r A A                                                                                   
+                                                                                                                                     
+ -2-407 Pah/ .Dnâra.pa p, 740/ Ip)__                                                                                          râ     
+                                                                                                                                     
+ -----â¢^3×_.^×11× ×³×?                
+================================================================================
+
+--- Chunk 3 (ID: 8c9fed8a-f2fa-4f0e-8c91-51f2207abec8) ---
+Source: handwrite-test.pdf
+Chunk: 2 of 15
+
+Content:
+Document: handwrite-test
+-----^!Ll^Â±2J5^2^pÖ¾t^CE4k^hL^iÂ±L_a1a_;3x^_^_eA^                                             _      
+                                                                                                                                     
+                                                                             ---4.             __a.2/×³H----â¢                         
+ IL> â vw rftf pisM p.iAyeJlh ___e^.'JÃ)_________________                                                                             
+ ______vb? CJ2.yb    ZLfcais---/rGs------×!×7×¤ ey_c)& __                                                                        r -  
+                                                 â w ×××â  r^//?                         __^0J./^>f ^7^_______       
+================================================================================
+
+
+Total handwrite-test chunks: 15

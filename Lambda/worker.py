@@ -64,65 +64,126 @@ if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
 
-# Google Vision API key cache
-_google_vision_key = None
-_google_vision_checked = False
+# ABBYY Cloud API credentials cache
+_abbyy_credentials = None
+_abbyy_checked = False
 
-def get_google_vision_key():
-    """Lazy load Google Vision API key from Secrets Manager."""
-    global _google_vision_key, _google_vision_checked
-    if not _google_vision_checked:
-        _google_vision_checked = True
+def get_abbyy_credentials():
+    """Lazy load ABBYY Cloud API credentials from Secrets Manager."""
+    global _abbyy_credentials, _abbyy_checked
+    if not _abbyy_checked:
+        _abbyy_checked = True
         try:
             project_name = os.environ.get('PROJECT_NAME')
             if not project_name:
-                logger.info("PROJECT_NAME not set, skipping Google Vision")
+                logger.info("PROJECT_NAME not set, skipping ABBYY Cloud")
                 return None
             
-            secret_name = f"{project_name}-google-vision-key"
+            secret_name = f"{project_name}-abbyy-cloud-key"
             sm_client = get_secretsmanager_client()
             response = sm_client.get_secret_value(SecretId=secret_name)
             secret = json.loads(response['SecretString'])
-            api_key = secret.get('api_key')
+            app_id = secret.get('application_id')
+            password = secret.get('password')
             
-            if api_key and api_key not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
-                logger.info("Google Vision API key loaded")
-                _google_vision_key = api_key
+            if app_id and password and app_id not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
+                logger.info("ABBYY Cloud credentials loaded")
+                _abbyy_credentials = {'application_id': app_id, 'password': password}
             else:
-                logger.info("Google Vision API key not configured")
+                logger.info("ABBYY Cloud credentials not configured")
         except Exception as e:
-            logger.warning(f"Could not load Google Vision key: {type(e).__name__}")
-    return _google_vision_key
+            logger.warning(f"Could not load ABBYY credentials: {type(e).__name__}")
+    return _abbyy_credentials
 
-def detect_handwriting_with_google_vision(image_bytes):
-    """Use Google Vision to detect handwriting in an image."""
-    api_key = get_google_vision_key()
-    if not api_key:
+def detect_handwriting_with_abbyy(image_bytes):
+    """Use ABBYY Cloud OCR to detect handwriting in an image (free tier: 500 pages/month)."""
+    credentials = get_abbyy_credentials()
+    if not credentials:
         return None
     
     try:
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        app_id = credentials['application_id']
+        password = credentials['password']
         
-        payload = {
-            "requests": [{
-                "image": {"content": image_base64},
-                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
-            }]
+        # Step 1: Submit image for processing
+        submit_url = "https://cloud-westus.ocrsdk.com/v2/processImage"
+        params = {
+            'language': 'English,Hebrew,Turkish',
+            'exportFormat': 'txt',
+            'profile': 'textExtraction'
         }
         
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            result = response.json()
-            if 'responses' in result and result['responses']:
-                text = result['responses'][0].get('fullTextAnnotation', {}).get('text', '')
-                if text.strip():
-                    logger.info(f"Google Vision extracted {len(text)} chars")
+        response = requests.post(
+            submit_url,
+            params=params,
+            data=image_bytes,
+            headers={'Content-Type': 'application/octet-stream'},
+            auth=(app_id, password),
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            logger.warning(f"ABBYY submit failed: {response.status_code} - {response.text[:200]}")
+            return None
+        
+        # Parse task ID from JSON response
+        result = response.json()
+        task_id = result.get('taskId')
+        
+        if not task_id:
+            logger.warning("ABBYY: No task ID returned")
+            return None
+        
+        # Step 2: Poll for completion
+        status_url = f"https://cloud-westus.ocrsdk.com/v2/getTaskStatus?taskId={task_id}"
+        
+        # Use recommended delay from initial response
+        delay = result.get('requestStatusDelay', 5000) / 1000  # Convert ms to seconds
+        max_wait = 120  # 2 minutes max
+        elapsed = 0
+        
+        while elapsed < max_wait:
+            time.sleep(delay)
+            elapsed += delay
+            
+            status_response = requests.get(status_url, auth=(app_id, password), timeout=10)
+            
+            if status_response.status_code != 200:
+                logger.warning(f"ABBYY status check failed: {status_response.status_code}")
+                continue
+            
+            status_result = status_response.json()
+            status = status_result.get('status')
+            logger.info(f"ABBYY status: {status} (elapsed: {elapsed}s)")
+            
+            if status == 'Completed':
+                result_urls = status_result.get('resultUrls', [])
+                if not result_urls:
+                    logger.warning(f"ABBYY: No resultUrls in response")
+                    break
+                
+                result_url = result_urls[0]
+                logger.info(f"ABBYY: Downloading result from {result_url[:50]}...")
+                text_response = requests.get(result_url, timeout=30)
+                if text_response.status_code == 200:
+                    text = text_response.text.strip()
+                    logger.info(f"ABBYY extracted {len(text)} chars")
                     return text
-        else:
-            logger.warning(f"Google Vision API error: {response.status_code}")
+                logger.warning(f"ABBYY result download failed: {text_response.status_code}")
+                break
+            elif status in ['ProcessingFailed', 'NotEnoughCredits']:
+                logger.warning(f"ABBYY processing failed: {status}")
+                break
+            elif status in ['Queued', 'InProgress']:
+                continue
+            else:
+                logger.warning(f"ABBYY unknown status: {status}")
+                break
+        
+        return None
+        
     except Exception as e:
-        logger.warning(f"Google Vision failed: {e}")
+        logger.warning(f"ABBYY Cloud failed: {e}")
     
     return None
 
@@ -415,17 +476,17 @@ def process_message(record):
                                         is_handwritten = is_handwritten_page(page_image)
                                         
                                         if is_handwritten:
-                                            logger.info(f"Page {i} detected as handwritten, trying Google Vision")
-                                            # Try Google Vision for handwriting
+                                            logger.info(f"Page {i} detected as handwritten, trying ABBYY Cloud")
+                                            # Try ABBYY Cloud for handwriting
                                             img_byte_arr = io.BytesIO()
                                             page_image.save(img_byte_arr, format='PNG')
-                                            google_text = detect_handwriting_with_google_vision(img_byte_arr.getvalue())
+                                            abbyy_text = detect_handwriting_with_abbyy(img_byte_arr.getvalue())
                                             
-                                            if google_text:
-                                                full_text += google_text + "\n"
-                                                logger.info(f"Page {i} Google Vision extracted: {len(google_text)} chars")
+                                            if abbyy_text:
+                                                full_text += abbyy_text + "\n"
+                                                logger.info(f"Page {i} ABBYY Cloud extracted: {len(abbyy_text)} chars")
                                             else:
-                                                logger.info(f"Page {i} Google Vision unavailable, using enhanced OCR")
+                                                logger.info(f"Page {i} ABBYY Cloud unavailable, using enhanced OCR")
                                                 # Fallback to enhanced OCR
                                                 from PIL import ImageEnhance, ImageFilter
                                                 import cv2
@@ -576,11 +637,11 @@ def process_message(record):
             # Try to download existing master index
             master_exists = False
             try:
-                s3.download_file(BUCKET, "vector_store/master/index.faiss", master_index_path)
-                s3.download_file(BUCKET, "vector_store/master/index.pkl", master_pkl_path)
+                s3_client.download_file(BUCKET, "vector_store/master/index.faiss", master_index_path)
+                s3_client.download_file(BUCKET, "vector_store/master/index.pkl", master_pkl_path)
                 logger.info("Downloaded existing master index")
                 master_exists = True
-            except s3.exceptions.ClientError as e:
+            except s3_client.exceptions.ClientError as e:
                 if e.response['Error']['Code'] == '404':
                     logger.info("No existing master index, creating new one")
                 else:
