@@ -144,16 +144,3 @@ variable "admin_password" {
   default     = ""
 }
 
-variable "abbyy_application_id" {
-  description = "ABBYY Cloud Application ID for handwriting recognition (optional)"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "abbyy_password" {
-  description = "ABBYY Cloud API password for handwriting recognition (optional)"
-  type        = string
-  sensitive   = true
-  default     = ""
-}

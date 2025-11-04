@@ -8,13 +8,16 @@ import numpy as np
 import base64
 import time
 import requests
+import re
 from botocore.client import Config
 from langchain_aws import BedrockEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from semantic_chunker import create_semantic_chunks
 import faiss
 from PIL import Image
+from pdf2image import convert_from_path
 
 # Logging setup with structured format
 logging.basicConfig(
@@ -64,161 +67,25 @@ if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
 
-# ABBYY Cloud API credentials cache
-_abbyy_credentials = None
-_abbyy_checked = False
 
-def get_abbyy_credentials():
-    """Lazy load ABBYY Cloud API credentials from Secrets Manager."""
-    global _abbyy_credentials, _abbyy_checked
-    if not _abbyy_checked:
-        _abbyy_checked = True
-        try:
-            project_name = os.environ.get('PROJECT_NAME')
-            if not project_name:
-                logger.info("PROJECT_NAME not set, skipping ABBYY Cloud")
-                return None
-            
-            secret_name = f"{project_name}-abbyy-cloud-key"
-            sm_client = get_secretsmanager_client()
-            response = sm_client.get_secret_value(SecretId=secret_name)
-            secret = json.loads(response['SecretString'])
-            app_id = secret.get('application_id')
-            password = secret.get('password')
-            
-            if app_id and password and app_id not in ['NOT_CONFIGURED', 'PLACEHOLDER_REPLACE_AFTER_APPLY', '']:
-                logger.info("ABBYY Cloud credentials loaded")
-                _abbyy_credentials = {'application_id': app_id, 'password': password}
-            else:
-                logger.info("ABBYY Cloud credentials not configured")
-        except Exception as e:
-            logger.warning(f"Could not load ABBYY credentials: {type(e).__name__}")
-    return _abbyy_credentials
 
-def detect_handwriting_with_abbyy(image_bytes):
-    """Use ABBYY Cloud OCR to detect handwriting in an image (free tier: 500 pages/month)."""
-    credentials = get_abbyy_credentials()
-    if not credentials:
-        return None
-    
-    try:
-        app_id = credentials['application_id']
-        password = credentials['password']
-        
-        # Step 1: Submit image for processing
-        submit_url = "https://cloud-westus.ocrsdk.com/v2/processImage"
-        params = {
-            'language': 'English,Hebrew,Turkish',
-            'exportFormat': 'txt',
-            'profile': 'textExtraction'
-        }
-        
-        response = requests.post(
-            submit_url,
-            params=params,
-            data=image_bytes,
-            headers={'Content-Type': 'application/octet-stream'},
-            auth=(app_id, password),
-            timeout=30
-        )
-        
-        if response.status_code != 200:
-            logger.warning(f"ABBYY submit failed: {response.status_code} - {response.text[:200]}")
-            return None
-        
-        # Parse task ID from JSON response
-        result = response.json()
-        task_id = result.get('taskId')
-        
-        if not task_id:
-            logger.warning("ABBYY: No task ID returned")
-            return None
-        
-        # Step 2: Poll for completion
-        status_url = f"https://cloud-westus.ocrsdk.com/v2/getTaskStatus?taskId={task_id}"
-        
-        # Use recommended delay from initial response
-        delay = result.get('requestStatusDelay', 5000) / 1000  # Convert ms to seconds
-        max_wait = 120  # 2 minutes max
-        elapsed = 0
-        
-        while elapsed < max_wait:
-            time.sleep(delay)
-            elapsed += delay
-            
-            status_response = requests.get(status_url, auth=(app_id, password), timeout=10)
-            
-            if status_response.status_code != 200:
-                logger.warning(f"ABBYY status check failed: {status_response.status_code}")
-                continue
-            
-            status_result = status_response.json()
-            status = status_result.get('status')
-            logger.info(f"ABBYY status: {status} (elapsed: {elapsed}s)")
-            
-            if status == 'Completed':
-                result_urls = status_result.get('resultUrls', [])
-                if not result_urls:
-                    logger.warning(f"ABBYY: No resultUrls in response")
-                    break
-                
-                result_url = result_urls[0]
-                logger.info(f"ABBYY: Downloading result from {result_url[:50]}...")
-                text_response = requests.get(result_url, timeout=30)
-                if text_response.status_code == 200:
-                    text = text_response.text.strip()
-                    logger.info(f"ABBYY extracted {len(text)} chars")
-                    return text
-                logger.warning(f"ABBYY result download failed: {text_response.status_code}")
-                break
-            elif status in ['ProcessingFailed', 'NotEnoughCredits']:
-                logger.warning(f"ABBYY processing failed: {status}")
-                break
-            elif status in ['Queued', 'InProgress']:
-                continue
-            else:
-                logger.warning(f"ABBYY unknown status: {status}")
-                break
-        
-        return None
-        
-    except Exception as e:
-        logger.warning(f"ABBYY Cloud failed: {e}")
-    
-    return None
 
-def is_handwritten_page(page_image):
-    """Detect if a page contains handwriting by checking OCR confidence."""
-    try:
-        import pytesseract
-        data = pytesseract.image_to_data(page_image, output_type=pytesseract.Output.DICT, timeout=10)
-        confidences = [int(c) for c in data['conf'] if c != '-1' and str(c).isdigit()]
-        if not confidences:
-            return False
-        avg_confidence = sum(confidences) / len(confidences)
-        # Low confidence (<70) suggests handwriting or poor quality
-        return avg_confidence < 70
-    except Exception as e:
-        logger.warning(f"Handwriting detection failed: {e}")
-        return False
 
 class ProcessingCancelled(Exception):
     """Exception raised when processing is cancelled by user."""
     pass
 
-def analyze_image_with_claude(image_data):
-    """Analyze image using Claude 3 Haiku with vision capabilities."""
+def analyze_page_with_claude(image_data):
+    """Comprehensive page analysis using Claude Vision - replaces all OCR and image extraction."""
     if not image_data or len(image_data) == 0:
-        raise ValueError("Empty image data provided")
+        return None
     
     try:
-        logger.info(f"Starting Claude image analysis, size: {len(image_data)} bytes")
-        
         image_base64 = base64.b64encode(image_data).decode('utf-8')
         
         request_body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 300,
+            "max_tokens": 1000,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -232,7 +99,7 @@ def analyze_image_with_claude(image_data):
                     },
                     {
                         "type": "text",
-                        "text": "Analyze this image and provide: 1) ALL visible text/words/numbers exactly as written, 2) ALL colors present (be specific: white, silver, black, red, etc), 3) CATEGORY: Is this a 'FULL VEHICLE' (complete car/truck/SUV visible) or 'VEHICLE PART' (wheel, engine, interior, etc) or 'OTHER'?, 4) Brand/logo if clearly visible (spell exactly), 5) Key visual features. Format as: TEXT: [all text seen] COLORS: [all colors] CATEGORY: [FULL VEHICLE or VEHICLE PART or OTHER] TYPE: [specific type like sedan, SUV, wheel, dashboard] BRAND: [brand name or 'none visible'] DETAILS: [other features]. Be thorough and precise."
+                        "text": "You are an expert document analyst. Analyze this single PDF page image and extract ALL information:\n\n1. **Full Text Transcription:** Transcribe *all* text on the page, including English and Hebrew. Preserve the general layout.\n2. **Table Extraction:** If you see any tables, transcribe them into structured format.\n3. **Image Analysis:** Identify each distinct photo or icon on the page. For *each* one, provide:\n   * A description of the visual\n   * The *exact* caption text from the document that is next to or clearly associated with that visual\n   * BRAND: [brand name if visible]\n   * TYPE: [vehicle type if automotive]\n   * PRIMARY_COLOR: [dominant color]\n   * SECONDARY_COLORS: [other colors]\n\nCombine all of this into a single, comprehensive text report for this page."
                     }
                 ]
             }]
@@ -245,14 +112,13 @@ def analyze_image_with_claude(image_data):
         )
         
         response_body = json.loads(response['body'].read())
-        description = response_body['content'][0]['text']
-        
-        logger.info(f"Claude analysis complete: {len(description)} chars")
-        return description
+        return response_body['content'][0]['text']
         
     except Exception as e:
-        logger.error(f"Claude analysis failed: {type(e).__name__}")
-        raise
+        logger.warning(f"Page analysis failed: {e}")
+        return None
+
+
 
 def check_cancelled(base_name):
     """Check if processing was cancelled."""
@@ -348,260 +214,145 @@ def process_message(record):
                 logger.error(f"File download failed: {type(e).__name__}")
                 raise
 
-            # ---- Extract images from PDF ----
-            image_metadata = []
-            if s3_key.lower().endswith('.pdf'):
-                try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(local_path)
-                    for page_num, page in enumerate(reader.pages, 1):
-                        if '/XObject' in page['/Resources']:
-                            xObject = page['/Resources']['/XObject'].get_object()
-                            for obj_name in xObject:
-                                obj = xObject[obj_name]
-                                if obj['/Subtype'] == '/Image':
-                                    try:
-                                        # Extract image data
-                                        if '/Filter' in obj:
-                                            if obj['/Filter'] == '/DCTDecode':
-                                                img_data = obj._data
-                                            elif obj['/Filter'] == '/FlateDecode':
-                                                img_data = obj._data
-                                            else:
-                                                continue
-                                        else:
-                                            img_data = obj._data
-                                        
-                                        # Check and upscale small images with proper resource management
-                                        img = None
-                                        try:
-                                            with Image.open(io.BytesIO(img_data)) as img:
-                                                width, height = img.size
-                                                
-                                                if width < 50 or height < 50:
-                                                    logger.info(f"Skipping tiny image: {width}x{height}")
-                                                    continue
-                                                
-                                                if width < 300 or height < 300:
-                                                    scale = max(300 / width, 300 / height)
-                                                    new_size = (int(width * scale), int(height * scale))
-                                                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                                                    logger.info(f"Upscaled {width}x{height} to {img.size}")
-                                                    
-                                                    buffer = io.BytesIO()
-                                                    try:
-                                                        img.save(buffer, format='JPEG', quality=95)
-                                                        img_data = buffer.getvalue()
-                                                    finally:
-                                                        buffer.close()
-                                        except Exception as img_err:
-                                            logger.warning(f"Image processing error: {type(img_err).__name__}")
-                                            continue
-                                        
-                                        # Save image to S3
-                                        img_name = f"{base_name}_page{page_num}_img{len(image_metadata)}.jpg"
-                                        img_key = f"images/{base_name}/{img_name}"
-                                        
-                                        s3_client = get_s3_client()
-                                        s3_client.put_object(
-                                            Bucket=BUCKET,
-                                            Key=img_key,
-                                            Body=img_data,
-                                            ContentType='image/jpeg'
-                                        )
-                                        
-                                        # Analyze image with Claude Vision
-                                        try:
-                                            description = analyze_image_with_claude(img_data)
-                                            if description == "Image content could not be analyzed":
-                                                raise ValueError("Claude analysis returned generic message")
-                                        except Exception as e:
-                                            logger.error(f"Claude analysis failed: {e}")
-                                            # Fallback: generic description
-                                            base_name_clean = os.path.basename(s3_key).replace('.pdf', '')
-                                            description = f"Image from page {page_num} of {base_name_clean}"
-                                        
-                                        image_metadata.append({
-                                            'page': page_num,
-                                            'image_name': img_name,
-                                            's3_key': img_key,
-                                            'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                            'description': description
-                                        })
-                                        logger.info(f"Extracted image from page {page_num}: {img_key}")
-                                        logger.info(f"Image description: {description[:100]}...")
-                                    except Exception as img_e:
-                                        logger.warning(f"Failed to extract image: {type(img_e).__name__}")
-                    
-                    logger.info(f"Image extraction complete | Count: {len(image_metadata)} | File: {base_name}")
-                except Exception as e:
-                    logger.warning(f"Image extraction failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
-            
-            # ---- OCR-based text extraction ----
+            # ---- Simplified Claude Vision Analysis (Test Version) ----
             full_text = ""
+            image_metadata = []
             
             if s3_key.lower().endswith('.pdf'):
                 try:
-                    # First try pypdf for text-based PDFs
-                    from pypdf import PdfReader
-                    reader = PdfReader(local_path)
-                    for i, page in enumerate(reader.pages, 1):
+                    logger.info(f"Converting PDF to images for Claude analysis")
+                    # Only process first 2 pages to avoid timeout
+                    all_page_images = convert_from_path(local_path, dpi=150, last_page=2)
+                    
+                    for page_num, page_image in enumerate(all_page_images, 1):
                         # Check for cancellation every page
                         check_cancelled(base_name)
-                        text = page.extract_text() or ""
-                        if text.strip() and len(text.strip()) > 50:  # If we get substantial text
-                            logger.info(f"Page {i} extracted via pypdf: {len(text)} chars")
-                            full_text += text + "\n"
-                        else:
-                            logger.info(f"Page {i} has minimal text, checking for handwriting")
-                            # Check if handwritten and use Google Vision if available
-                            try:
-                                from pdf2image import convert_from_path
-                                import io as iolib
-                                
-                                # Check cancellation before OCR
-                                check_cancelled(base_name)
-                                
-                                # Convert just this page to image
-                                images = convert_from_path(local_path, first_page=i, last_page=i, dpi=200)
-                                if images:
-                                    import pytesseract
-                                    page_image = images[0]
-                                    
-                                    # Check cancellation before OCR
-                                    check_cancelled(base_name)
-                                    
-                                    try:
-                                        # Check if handwritten
-                                        is_handwritten = is_handwritten_page(page_image)
-                                        
-                                        if is_handwritten:
-                                            logger.info(f"Page {i} detected as handwritten, trying ABBYY Cloud")
-                                            # Try ABBYY Cloud for handwriting
-                                            img_byte_arr = io.BytesIO()
-                                            page_image.save(img_byte_arr, format='PNG')
-                                            abbyy_text = detect_handwriting_with_abbyy(img_byte_arr.getvalue())
-                                            
-                                            if abbyy_text:
-                                                full_text += abbyy_text + "\n"
-                                                logger.info(f"Page {i} ABBYY Cloud extracted: {len(abbyy_text)} chars")
-                                            else:
-                                                logger.info(f"Page {i} ABBYY Cloud unavailable, using enhanced OCR")
-                                                # Fallback to enhanced OCR
-                                                from PIL import ImageEnhance, ImageFilter
-                                                import cv2
-                                                
-                                                check_cancelled(base_name)
-                                                
-                                                hq_images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
-                                                try:
-                                                    img = hq_images[0].convert('L')
-                                                    enhancer = ImageEnhance.Contrast(img)
-                                                    img = enhancer.enhance(2.0)
-                                                    img = img.filter(ImageFilter.SHARPEN)
-                                                    img_array = np.array(img)
-                                                    img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
-                                                    _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                                                    processed_img = Image.fromarray(img_array)
-                                                    ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
-                                                    full_text += ocr_text + "\n"
-                                                    logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
-                                                    processed_img.close()
-                                                    img.close()
-                                                finally:
-                                                    for hq_img in hq_images:
-                                                        hq_img.close()
-                                        else:
-                                            # Not handwritten, use standard OCR
-                                            test_data = pytesseract.image_to_data(page_image, lang='heb+eng+tur', output_type=pytesseract.Output.DICT, timeout=30)
-                                            confidences = [int(c) for c in test_data['conf'] if c != '-1' and str(c).isdigit()]
-                                            avg_confidence = sum(confidences) / len(confidences) if confidences else 100
-                                            
-                                            if avg_confidence > 70:
-                                                # Fast path for printed text
-                                                ocr_text = pytesseract.image_to_string(page_image, lang='heb+eng+tur', timeout=60)
-                                                full_text += ocr_text + "\n"
-                                                logger.info(f"Page {i} Fast OCR (conf={avg_confidence:.1f}): {len(ocr_text)} chars")
-                                            else:
-                                                # Low confidence printed text
-                                                logger.info(f"Page {i} Low confidence ({avg_confidence:.1f}), using enhanced OCR")
-                                                from PIL import ImageEnhance, ImageFilter
-                                                import cv2
-                                                
-                                                check_cancelled(base_name)
-                                                
-                                                hq_images = convert_from_path(local_path, first_page=i, last_page=i, dpi=300)
-                                                img = hq_images[0].convert('L')
-                                                enhancer = ImageEnhance.Contrast(img)
-                                                img = enhancer.enhance(2.0)
-                                                img = img.filter(ImageFilter.SHARPEN)
-                                                img_array = np.array(img)
-                                                img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
-                                                _, img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                                                processed_img = Image.fromarray(img_array)
-                                                ocr_text = pytesseract.image_to_string(processed_img, lang='heb+eng+tur', config='--psm 3 --oem 1', timeout=120)
-                                                full_text += ocr_text + "\n"
-                                                logger.info(f"Page {i} Enhanced OCR: {len(ocr_text)} chars")
-                                                processed_img.close()
-                                                img.close()
-                                                for hq_img in hq_images:
-                                                    hq_img.close()
-                                    finally:
-                                        # Clean up page image
-                                        if page_image:
-                                            page_image.close()
-                                        for img in images:
-                                            img.close()
-                            except Exception as ocr_e:
-                                logger.error(f"OCR failed for page {i}: {ocr_e}")
-                                
+                        
+                        # Convert page image to bytes
+                        img_byte_arr = io.BytesIO()
+                        page_image.save(img_byte_arr, format='JPEG', quality=85)
+                        page_img_data = img_byte_arr.getvalue()
+                        
+                        # Comprehensive page analysis with Claude
+                        logger.info(f"Analyzing page {page_num} with Claude Vision")
+                        page_analysis = analyze_page_with_claude(page_img_data)
+                        
+                        if page_analysis and len(page_analysis.strip()) > 20:
+                            full_text += f"\n[PAGE {page_num} ANALYSIS]:\n{page_analysis}\n"
+                            logger.info(f"Page {page_num} analysis: {len(page_analysis)} chars")
+                            
+                            # Always save page as searchable image
+                            img_name = f"{base_name}_page{page_num}.jpg"
+                            img_key = f"images/{base_name}/{img_name}"
+                            
+                            s3_client = get_s3_client()
+                            s3_client.put_object(
+                                Bucket=BUCKET,
+                                Key=img_key,
+                                Body=page_img_data,
+                                ContentType='image/jpeg'
+                            )
+                            
+                            image_metadata.append({
+                                'page': page_num,
+                                'image_name': img_name,
+                                's3_key': img_key,
+                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                                'description': page_analysis
+                            })
+                            logger.info(f"Saved page {page_num} as searchable image: {img_key}")
+                        
+                        page_image.close()
+                    
+                    logger.info(f"Claude analysis complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)} | File: {base_name}")
                 except Exception as e:
-                    logger.error(f"PDF extraction failed: {e}")
-                    return
+                    logger.error(f"Claude page analysis failed: {e}")
+                    # Fallback to basic text extraction
+                    try:
+                        from pypdf import PdfReader
+                        reader = PdfReader(local_path)
+                        for page in reader.pages:
+                            text = page.extract_text() or ""
+                            if text.strip():
+                                full_text += text + "\n"
+                        logger.info(f"Fallback text extraction: {len(full_text)} chars")
+                    except Exception as fallback_e:
+                        logger.error(f"Fallback extraction failed: {fallback_e}")
+                        full_text = f"Document: {base_name} - Processing failed"
             else:
                 logger.warning(f"Unsupported file type: {s3_key}")
                 return
 
-            # Clean up the text - remove excessive whitespace and common OCR artifacts
-            full_text = full_text.replace('Scanned by CamScanner', '').strip()
+            # Clean up the text
+            full_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff]', '', full_text)
+            full_text = re.sub(r'\s+', ' ', full_text)
+            full_text = full_text.strip()
             
-            if not full_text.strip() or len(full_text.strip()) < 100:
-                logger.warning(f"Insufficient text | Length: {len(full_text)} chars | File: {base_name}")
-                return
+            if not full_text.strip() or len(full_text.strip()) < 50:
+                logger.warning(f"Insufficient text extracted | Length: {len(full_text)} chars | File: {base_name}")
+                # Don't return - still process images even if text extraction failed
+                full_text = f"Document: {base_name} - Text extraction failed, content available through images only."
 
             # Check cancellation before chunking
             check_cancelled(base_name)
             
-            # Split text into chunks
+            # Semantic chunking to preserve table structure
             chunk_start = time.time()
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-            chunks = splitter.split_text(full_text)
-            logger.info(f"Text chunking complete | Chunks: {len(chunks)} | Time: {time.time() - chunk_start:.2f}s")
-            
-            # Add metadata to chunks including image info
-            docs = []
             doc_name = os.path.basename(s3_key).replace('.pdf', '')
-            for i, chunk in enumerate(chunks):
-                # Prepend document name to chunk for better context
-                doc = Document(
-                    page_content=f"Document: {doc_name}\n{chunk}",
-                    metadata={
-                        "source": os.path.basename(s3_key),
-                        "chunk_id": i,
-                        "total_chunks": len(chunks),
+            
+            try:
+                # Use semantic chunking to preserve tables and structure
+                docs = create_semantic_chunks(full_text, doc_name, max_chunk_size=1500)
+                logger.info(f"Semantic chunking complete | Chunks: {len(docs)} | Time: {time.time() - chunk_start:.2f}s")
+                
+                # Add image metadata to all chunks
+                for doc in docs:
+                    doc.metadata.update({
                         "has_images": len(image_metadata) > 0,
                         "image_count": len(image_metadata)
-                    }
-                )
-                docs.append(doc)
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Semantic chunking failed, falling back to basic chunking: {type(e).__name__}")
+                # Fallback to basic chunking if semantic chunking fails
+                splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+                chunks = splitter.split_text(full_text)
+                docs = []
+                for i, chunk in enumerate(chunks):
+                    doc = Document(
+                        page_content=f"Document: {doc_name}\n{chunk}",
+                        metadata={
+                            "source": os.path.basename(s3_key),
+                            "chunk_id": i,
+                            "total_chunks": len(chunks),
+                            "has_images": len(image_metadata) > 0,
+                            "image_count": len(image_metadata),
+                            "content_type": "text"
+                        }
+                    )
+                    docs.append(doc)
+                logger.info(f"Fallback chunking complete | Chunks: {len(docs)} | Time: {time.time() - chunk_start:.2f}s")
             
             # Add image descriptions as searchable documents
             if image_metadata:
                 for img_meta in image_metadata:
                     # Use the AI-generated description as the searchable content
                     description = img_meta.get('description', 'Image content')
+                    
+                    # Extract color information for better search
+                    color_keywords = []
+                    if 'PRIMARY_COLOR:' in description:
+                        primary_color = description.split('PRIMARY_COLOR:')[1].split('\n')[0].strip()
+                        if primary_color and primary_color.lower() != 'none':
+                            color_keywords.append(primary_color.lower())
+                    
+                    # Add color keywords to make images more searchable
+                    searchable_content = f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}"
+                    if color_keywords:
+                        searchable_content += f"\nColor tags: {' '.join(color_keywords)}"
+                    
                     img_doc = Document(
-                        page_content=f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}",
+                        page_content=searchable_content,
                         metadata={
                             "source": os.path.basename(s3_key),
                             "type": "image",
@@ -614,7 +365,7 @@ def process_message(record):
                     docs.append(img_doc)
                     logger.info(f"Added image document: {description[:50]}...")
             
-            logger.info(f"Document preparation complete | Total docs: {len(docs)} | Text chunks: {len(chunks)} | Images: {len(image_metadata)}")
+            logger.info(f"Document preparation complete | Total docs: {len(docs)} | Images: {len(image_metadata)}")
 
             # Check cancellation before embedding
             check_cancelled(base_name)
@@ -626,7 +377,26 @@ def process_message(record):
                 raise ValueError("AWS_REGION must be configured")
             
             model_id = os.environ.get("EMBEDDINGS_MODEL_ID", "cohere.embed-multilingual-v3")
+            
+            # Validate documents before embedding - Cohere has 512 token limit
+            valid_docs = []
+            for doc in docs:
+                content = doc.page_content.strip()
+                if content and len(content) <= 2000:  # Conservative limit for tokens
+                    valid_docs.append(doc)
+                elif content:
+                    # Truncate to safe length
+                    truncated_content = content[:1800] + "..."
+                    doc.page_content = truncated_content
+                    valid_docs.append(doc)
+            
+            if not valid_docs:
+                logger.error("No valid documents for embedding")
+                raise ValueError("No valid documents to embed")
+            
+            logger.info(f"Embedding {len(valid_docs)} valid documents (filtered from {len(docs)})")
             embed = BedrockEmbeddings(model_id=model_id, region_name=region)
+            docs = valid_docs
             
             master_index_dir = os.path.join(tmpdir, "master_index")
             os.makedirs(master_index_dir, exist_ok=True)
@@ -688,8 +458,9 @@ def process_message(record):
                 "source_file": s3_key,
                 "status": "processed",
                 "images": image_metadata,
-                "text_chunks": len(chunks) if 'chunks' in locals() else 0,
-                "text_preview": full_text[:500] if 'full_text' in locals() and full_text else "No text extracted",
+                "text_chunks": len(docs) - len(image_metadata),
+                "text_preview": full_text[:1000] if full_text else "No text extracted",
+                "text_length": len(full_text) if full_text else 0,
                 "completed_at": int(time.time())
             }
             

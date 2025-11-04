@@ -21,21 +21,4 @@ resource "aws_secretsmanager_secret_version" "bedrock_config" {
   })
 }
 
-resource "aws_secretsmanager_secret" "abbyy_cloud_key" {
-  name                    = "${var.project_name}-abbyy-cloud-key"
-  description             = "ABBYY Cloud OCR API credentials for handwriting recognition"
-  kms_key_id              = aws_kms_key.agent_encryption.arn
-  recovery_window_in_days = 7
 
-  tags = {
-    Name = "${var.project_name}-abbyy-cloud-key"
-  }
-}
-
-resource "aws_secretsmanager_secret_version" "abbyy_cloud_key" {
-  secret_id = aws_secretsmanager_secret.abbyy_cloud_key.id
-  secret_string = jsonencode({
-    application_id = var.abbyy_application_id != "" ? var.abbyy_application_id : "NOT_CONFIGURED"
-    password       = var.abbyy_password != "" ? var.abbyy_password : "NOT_CONFIGURED"
-  })
-}

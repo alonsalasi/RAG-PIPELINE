@@ -83,11 +83,20 @@ _faiss_cache = {}
 def get_s3_client():
     global _s3_client
     if _s3_client is None:
-        _s3_client = boto3.client("s3", config=Config(signature_version='s3v4', connect_timeout=5, read_timeout=60))
+        _s3_client = boto3.client(
+            "s3", 
+            config=Config(
+                signature_version='s3v4', 
+                connect_timeout=3, 
+                read_timeout=30,
+                max_pool_connections=50,
+                retries={'max_attempts': 2}
+            )
+        )
     return _s3_client
 
 def get_bedrock_client():
-    """Get Bedrock client with proper error handling."""
+    """Get Bedrock client with optimized configuration."""
     global _bedrock_client
     if _bedrock_client is None:
         region = os.getenv("AWS_REGION")
@@ -96,7 +105,12 @@ def get_bedrock_client():
         _bedrock_client = boto3.client(
             "bedrock-agent-runtime",
             region_name=region,
-            config=Config(connect_timeout=5, read_timeout=60)
+            config=Config(
+                connect_timeout=2, 
+                read_timeout=30,
+                max_pool_connections=20,
+                retries={'max_attempts': 1}
+            )
         )
         logger.info(f"Bedrock client initialized: {region}")
     return _bedrock_client
@@ -122,13 +136,18 @@ if not BUCKET:
 
 @retry_with_backoff(max_retries=2)
 def preload_master_index():
-    """Preload master FAISS index at Lambda startup."""
+    """Preload master FAISS index at Lambda startup with optimized loading."""
     from langchain_community.vectorstores import FAISS
     import shutil
     
     cache_key = "master_index"
     cache_dir = "/tmp/master_index"
     s3_client = get_s3_client()
+    
+    # Check if already cached
+    if cache_key in _faiss_cache:
+        logger.info("Master index already cached")
+        return
     
     try:
         s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
@@ -150,14 +169,19 @@ def preload_master_index():
     index_file = os.path.join(cache_dir, "index.faiss")
     pkl_file = os.path.join(cache_dir, "index.pkl")
     
-    s3_client.download_file(BUCKET, "vector_store/master/index.faiss", index_file)
-    s3_client.download_file(BUCKET, "vector_store/master/index.pkl", pkl_file)
+    start_time = time.time()
+    # Download files in parallel for faster startup
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.faiss", index_file)
+        future2 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.pkl", pkl_file)
+        concurrent.futures.wait([future1, future2])
     
     embeddings = get_embeddings_client()
     master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
     _faiss_cache[cache_key] = master_index
     
-    logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors")
+    logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors in {time.time() - start_time:.2f}s")
 
 try:
     preload_master_index()
@@ -342,248 +366,49 @@ def handle_delete_file(filename):
 
 
 # -----------------------------------------------------------
-# Intelligent Search Function
+# Optimized Search Function
 # -----------------------------------------------------------
-def intelligent_search(query, top_k=10):
-    """Street-smart search with comprehensive automotive intelligence."""
+def optimized_search(query, top_k=15):
+    """Balanced search optimized for quality and performance."""
     try:
-        from langchain_community.vectorstores import FAISS
-        import re
-        
-        # Load master index
+        # Use cached index first
         cache_key = "master_index"
-        if cache_key not in _faiss_cache:
-            logger.info("Loading master index")
+        if cache_key in _faiss_cache:
+            master_index = _faiss_cache[cache_key]
+        else:
+            # Fallback: try to load from disk cache
+            from langchain_community.vectorstores import FAISS
             cache_dir = "/tmp/master_index"
             
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
-                s3_client = get_s3_client()
-                s3_client.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
-                s3_client.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
-            
-            embeddings = get_embeddings_client()
-            master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-            _faiss_cache[cache_key] = master_index
+            if os.path.exists(os.path.join(cache_dir, "index.faiss")):
+                # Load from existing disk cache
+                embeddings = get_embeddings_client()
+                master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
+                _faiss_cache[cache_key] = master_index
+                logger.info("Loaded index from disk cache")
+            else:
+                # Last resort: download and cache
+                preload_master_index()
+                if cache_key not in _faiss_cache:
+                    logger.error("Failed to load master index")
+                    return []
+                master_index = _faiss_cache[cache_key]
         
-        master_index = _faiss_cache[cache_key]
-        query_lower = query.lower()
+        # Use adaptive search for better speed/quality balance
+        start_time = time.time()
+        results = adaptive_search(master_index, query)
+        search_time = time.time() - start_time
         
-        # STREET-SMART AUTOMOTIVE INTELLIGENCE
-        
-        # Brands (comprehensive)
-        brands = {
-            'luxury': ['bmw', 'mercedes', 'audi', 'lexus', 'acura', 'infiniti', 'cadillac', 'lincoln', 'jaguar', 'land rover', 'porsche', 'ferrari', 'lamborghini', 'maserati', 'bentley', 'rolls royce', 'genesis'],
-            'mainstream': ['toyota', 'honda', 'ford', 'chevrolet', 'nissan', 'hyundai', 'kia', 'mazda', 'subaru', 'volkswagen', 'mitsubishi', 'volvo'],
-            'american': ['ford', 'chevrolet', 'gmc', 'jeep', 'ram', 'dodge', 'chrysler', 'cadillac', 'lincoln', 'buick'],
-            'japanese': ['toyota', 'honda', 'nissan', 'mazda', 'subaru', 'mitsubishi', 'lexus', 'acura', 'infiniti'],
-            'korean': ['hyundai', 'kia', 'genesis'],
-            'german': ['bmw', 'mercedes', 'audi', 'volkswagen', 'porsche'],
-            'electric': ['tesla', 'lucid', 'rivian', 'polestar', 'nio']
-        }
-        all_brands = [brand for category in brands.values() for brand in category]
-        detected_brands = [brand for brand in all_brands if brand in query_lower]
-        
-        # Vehicle types (street-smart)
-        vehicle_types = {
-            'suv': ['suv', 'crossover', 'cuv', 'utility', 'sport utility'],
-            'sedan': ['sedan', '4-door', 'four door', 'saloon'],
-            'coupe': ['coupe', '2-door', 'two door', 'sports car'],
-            'hatchback': ['hatchback', 'hatch', '5-door'],
-            'wagon': ['wagon', 'estate', 'touring'],
-            'truck': ['truck', 'pickup', 'f-150', 'silverado', 'ram', 'tacoma', 'frontier'],
-            'van': ['van', 'minivan', 'mpv', 'people carrier'],
-            'convertible': ['convertible', 'cabriolet', 'roadster', 'drop top'],
-            'compact': ['compact', 'small', 'subcompact', 'city car'],
-            'midsize': ['midsize', 'mid-size', 'medium', 'family'],
-            'fullsize': ['full-size', 'full size', 'large', 'big']
-        }
-        detected_types = []
-        for vtype, keywords in vehicle_types.items():
-            if any(keyword in query_lower for keyword in keywords):
-                detected_types.append(vtype)
-        
-        # Colors (comprehensive with synonyms)
-        colors = {
-            'black': ['black', 'jet black', 'obsidian', 'midnight', 'carbon', 'ebony'],
-            'white': ['white', 'pearl white', 'snow white', 'arctic white', 'alpine white'],
-            'red': ['red', 'crimson', 'scarlet', 'cherry', 'ruby', 'burgundy', 'maroon'],
-            'blue': ['blue', 'navy', 'royal blue', 'sky blue', 'midnight blue', 'sapphire'],
-            'silver': ['silver', 'metallic silver', 'platinum', 'chrome'],
-            'gray': ['gray', 'grey', 'charcoal', 'slate', 'gunmetal', 'storm'],
-            'green': ['green', 'forest green', 'emerald', 'olive', 'lime'],
-            'yellow': ['yellow', 'gold', 'amber', 'sunshine'],
-            'orange': ['orange', 'copper', 'bronze', 'burnt orange'],
-            'brown': ['brown', 'tan', 'beige', 'champagne', 'mocha', 'espresso']
-        }
-        detected_colors = []
-        for color, synonyms in colors.items():
-            if any(synonym in query_lower for synonym in synonyms):
-                detected_colors.append(color)
-        
-        # Features & Equipment
-        features = {
-            'luxury': ['leather', 'sunroof', 'moonroof', 'heated seats', 'premium', 'luxury', 'navigation', 'gps'],
-            'performance': ['turbo', 'v6', 'v8', 'awd', '4wd', 'sport', 'performance', 'racing', 'fast'],
-            'safety': ['airbags', 'abs', 'stability control', 'backup camera', 'blind spot', 'collision'],
-            'tech': ['bluetooth', 'usb', 'android auto', 'apple carplay', 'touchscreen', 'digital'],
-            'comfort': ['air conditioning', 'climate control', 'power windows', 'power seats', 'cruise control']
-        }
-        detected_features = []
-        for feature_type, keywords in features.items():
-            if any(keyword in query_lower for keyword in keywords):
-                detected_features.append(feature_type)
-        
-        # Condition & Age
-        conditions = {
-            'new': ['new', 'brand new', '2024', '2023', '2022'],
-            'used': ['used', 'pre-owned', 'second hand', 'previously owned'],
-            'vintage': ['classic', 'vintage', 'antique', 'collector', 'rare'],
-            'damaged': ['damaged', 'accident', 'salvage', 'flood', 'hail']
-        }
-        detected_conditions = []
-        for condition, keywords in conditions.items():
-            if any(keyword in query_lower for keyword in keywords):
-                detected_conditions.append(condition)
-        
-        # Price ranges (street-smart understanding)
-        price_ranges = {
-            'budget': ['cheap', 'affordable', 'budget', 'under 20k', 'under 15k', 'under 10k'],
-            'mid_range': ['mid-range', 'moderate', '20k-40k', '25k-35k'],
-            'expensive': ['expensive', 'premium', 'luxury', 'high-end', 'over 50k']
-        }
-        detected_price_ranges = []
-        for price_range, keywords in price_ranges.items():
-            if any(keyword in query_lower for keyword in keywords):
-                detected_price_ranges.append(price_range)
-        
-        # Content type detection (enhanced)
-        content_preferences = {
-            'images': ['image', 'picture', 'photo', 'show', 'display', 'visual', 'see', 'look', 'view'],
-            'specs': ['specs', 'specifications', 'details', 'features', 'options', 'equipment'],
-            'reviews': ['review', 'opinion', 'rating', 'feedback', 'experience'],
-            'pricing': ['price', 'cost', 'value', 'msrp', 'invoice', 'deal']
-        }
-        preferred_content = []
-        for content_type, keywords in content_preferences.items():
-            if any(keyword in query_lower for keyword in keywords):
-                preferred_content.append(content_type)
-        
-        # Intent detection (what user really wants)
-        intents = {
-            'comparison': ['vs', 'versus', 'compare', 'difference', 'better', 'best'],
-            'recommendation': ['recommend', 'suggest', 'should i', 'which one', 'help me choose'],
-            'specific_info': ['what is', 'tell me about', 'explain', 'describe'],
-            'availability': ['available', 'in stock', 'for sale', 'buy', 'purchase']
-        }
-        detected_intents = []
-        for intent, keywords in intents.items():
-            if any(keyword in query_lower for keyword in keywords):
-                detected_intents.append(intent)
-        
-        logger.info(f"Street-smart analysis - Brands: {detected_brands}, Types: {detected_types}, Colors: {detected_colors}, Features: {detected_features}, Conditions: {detected_conditions}, Content: {preferred_content}, Intents: {detected_intents}")
-        
-        # Perform semantic search with expanded results for filtering
-        results = master_index.similarity_search_with_score(query, k=top_k * 5)
-        
-        # INTELLIGENT FILTERING WITH SCORING
-        scored_results = []
-        for doc, base_score in results:
-            metadata = doc.metadata
-            content = doc.page_content.lower()
-            relevance_score = 0
-            
-            # Brand matching (high weight)
-            if detected_brands:
-                brand_matches = sum(1 for brand in detected_brands if brand in content)
-                if brand_matches > 0:
-                    relevance_score += brand_matches * 10
-                else:
-                    continue  # Skip if brand specified but not found
-            
-            # Vehicle type matching
-            if detected_types:
-                type_matches = 0
-                for vtype in detected_types:
-                    if any(keyword in content for keyword in vehicle_types[vtype]):
-                        type_matches += 1
-                if type_matches > 0:
-                    relevance_score += type_matches * 8
-                elif len(detected_types) > 0:
-                    relevance_score -= 5  # Penalty for wrong type
-            
-            # Color matching (high weight for specific requests)
-            if detected_colors:
-                color_matches = 0
-                for color in detected_colors:
-                    if any(synonym in content for synonym in colors[color]):
-                        color_matches += 1
-                if color_matches > 0:
-                    relevance_score += color_matches * 12
-                else:
-                    continue  # Skip if color specified but not found
-            
-            # Feature matching
-            for feature_type in detected_features:
-                if any(keyword in content for keyword in features[feature_type]):
-                    relevance_score += 5
-            
-            # Condition matching
-            for condition in detected_conditions:
-                if any(keyword in content for keyword in conditions[condition]):
-                    relevance_score += 6
-            
-            # Content type preference
-            is_image = metadata.get('type') == 'image'
-            if 'images' in preferred_content and is_image:
-                relevance_score += 15
-            elif 'images' in preferred_content and not is_image:
-                relevance_score -= 10
-            elif preferred_content and not is_image:  # Text content preferred
-                relevance_score += 8
-            
-            # Intent-based scoring
-            if 'comparison' in detected_intents and ('vs' in content or 'compare' in content):
-                relevance_score += 7
-            if 'specific_info' in detected_intents and metadata.get('type') != 'image':
-                relevance_score += 5
-            
-            # Combine with semantic similarity (normalize base_score)
-            final_score = relevance_score + (1.0 - float(base_score)) * 20
-            
-            scored_results.append((doc, final_score, base_score))
-        
-        # Sort by relevance score and take top results
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        top_results = scored_results[:top_k]
-        
-        # Format results with enhanced metadata
+        # Minimal result formatting for speed
         formatted_results = []
-        for doc, relevance_score, semantic_score in top_results:
-            metadata = doc.metadata
-            result = {
+        for doc, semantic_score in results:
+            formatted_results.append({
                 'content': doc.page_content,
-                'metadata': metadata,
-                'relevance_score': float(relevance_score),
+                'metadata': doc.metadata,
                 'semantic_score': float(semantic_score)
-            }
-            
-            # Add image URL if it's an image
-            if metadata.get('type') == 'image' and 'image_key' in metadata:
-                try:
-                    s3_client = get_s3_client()
-                    image_url = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': BUCKET, 'Key': metadata['image_key']},
-                        ExpiresIn=7200
-                    )
-                    result['image_url'] = image_url
-                except Exception as e:
-                    logger.warning(f"Failed to generate image URL: {type(e).__name__}")
-            
-            formatted_results.append(result)
+            })
         
-        logger.info(f"Search completed: {len(formatted_results)} results")
+        logger.info(f"Adaptive search: {len(results)} results in {search_time:.3f}s")
         return formatted_results
         
     except Exception as e:
@@ -603,7 +428,7 @@ def handle_search(query):
         query = query.strip()
         logger.info(f"Search started | Query: {sanitize_for_logging(query)} | Length: {len(query)}")
         
-        results = intelligent_search(query, top_k=10)
+        results = optimized_search(query, top_k=15)
         
         logger.info(f"Search complete | Results: {len(results)} | Query: {sanitize_for_logging(query)[:50]}")
         return cors_response({
@@ -759,7 +584,8 @@ def handle_get_upload_url_api(event):
         base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
         
         key = f"uploads/{file_name}"
-        signed_url = s3.generate_presigned_url(
+        s3_client = get_s3_client()
+        signed_url = s3_client.generate_presigned_url(
             "put_object",
             Params={"Bucket": BUCKET, "Key": key, "ContentType": "application/pdf"},
             ExpiresIn=3600
@@ -819,13 +645,14 @@ def rebuild_master_index():
         if not processed_objects:
             logger.info(" No documents to index, deleting master index")
             try:
-                s3.delete_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-                s3.delete_object(Bucket=BUCKET, Key="vector_store/master/index.pkl")
+                s3_client = get_s3_client()
+                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.pkl")
             except:
                 pass
             # Clear cache
-            if "master_index" in FAISS_CACHE:
-                del FAISS_CACHE["master_index"]
+            if "master_index" in _faiss_cache:
+                del _faiss_cache["master_index"]
             return
         
         embeddings = get_embeddings_client()
@@ -838,7 +665,8 @@ def rebuild_master_index():
             
             try:
                 # Get processed metadata
-                response = s3.get_object(Bucket=BUCKET, Key=obj['Key'])
+                s3_client = get_s3_client()
+                response = s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])
                 metadata = json.loads(response['Body'].read().decode('utf-8'))
                 
                 source_file = metadata.get('source_file', '')
@@ -903,12 +731,13 @@ def rebuild_master_index():
             master_store.save_local(tmpdir)
             
             # Upload to S3
-            s3.upload_file(os.path.join(tmpdir, "index.faiss"), BUCKET, "vector_store/master/index.faiss")
-            s3.upload_file(os.path.join(tmpdir, "index.pkl"), BUCKET, "vector_store/master/index.pkl")
+            s3_client = get_s3_client()
+            s3_client.upload_file(os.path.join(tmpdir, "index.faiss"), BUCKET, "vector_store/master/index.faiss")
+            s3_client.upload_file(os.path.join(tmpdir, "index.pkl"), BUCKET, "vector_store/master/index.pkl")
         
         # Clear cache to force reload
-        if "master_index" in FAISS_CACHE:
-            del FAISS_CACHE["master_index"]
+        if "master_index" in _faiss_cache:
+            del _faiss_cache["master_index"]
         
         logger.info(" Master index rebuilt successfully")
         
@@ -985,7 +814,8 @@ def handle_cancel_upload_api(event):
         
         # Create cancellation marker FIRST to stop Lambda processing
         try:
-            s3.put_object(
+            s3_client = get_s3_client()
+            s3_client.put_object(
                 Bucket=BUCKET,
                 Key=f"cancelled/{base_name}.txt",
                 Body=f"Cancelled at {time.time()}",
@@ -1035,8 +865,68 @@ def handle_cancel_upload_api(event):
 
 
 
+def analyze_query_complexity(query):
+    """Determine if query needs comprehensive search."""
+    query_lower = query.lower()
+    
+    # Complex queries that need more context
+    complex_indicators = [
+        'compare', 'difference', 'vs', 'versus', 'all', 'list', 'specifications',
+        'details', 'complete', 'full', 'comprehensive', 'everything'
+    ]
+    
+    # Simple queries that can work with fewer results
+    simple_indicators = [
+        'what is', 'how much', 'tank capacity', 'fuel tank', 'engine', 'color'
+    ]
+    
+    if any(indicator in query_lower for indicator in complex_indicators):
+        return 'complex'
+    elif any(indicator in query_lower for indicator in simple_indicators):
+        return 'simple'
+    
+    return 'medium'
+
+def adaptive_search(master_index, query):
+    """Adaptive search that optimizes based on query complexity."""
+    complexity = analyze_query_complexity(query)
+    
+    if complexity == 'simple':
+        # Simple queries: start small, likely sufficient
+        results = master_index.similarity_search_with_score(query, k=6)
+        if len(results) >= 3:
+            return results
+    elif complexity == 'complex':
+        # Complex queries: start with more results
+        return master_index.similarity_search_with_score(query, k=18)
+    
+    # Medium complexity or simple query needs expansion
+    initial_results = master_index.similarity_search_with_score(query, k=8)
+    
+    # Check if we need more context
+    needs_more = False
+    if len(initial_results) < 4:
+        needs_more = True
+    else:
+        # Check result diversity
+        sources = set()
+        for doc, score in initial_results:
+            source = doc.metadata.get('source', '')
+            if source:
+                sources.add(source)
+        
+        # Expand if low diversity or very similar scores
+        if len(sources) <= 1 or (len(initial_results) > 3 and 
+            initial_results[0][1] - initial_results[-1][1] < 0.15):
+            needs_more = True
+    
+    if needs_more:
+        return master_index.similarity_search_with_score(query, k=16)
+    
+    return initial_results
+
 def handle_search_action(event):
-    """Smart search with exact matching and relevance scoring."""
+    """Smart search optimized for both quality and performance."""
     try:
         request_body = event.get("requestBody", {})
         content = request_body.get("content", {})
@@ -1048,9 +938,6 @@ def handle_search_action(event):
             if prop.get("name") == "query":
                 query = prop.get("value", "")
                 break
-        
-        original_input = event.get("inputText", "").lower()
-        logger.info(f"Search query: {sanitize_for_logging(query)} | Original: {sanitize_for_logging(original_input)}")
         
         if not query.strip():
             return {
@@ -1066,26 +953,28 @@ def handle_search_action(event):
         
         from langchain_community.vectorstores import FAISS
         
-        # Load master index
+        # Use cached index (fastest path)
         cache_key = "master_index"
-        if cache_key not in _faiss_cache:
-            cache_dir = "/tmp/master_index"
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
-                s3_client = get_s3_client()
-                s3_client.download_file(BUCKET, "vector_store/master/index.faiss", os.path.join(cache_dir, "index.faiss"))
-                s3_client.download_file(BUCKET, "vector_store/master/index.pkl", os.path.join(cache_dir, "index.pkl"))
-            embeddings = get_embeddings_client()
-            master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-            _faiss_cache[cache_key] = master_index
+        if cache_key in _faiss_cache:
+            master_index = _faiss_cache[cache_key]
+        else:
+            # Try preloading if not cached
+            preload_master_index()
+            if cache_key not in _faiss_cache:
+                return {
+                    "messageVersion": "1.0",
+                    "response": {
+                        "actionGroup": event.get("actionGroup", "LambdaTools"),
+                        "apiPath": "/search",
+                        "httpMethod": "POST",
+                        "httpStatusCode": 500,
+                        "responseBody": {"application/json": {"body": json.dumps({"error": "Search index not available"})}}
+                    }
+                }
+            master_index = _faiss_cache[cache_key]
         
-        master_index = _faiss_cache[cache_key]
-        
-        # Pure semantic search - let embeddings handle everything
-        logger.info(f"Performing semantic search for: {sanitize_for_logging(query)}")
-        
-        # Get top results based purely on semantic similarity
-        results = master_index.similarity_search_with_score(query, k=10)
+        # Adaptive search for optimal speed/quality balance
+        results = adaptive_search(master_index, query)
         
         if not results:
             result = "No relevant information found."
@@ -1097,22 +986,36 @@ def handle_search_action(event):
                 content = doc.page_content
                 metadata = doc.metadata
                 
-                # Check if this is an image result
+                # Handle image results with smart filtering
                 if 'IMAGE_URL:' in content:
                     image_urls = re.findall(r'IMAGE_URL:\s*([^\n|]+)', content)
                     for url in image_urls:
                         result_parts.append(f"IMAGE_URL: {url.strip()}")
                 elif 's3_key' in metadata and metadata.get('type') == 'image':
-                    s3_key = metadata['s3_key']
-                    page = metadata.get('page', 'unknown')
-                    source = metadata.get('source', 'unknown')
-                    result_parts.append(f"IMAGE_URL: {s3_key}|PAGE: {page}|SOURCE: {source}")
+                    # Check if image matches query attributes
+                    image_content = content.lower()
+                    query_lower = query.lower()
+                    
+                    # Simple attribute matching
+                    matches_query = True
+                    if 'red' in query_lower and 'red' not in image_content:
+                        matches_query = False
+                    elif 'blue' in query_lower and 'blue' not in image_content:
+                        matches_query = False
+                    elif 'black' in query_lower and 'black' not in image_content:
+                        matches_query = False
+                    elif 'white' in query_lower and 'white' not in image_content:
+                        matches_query = False
+                    
+                    if matches_query:
+                        s3_key = metadata['s3_key']
+                        page = metadata.get('page', 'unknown')
+                        source = metadata.get('source', 'unknown')
+                        result_parts.append(f"IMAGE_URL: {s3_key}|PAGE: {page}|SOURCE: {source}")
                 else:
                     result_parts.append(content)
             
             result = "\n\n".join(result_parts) if result_parts else "No results found."
-        
-        logger.info(f"Returning {len(scored_results)} results")
         
         return {
             "messageVersion": "1.0",
@@ -1257,8 +1160,6 @@ def handle_agent_query(event):
         
         query = body.get("query", "")
         session_id = body.get("sessionId", f"session-{int(time.time())}")
-        logger.info(f"Agent query started | Session: {session_id[:20]}... | Query length: {len(query)} | Parse time: {time.time() - parse_start:.2f}s")
-        
         # Validate inputs
         if not query or not isinstance(query, str):
             return cors_response({"error": "Query is required and must be a string"}, 400)
@@ -1266,9 +1167,6 @@ def handle_agent_query(event):
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
         
-        logger.info(f"Agent invocation | Query: {sanitize_for_logging(query)[:100]} | Session: {sanitize_for_logging(session_id, 50)}")
-
-        config_start = time.time()
         agent_id = os.getenv("BEDROCK_AGENT_ID")
         alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
         
@@ -1276,17 +1174,12 @@ def handle_agent_query(event):
             logger.error("BEDROCK_AGENT_ID or BEDROCK_AGENT_ALIAS_ID environment variable not set")
             return cors_response({"error": "Agent configuration error"}, 500)
         
-        logger.info(f"Agent config | AgentId: {sanitize_for_logging(agent_id, 50)} | AliasId: {sanitize_for_logging(alias_id, 50)}")
-        
         try:
             bedrock_agent_runtime = get_bedrock_client()
         except Exception as e:
-            logger.error(f" Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
+            logger.error(f"Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
         
-        logger.info(f"Agent setup complete | Time: {time.time() - config_start:.2f}s")
-        
-        invoke_start = time.time()
         try:
             response = bedrock_agent_runtime.invoke_agent(
                 agentId=agent_id,
@@ -1296,57 +1189,48 @@ def handle_agent_query(event):
                 enableTrace=False
             )
         except Exception as e:
-            logger.error(f" Agent invocation failed: {sanitize_for_logging(str(e))}")
+            logger.error(f"Agent invocation failed: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to invoke agent"}, 500)
         
-        logger.info(f"Agent invoked | Time: {time.time() - invoke_start:.2f}s | Processing response stream")
-        
         answer = ""
-        stream_start = time.time()
         try:
             event_stream = response.get('completion')
             if not event_stream:
-                logger.error(" No completion stream in response")
                 return cors_response({"error": "Invalid agent response"}, 500)
             
             for event in event_stream:
-                if 'chunk' in event:
-                    chunk = event['chunk']
-                    if 'bytes' in chunk:
-                        answer += chunk['bytes'].decode('utf-8')
+                if 'chunk' in event and 'bytes' in event['chunk']:
+                    answer += event['chunk']['bytes'].decode('utf-8')
         except Exception as e:
-            logger.error(f" Failed to process response stream: {sanitize_for_logging(str(e))}")
+            logger.error(f"Failed to process response stream: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to process agent response"}, 500)
         
-        logger.info(f"Stream processed | Time: {time.time() - stream_start:.2f}s | Response length: {len(answer)}")
-        
-        # Extract IMAGE_URL entries and generate presigned URLs
+        # Extract IMAGE_URL entries and generate presigned URLs (optimized)
         images = []
-        try:
-            import re
-            image_pattern = r'IMAGE_URL:\s*([^|\n]+)'
-            matches = re.findall(image_pattern, answer)
-            
-            if matches:
-                logger.info(f"Image URLs found | Count: {len(matches)}")
-                for s3_key in matches:
-                    s3_key = s3_key.strip()
-                    if not s3_key or not s3_key.startswith('images/'):
-                        continue
-                    try:
-                        url = s3.generate_presigned_url(
-                            'get_object',
-                            Params={'Bucket': BUCKET, 'Key': s3_key},
-                            ExpiresIn=3600
-                        )
-                        images.append(url)
-                        logger.info(f"Presigned URL generated | Key: {s3_key}")
-                    except Exception as e:
-                        logger.error(f"URL generation failed | Key: {s3_key} | Error: {type(e).__name__}")
-        except Exception as e:
-            logger.error(f" Image extraction failed: {e}")
+        if 'IMAGE_URL:' in answer and len(answer) < 50000:  # Only process if reasonable size
+            try:
+                import re
+                matches = re.findall(r'IMAGE_URL:\s*([^|\n]+)', answer)
+                
+                if matches:
+                    s3_client = get_s3_client()
+                    unique_keys = set()
+                    for s3_key in matches:
+                        s3_key = s3_key.strip()
+                        if s3_key and s3_key.startswith('images/') and s3_key not in unique_keys:
+                            unique_keys.add(s3_key)
+                            try:
+                                url = s3_client.generate_presigned_url(
+                                    'get_object',
+                                    Params={'Bucket': BUCKET, 'Key': s3_key},
+                                    ExpiresIn=3600
+                                )
+                                images.append(url)
+                            except:
+                                pass  # Skip failed URLs silently
+            except:
+                pass  # Skip image processing if it fails
         
-        logger.info(f"Agent query complete | Response: {len(answer)} chars | Images: {len(images)} | Total time: {time.time() - total_start:.2f}s")
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     
     except json.JSONDecodeError as e:

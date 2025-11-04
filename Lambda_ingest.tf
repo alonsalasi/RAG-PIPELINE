@@ -1,12 +1,13 @@
 # Build and Push Ingestion Docker Image to ECR
 resource "null_resource" "build_and_push_ingestion_image" {
   triggers = {
-    dockerfile_hash   = filemd5("${path.module}/Lambda/ingestion.Dockerfile")
-    requirements_hash = filemd5("${path.module}/Lambda/ingestion_requirements.txt")
-    handler_hash      = filemd5("${path.module}/Lambda/lambda_ingest_handler.py")
-    worker_hash       = filemd5("${path.module}/Lambda/worker.py")
-    repo_url          = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger   = "2024-01-15-security-fixes"
+    dockerfile_hash      = filemd5("${path.module}/Lambda/ingestion.Dockerfile")
+    requirements_hash    = filemd5("${path.module}/Lambda/ingestion_requirements.txt")
+    handler_hash         = filemd5("${path.module}/Lambda/lambda_ingest_handler.py")
+    worker_hash          = filemd5("${path.module}/Lambda/worker.py")
+    semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
+    repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
+    rebuild_trigger      = "2024-01-15-security-fixes"
   }
   
   provisioner "local-exec" {
@@ -15,7 +16,6 @@ resource "null_resource" "build_and_push_ingestion_image" {
   }
   
   provisioner "local-exec" {
-    interpreter = ["powershell", "-Command"]
     command = "docker push ${aws_ecr_repository.ingestion_lambda_repo.repository_url}:latest"
   }
 

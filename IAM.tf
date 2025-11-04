@@ -134,8 +134,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Effect = "Allow",
         Action = ["secretsmanager:GetSecretValue"],
         Resource = [
-          aws_secretsmanager_secret.bedrock_config.arn,
-          aws_secretsmanager_secret.abbyy_cloud_key.arn
+          aws_secretsmanager_secret.bedrock_config.arn
         ]
       },
       {

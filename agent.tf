@@ -50,7 +50,7 @@
             agent_name              = "${var.project_name}-rag-agent"
             agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
             
-            foundation_model        = "anthropic.claude-3-haiku-20240307-v1:0"
+            foundation_model        = "anthropic.claude-3-5-sonnet-20241022-v2:0"
             
             description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
@@ -199,7 +199,7 @@
             }
 
             provisioner "local-exec" {
-              command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.name} --profile ${var.aws_profile}"
+              command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.name} --profile ${var.aws_profile} --no-verify-ssl"
             }
 
             depends_on = [

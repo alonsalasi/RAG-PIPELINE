@@ -39,6 +39,4 @@ alert_email = "alon.salasi@leidos.com"  # Set to receive security alerts: "secur
 # SES Configuration
 ses_sender_email = ""  # Verified sender email for agent to send emails: "noreply@company.com"
 
-# ABBYY Cloud OCR API (optional - for superior handwriting recognition)
-abbyy_application_id = "0e0f8063-d0c5-4489-b042-fafc7bd8c345"
-abbyy_password       = "7c9kXiRTKdPJeV/gZOGSHJwF"
+
