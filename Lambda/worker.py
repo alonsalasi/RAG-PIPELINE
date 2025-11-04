@@ -214,60 +214,75 @@ def process_message(record):
                 logger.error(f"File download failed: {type(e).__name__}")
                 raise
 
-            # ---- Simplified Claude Vision Analysis (Test Version) ----
+            # ---- Hybrid Tesseract + Claude Vision Analysis ----
             full_text = ""
             image_metadata = []
             
             if s3_key.lower().endswith('.pdf'):
                 try:
-                    logger.info(f"Converting PDF to images for Claude analysis")
-                    # Only process first 2 pages to avoid timeout
-                    all_page_images = convert_from_path(local_path, dpi=150, last_page=2)
+                    logger.info(f"Processing with hybrid Tesseract + Claude Vision")
+                    all_page_images = convert_from_path(local_path, dpi=200)
                     
                     for page_num, page_image in enumerate(all_page_images, 1):
-                        # Check for cancellation every page
                         check_cancelled(base_name)
                         
-                        # Convert page image to bytes
+                        # Convert to bytes for Claude (if needed)
                         img_byte_arr = io.BytesIO()
-                        page_image.save(img_byte_arr, format='JPEG', quality=85)
+                        page_image.save(img_byte_arr, format='JPEG', quality=90)
                         page_img_data = img_byte_arr.getvalue()
                         
-                        # Comprehensive page analysis with Claude
-                        logger.info(f"Analyzing page {page_num} with Claude Vision")
-                        page_analysis = analyze_page_with_claude(page_img_data)
-                        
-                        if page_analysis and len(page_analysis.strip()) > 20:
-                            full_text += f"\n[PAGE {page_num} ANALYSIS]:\n{page_analysis}\n"
-                            logger.info(f"Page {page_num} analysis: {len(page_analysis)} chars")
-                            
-                            # Always save page as searchable image
-                            img_name = f"{base_name}_page{page_num}.jpg"
-                            img_key = f"images/{base_name}/{img_name}"
-                            
-                            s3_client = get_s3_client()
-                            s3_client.put_object(
-                                Bucket=BUCKET,
-                                Key=img_key,
-                                Body=page_img_data,
-                                ContentType='image/jpeg'
+                        # PRIMARY: Tesseract OCR for text extraction (FREE)
+                        logger.info(f"Page {page_num}: Tesseract OCR")
+                        try:
+                            import pytesseract
+                            ocr_text = pytesseract.image_to_string(
+                                page_image, 
+                                lang='eng+heb+ara', 
+                                config='--psm 3 --oem 1'
                             )
-                            
-                            image_metadata.append({
-                                'page': page_num,
-                                'image_name': img_name,
-                                's3_key': img_key,
-                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': page_analysis
-                            })
-                            logger.info(f"Saved page {page_num} as searchable image: {img_key}")
+                            if ocr_text.strip():
+                                full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                        except Exception as ocr_e:
+                            logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
+                        
+                        # SECONDARY: Claude Vision for image analysis (PAID - only when needed)
+                        has_images = len(page_img_data) > 50000  # Rough heuristic for image content
+                        if has_images:
+                            logger.info(f"Page {page_num}: Claude Vision analysis")
+                            try:
+                                visual_analysis = analyze_page_with_claude(page_img_data)
+                                if visual_analysis and 'brand:' in visual_analysis.lower():
+                                    # Save page as searchable image
+                                    img_name = f"{base_name}_page{page_num}.jpg"
+                                    img_key = f"images/{base_name}/{img_name}"
+                                    
+                                    s3_client = get_s3_client()
+                                    s3_client.put_object(
+                                        Bucket=BUCKET,
+                                        Key=img_key,
+                                        Body=page_img_data,
+                                        ContentType='image/jpeg'
+                                    )
+                                    
+                                    image_metadata.append({
+                                        'page': page_num,
+                                        'image_name': img_name,
+                                        's3_key': img_key,
+                                        'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                                        'description': visual_analysis
+                                    })
+                                    logger.info(f"Saved page {page_num} image: {img_key}")
+                            except Exception as claude_e:
+                                logger.warning(f"Page {page_num} Claude Vision failed: {claude_e}")
                         
                         page_image.close()
                     
-                    logger.info(f"Claude analysis complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)} | File: {base_name}")
+                    logger.info(f"Hybrid processing complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)}")
+                    
                 except Exception as e:
-                    logger.error(f"Claude page analysis failed: {e}")
-                    # Fallback to basic text extraction
+                    logger.error(f"Hybrid processing failed: {e}")
+                    # Fallback to pypdf
                     try:
                         from pypdf import PdfReader
                         reader = PdfReader(local_path)
@@ -275,9 +290,9 @@ def process_message(record):
                             text = page.extract_text() or ""
                             if text.strip():
                                 full_text += text + "\n"
-                        logger.info(f"Fallback text extraction: {len(full_text)} chars")
+                        logger.info(f"Fallback extraction: {len(full_text)} chars")
                     except Exception as fallback_e:
-                        logger.error(f"Fallback extraction failed: {fallback_e}")
+                        logger.error(f"All extraction failed: {fallback_e}")
                         full_text = f"Document: {base_name} - Processing failed"
             else:
                 logger.warning(f"Unsupported file type: {s3_key}")

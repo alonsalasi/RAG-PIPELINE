@@ -1,0 +1,1 @@
+{"path":"/agent-query","httpMethod":"POST","body":"{\"query\":\"rebuild index\"}"}

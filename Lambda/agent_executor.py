@@ -926,7 +926,7 @@ def adaptive_search(master_index, query):
     return initial_results
 
 def handle_search_action(event):
-    """Smart search optimized for both quality and performance."""
+    """Enhanced search with multiple queries for better consistency."""
     try:
         request_body = event.get("requestBody", {})
         content = request_body.get("content", {})
@@ -953,12 +953,11 @@ def handle_search_action(event):
         
         from langchain_community.vectorstores import FAISS
         
-        # Use cached index (fastest path)
+        # Use cached index
         cache_key = "master_index"
         if cache_key in _faiss_cache:
             master_index = _faiss_cache[cache_key]
         else:
-            # Try preloading if not cached
             preload_master_index()
             if cache_key not in _faiss_cache:
                 return {
@@ -973,49 +972,44 @@ def handle_search_action(event):
                 }
             master_index = _faiss_cache[cache_key]
         
-        # Adaptive search for optimal speed/quality balance
-        results = adaptive_search(master_index, query)
+        # Multi-query search for better coverage
+        all_results = set()
+        queries = [query]
         
-        if not results:
+        # Add specific brand queries for comparisons
+        if 'compare' in query.lower() or 'vs' in query.lower():
+            if 'hyundai' in query.lower():
+                queries.append('Hyundai Tucson specifications')
+            if 'chery' in query.lower() or 'cherry' in query.lower():
+                queries.append('Cherry Tiggo specifications')
+        
+        # Add specific term queries
+        if 'dimension' in query.lower():
+            queries.extend(['length width height', 'measurements size'])
+        if 'fuel' in query.lower():
+            queries.extend(['fuel tank capacity', 'tank liters'])
+        
+        # Search with all queries
+        for q in queries:
+            results = master_index.similarity_search_with_score(q, k=20)
+            for doc, score in results:
+                all_results.add((doc.page_content, doc.metadata.get('source', 'unknown')))
+        
+        if not all_results:
             result = "No relevant information found."
         else:
             result_parts = []
             import re
             
-            for doc, semantic_score in results:
-                content = doc.page_content
-                metadata = doc.metadata
-                
-                # Handle image results with smart filtering
+            for content, source in all_results:
                 if 'IMAGE_URL:' in content:
                     image_urls = re.findall(r'IMAGE_URL:\s*([^\n|]+)', content)
                     for url in image_urls:
                         result_parts.append(f"IMAGE_URL: {url.strip()}")
-                elif 's3_key' in metadata and metadata.get('type') == 'image':
-                    # Check if image matches query attributes
-                    image_content = content.lower()
-                    query_lower = query.lower()
-                    
-                    # Simple attribute matching
-                    matches_query = True
-                    if 'red' in query_lower and 'red' not in image_content:
-                        matches_query = False
-                    elif 'blue' in query_lower and 'blue' not in image_content:
-                        matches_query = False
-                    elif 'black' in query_lower and 'black' not in image_content:
-                        matches_query = False
-                    elif 'white' in query_lower and 'white' not in image_content:
-                        matches_query = False
-                    
-                    if matches_query:
-                        s3_key = metadata['s3_key']
-                        page = metadata.get('page', 'unknown')
-                        source = metadata.get('source', 'unknown')
-                        result_parts.append(f"IMAGE_URL: {s3_key}|PAGE: {page}|SOURCE: {source}")
                 else:
-                    result_parts.append(content)
+                    result_parts.append(f"[{source}] {content}")
             
-            result = "\n\n".join(result_parts) if result_parts else "No results found."
+            result = "\n\n".join(result_parts[:30]) if result_parts else "No results found."
         
         return {
             "messageVersion": "1.0",
