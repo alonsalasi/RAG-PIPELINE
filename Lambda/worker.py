@@ -149,7 +149,7 @@ def analyze_page_with_claude(image_data):
                     },
                     {
                         "type": "text",
-                        "text": "Describe this image. CRITICAL: Only extract information that is EXPLICITLY VISIBLE in the image. DO NOT infer, assume, or add specifications that are not shown.\n\n1. **Visible Text:** Transcribe ALL text exactly as written (any language).\n\n2. **Tables:** If tables are visible, extract EVERY cell with labels.\n\n3. **Visual Description:** Describe what you see - vehicle type, colors, design features, setting, etc.\n\n4. **Brand/Model:** Only if explicitly visible in the image.\n\nIMPORTANT: Do NOT add technical specifications (dimensions, capacity, weight, etc.) unless they are explicitly written and visible in the image. If you see a car photo with no text, just describe the car visually."
+                        "text": "Extract ALL text from this image, including handwritten text. Support Hebrew, Arabic, and English.\n\n1. **Printed Text:** Transcribe exactly as written\n2. **Handwritten Text:** Carefully read and transcribe cursive/handwriting in any language\n3. **Tables:** Extract with structure preserved\n4. **Visual Elements:** Describe images, diagrams, stamps\n\nFor Hebrew handwriting: Read carefully, consider context, provide best transcription.\n\nIMPORTANT: Only transcribe visible text. Do NOT infer specifications not shown."
                     }
                 ]
             }]
@@ -324,7 +324,7 @@ def process_message(record):
                                 config='--psm 3 --oem 1'
                             )
                             
-                            # Get confidence data to determine if Claude Vision is needed
+                            # Get confidence data to determine next step
                             ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
                             confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                             
@@ -332,18 +332,20 @@ def process_message(record):
                                 avg_confidence = sum(confidences) / len(confidences)
                                 logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
                                 
-                                # Use Claude Vision if:
-                                # 1. Low confidence (< 60%) - likely tables, complex layouts, or poor quality
-                                # 2. Very short text (< 100 chars) - might be mostly images/diagrams
-                                # 3. Contains table indicators
+                                # Decision tree:
+                                # 1. Check for table indicators -> Claude Vision
+                                # 2. Low confidence (< 60%) -> Claude Vision (likely handwritten)
+                                # 3. High confidence -> Use Tesseract text
                                 has_table_indicators = any(word in ocr_text.lower() for word in ['|', 'row', 'column', 'specifications', 'specs'])
                                 
-                                if avg_confidence < 60 or len(ocr_text.strip()) < 100 or has_table_indicators:
+                                if has_table_indicators:
                                     use_claude = True
-                                    reason = "low confidence" if avg_confidence < 60 else "table detected" if has_table_indicators else "minimal text"
-                                    logger.info(f"Page {page_num}: Triggering Claude Vision ({reason})")
+                                    logger.info(f"Page {page_num}: Table detected, using Claude Vision")
+                                elif avg_confidence < 60:
+                                    use_claude = True
+                                    logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), likely handwritten, using Claude Vision")
                             else:
-                                # No confidence data - use Claude as fallback
+                                # No confidence data - use Claude Vision
                                 use_claude = True
                                 logger.info(f"Page {page_num}: No confidence data, using Claude Vision")
                             
@@ -371,21 +373,27 @@ def process_message(record):
                                     logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
                         except Exception as ocr_e:
                             logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
-                            use_claude = True  # Fallback to Claude if Tesseract fails
+                            use_claude = True  # Fallback to Claude Vision if Tesseract fails
                         
-                        # SECONDARY: Claude Vision for table extraction (PAID - only when needed)
+                        # SECONDARY: Claude Vision for handwriting/tables (PAID - only for low confidence or tables)
                         if use_claude:
-                            logger.info(f"Page {page_num}: Claude Vision for table extraction (confidence: {avg_confidence:.1f}%)")
+                            logger.info(f"Page {page_num}: Claude Vision for handwriting/table extraction")
                             try:
                                 visual_analysis = analyze_page_with_claude(page_img_data)
-                                if visual_analysis:
-                                    # Add table data to text instead of saving as image
-                                    full_text += f"\n[PAGE {page_num} TABLE DATA]:\n{visual_analysis}\n"
-                                    logger.info(f"Extracted table data from page {page_num}")
+                                if visual_analysis and visual_analysis.strip():
+                                    full_text += f"\n[PAGE {page_num} CLAUDE VISION]:\n{visual_analysis}\n"
+                                    logger.info(f"Claude Vision extracted {len(visual_analysis)} chars from page {page_num}")
+                                else:
+                                    # Fallback to Tesseract text
+                                    logger.warning(f"Claude Vision returned no text, using Tesseract fallback")
+                                    if ocr_text.strip():
+                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
                             except Exception as claude_e:
-                                logger.warning(f"Page {page_num} Claude Vision failed: {claude_e}")
+                                logger.warning(f"Page {page_num} Claude Vision failed: {claude_e}, using Tesseract fallback")
+                                if ocr_text.strip():
+                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
                         else:
-                            logger.info(f"Page {page_num}: Skipping Claude Vision (high confidence: {avg_confidence:.1f}%)")
+                            logger.info(f"Page {page_num}: Using Tesseract text (high confidence: {avg_confidence:.1f}%)")
                         
                         page_image.close()
                     
