@@ -598,73 +598,10 @@
       
       CHAT_LOG.removeChild(responseDiv);
       if(fullResponse) {
-        // Parse IMAGE_URL markers from response and convert to actual images
+        // Images are already presigned URLs from backend
         let responseText = fullResponse;
-        let imageUrls = [];
-        
-        // Extract IMAGE_URL markers with metadata
-        const imagePattern = /IMAGE_URL:([^|\n]+)(?:\|PAGE:([^|\n]+))?(?:\|SOURCE:([^|\n]+))?(?:\|DESC:([^\n]+))?/g;
-        let match;
-        const imageData = [];
-        while ((match = imagePattern.exec(responseText)) !== null) {
-          const s3Key = match[1].trim();
-          const page = match[2] || '';
-          const source = match[3] || '';
-          const description = match[4] || '';
-          
-          // Generate presigned URL for the image
-          try {
-            const imgRes = await fetch(`${API_GATEWAY_URL}/get-image?key=${encodeURIComponent(s3Key)}`, {
-              headers: getAuthHeaders()
-            });
-            if (imgRes.ok) {
-              const imgData = await imgRes.json();
-              imageUrls.push(imgData.url);
-              imageData.push({ url: imgData.url, source, page, description });
-            }
-          } catch (e) {
-            console.error('Failed to get image URL:', e);
-          }
-        }
-        
-        // Remove IMAGE_URL markers from response text
-        responseText = responseText.replace(/IMAGE_URL:[^\n]*/g, '').trim();
-        
-        // Use parsed images or fallback to data.images
-        const finalImages = imageUrls.length > 0 ? imageUrls : (data.images || []);
-        const showImages = finalImages.length > 0 && 
-                          !responseText.toLowerCase().includes('cannot show') &&
-                          !responseText.toLowerCase().includes('do not have the capability');
-        
-        // If showing images, remove Claude's description to avoid redundancy
-        if (showImages) {
-          // Remove common image description patterns more aggressively
-          responseText = responseText.replace(/The image depicts.*?\./gs, '');
-          responseText = responseText.replace(/This image shows.*?\./gs, '');
-          responseText = responseText.replace(/In this image.*?\./gs, '');
-          responseText = responseText.replace(/The.*?appears to be.*?\./gs, '');
-          responseText = responseText.replace(/Here is.*?image.*?:/gi, '');
-          responseText = responseText.replace(/The vehicle has.*?\./gs, '');
-          responseText = responseText.replace(/The car has.*?\./gs, '');
-          responseText = responseText.replace(/The.*?design.*?\./gs, '');
-          responseText = responseText.replace(/The.*?features.*?\./gs, '');
-          responseText = responseText.replace(/The.*?scene.*?\./gs, '');
-          responseText = responseText.replace(/The.*?atmosphere.*?\./gs, '');
-          responseText = responseText.replace(/The.*?lighting.*?\./gs, '');
-          responseText = responseText.replace(/The.*?colors.*?\./gs, '');
-          responseText = responseText.replace(/Overall.*?\./gs, '');
-          responseText = responseText.replace(/There are no people.*?\./gs, '');
-          responseText = responseText.replace(/The focus is.*?\./gs, '');
-          responseText = responseText.replace(/The.*?highlights.*?\./gs, '');
-          responseText = responseText.replace(/The.*?capturing.*?\./gs, '');
-          responseText = responseText.replace(/The.*?showcasing.*?\./gs, '');
-          responseText = responseText.trim();
-          
-          // If no meaningful text remains, provide simple intro
-          if (!responseText || responseText.length < 20) {
-            responseText = finalImages.length > 1 ? 'Here are the images:' : 'Here is the image:';
-          }
-        }
+        const finalImages = data.images || [];
+        const showImages = finalImages.length > 0;
         
         appendMessage('assistant', responseText, null, false, showImages ? finalImages : null);
       } else {

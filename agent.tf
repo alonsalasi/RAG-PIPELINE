@@ -50,11 +50,11 @@
             agent_name              = "${var.project_name}-rag-agent"
             agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
             
-            foundation_model        = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            foundation_model        = "anthropic.claude-3-haiku-20240307-v1:0"
             
             description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
-            instruction = "You are a document search assistant. CRITICAL: For EVERY question, you MUST first call the search_documents function before answering. Never answer from your own knowledge - always search first. Rules: 1. ALWAYS call search_documents with the user's query before providing any answer. 2. Use the search results to answer questions about vehicle specifications, dimensions, features, or comparisons. 3. If search returns results, extract and present the relevant information with source citations (e.g., 'From Cherry document: fuel tank 51L'). 4. For comparisons, search for both vehicles and compare the results. 5. For images, return only IMAGE_URL lines from search results. 6. Only say 'no information found' if the search function returns no relevant results. 7. Be concise and factual, always citing document sources."
+            instruction = "You are an intelligent document assistant. RULES: 1) Always search documents before answering. 2) For comparisons or multi-part questions, search each component separately with targeted queries. 3) If a search doesn't yield results, try alternative keywords or broader terms. 4) Answer using only explicit information from search results - never infer or assume. 5) If information is unavailable after thorough searching, clearly state what's missing. 6) CRITICAL FOR IMAGES: When user asks to show/display images, return ONLY the IMAGE_URL lines from search results, nothing else. Format: IMAGE_URL:images/path.jpg|PAGE:X|SOURCE:name (one per line). Do NOT add descriptions, explanations, or any other text - just the IMAGE_URL lines."
 
             guardrail_configuration {
               guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
@@ -208,17 +208,15 @@
             ]
           }
 
-          resource "aws_bedrockagent_agent_alias" "production" {
-            agent_id         = aws_bedrockagent_agent.rag_agent.agent_id
-            agent_alias_name = "production"
-            description      = "Production alias for RAG agent"
-
-            depends_on = [null_resource.prepare_agent]
-          }
+          # Production alias ID is managed via var.bedrock_agent_alias_id in terraform.tfvars
+          # Current alias: ${var.bedrock_agent_alias_id} points to Haiku model
 
           resource "time_sleep" "wait_for_agent_ready" {
             depends_on      = [null_resource.prepare_agent]
-            create_duration = "60s"
+            create_duration = "30s"
           }
 
-          # Production alias is created by null_resource.update_production_alias
+          # Note: Agent versions must be created manually in AWS Console
+          # After terraform apply, go to Bedrock Console → Agents → Aliases
+          # Edit the production alias and select the latest DRAFT to create a new version
+

@@ -9,7 +9,7 @@ resource "null_resource" "build_and_push_agent_image" {
     requirements_hash = filemd5("${path.module}/Lambda/agent_requirements.txt")
     source_code_hash  = filemd5("${path.module}/Lambda/agent_executor.py")
     repo_url          = aws_ecr_repository.agent_lambda_repo.repository_url
-    rebuild_trigger   = "2024-01-15-adaptive-search-optimizations"
+    rebuild_trigger   = "2025-01-15-profile-fix"
   }
 
   provisioner "local-exec" {
@@ -27,7 +27,7 @@ resource "aws_lambda_function" "agent_executor" {
   function_name = "${var.project_name}-agent-executor"
   role          = aws_iam_role.lambda_agent_role.arn
   package_type  = "Image"
-  timeout       = 90
+  timeout       = 300
   memory_size   = 3008
 
   image_uri = "${aws_ecr_repository.agent_lambda_repo.repository_url}:latest"
@@ -48,7 +48,7 @@ resource "aws_lambda_function" "agent_executor" {
       VECTOR_STORE_PATH        = "vector_store/default"
       SECRETS_ARN              = aws_secretsmanager_secret.bedrock_config.arn
       BEDROCK_AGENT_ID         = aws_bedrockagent_agent.rag_agent.agent_id
-      BEDROCK_AGENT_ALIAS_ID   = "19RBXR8RAY"
+      BEDROCK_AGENT_ALIAS_ID   = var.bedrock_agent_alias_id
       SES_SENDER_EMAIL         = var.ses_sender_email
       EMBEDDINGS_MODEL_ID      = "cohere.embed-multilingual-v3"
       FORCE_UPDATE             = "2025-11-02-fix-env-vars-v2"

@@ -39,4 +39,7 @@ alert_email = "alon.salasi@leidos.com"  # Set to receive security alerts: "secur
 # SES Configuration
 ses_sender_email = ""  # Verified sender email for agent to send emails: "noreply@company.com"
 
+# Bedrock Agent Configuration
+bedrock_agent_alias_id = "2XEBVXAZYI"  # Production agent alias ID (Nova Lite model)
+
 

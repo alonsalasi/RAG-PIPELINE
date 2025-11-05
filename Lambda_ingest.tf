@@ -7,16 +7,12 @@ resource "null_resource" "build_and_push_ingestion_image" {
     worker_hash          = filemd5("${path.module}/Lambda/worker.py")
     semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger      = "2024-01-15-security-fixes"
+    rebuild_trigger      = "2025-01-15-profile-fix"
   }
   
   provisioner "local-exec" {
     interpreter = ["powershell", "-Command"]
-    command = "docker build --platform linux/amd64 --provenance=false -t ${aws_ecr_repository.ingestion_lambda_repo.repository_url}:latest -f Lambda/ingestion.Dockerfile ./Lambda"
-  }
-  
-  provisioner "local-exec" {
-    command = "docker push ${aws_ecr_repository.ingestion_lambda_repo.repository_url}:latest"
+    command = "cd Lambda; .\\ingestion_cache_build_push.bat; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
   }
 
   depends_on = [aws_ecr_repository.ingestion_lambda_repo, null_resource.build_and_push_agent_image]

@@ -700,8 +700,8 @@ def rebuild_master_index():
                     img_desc = img_meta.get('description', 'Image')
                     s3_key = img_meta.get('s3_key', '')
                     
-                    # Include IMAGE_URL in content so agent can find and return it
-                    page_content = f"[{context_prefix}] Image page {img_meta['page']}: {img_desc}\nIMAGE_URL: {s3_key}|PAGE: {img_meta['page']}|SOURCE: {base_name}"
+                    # Include IMAGE_URL in structured format for agent to return
+                    page_content = f"[{context_prefix}] Image page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
                     
                     img_doc = Document(
                         page_content=page_content,
@@ -927,7 +927,9 @@ def adaptive_search(master_index, query):
 
 def handle_search_action(event):
     """Enhanced search with multiple queries for better consistency."""
+    search_start = time.time()
     try:
+        parse_start = time.time()
         request_body = event.get("requestBody", {})
         content = request_body.get("content", {})
         app_json = content.get("application/json", {})
@@ -938,6 +940,7 @@ def handle_search_action(event):
             if prop.get("name") == "query":
                 query = prop.get("value", "")
                 break
+        logger.info(f"⏱️ SEARCH: Parse request took {time.time() - parse_start:.3f}s")
         
         if not query.strip():
             return {
@@ -954,11 +957,15 @@ def handle_search_action(event):
         from langchain_community.vectorstores import FAISS
         
         # Use cached index
+        cache_start = time.time()
         cache_key = "master_index"
         if cache_key in _faiss_cache:
             master_index = _faiss_cache[cache_key]
+            logger.info(f"⏱️ SEARCH: Cache hit took {time.time() - cache_start:.3f}s")
         else:
+            logger.info("⏱️ SEARCH: Cache miss, loading index...")
             preload_master_index()
+            logger.info(f"⏱️ SEARCH: Index load took {time.time() - cache_start:.3f}s")
             if cache_key not in _faiss_cache:
                 return {
                     "messageVersion": "1.0",
@@ -966,50 +973,51 @@ def handle_search_action(event):
                         "actionGroup": event.get("actionGroup", "LambdaTools"),
                         "apiPath": "/search",
                         "httpMethod": "POST",
-                        "httpStatusCode": 500,
-                        "responseBody": {"application/json": {"body": json.dumps({"error": "Search index not available"})}}
+                        "httpStatusCode": 200,
+                        "responseBody": {"application/json": {"body": json.dumps({"result": "No documents have been uploaded yet. Please upload PDF files first to enable search functionality. You can upload files using the upload feature in the application."})}}
                     }
                 }
             master_index = _faiss_cache[cache_key]
         
-        # Multi-query search for better coverage
-        all_results = set()
-        queries = [query]
+        # Dynamic k based on confidence
+        vector_start = time.time()
+        results = master_index.similarity_search_with_score(query, k=10)
+        logger.info(f"⏱️ SEARCH: Initial vector search (k=10) took {time.time() - vector_start:.3f}s")
         
-        # Add specific brand queries for comparisons
-        if 'compare' in query.lower() or 'vs' in query.lower():
-            if 'hyundai' in query.lower():
-                queries.append('Hyundai Tucson specifications')
-            if 'chery' in query.lower() or 'cherry' in query.lower():
-                queries.append('Cherry Tiggo specifications')
+        # Check confidence and expand if needed
+        if results:
+            best_score = results[0][1]
+            avg_score = sum(score for _, score in results) / len(results)
+            
+            # Expand if low confidence (high distance = low confidence)
+            if best_score > 0.6 or avg_score > 0.75:
+                expand_start = time.time()
+                logger.info(f"Low confidence (best={best_score:.2f}, avg={avg_score:.2f}), expanding to k=25")
+                results = master_index.similarity_search_with_score(query, k=25)
+                logger.info(f"⏱️ SEARCH: Expanded search (k=25) took {time.time() - expand_start:.3f}s")
+            elif best_score > 0.5:
+                expand_start = time.time()
+                logger.info(f"Medium confidence (best={best_score:.2f}), expanding to k=15")
+                results = master_index.similarity_search_with_score(query, k=15)
+                logger.info(f"⏱️ SEARCH: Expanded search (k=15) took {time.time() - expand_start:.3f}s")
         
-        # Add specific term queries
-        if 'dimension' in query.lower():
-            queries.extend(['length width height', 'measurements size'])
-        if 'fuel' in query.lower():
-            queries.extend(['fuel tank capacity', 'tank liters'])
-        
-        # Search with all queries
-        for q in queries:
-            results = master_index.similarity_search_with_score(q, k=20)
-            for doc, score in results:
-                all_results.add((doc.page_content, doc.metadata.get('source', 'unknown')))
+        format_start = time.time()
+        all_results = [(doc.page_content, doc.metadata.get('source', 'unknown')) for doc, score in results]
+        logger.info(f"⏱️ SEARCH: Format results took {time.time() - format_start:.3f}s")
+        logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={results[0][1] if results else 'N/A'}")
         
         if not all_results:
             result = "No relevant information found."
         else:
             result_parts = []
-            import re
             
             for content, source in all_results:
-                if 'IMAGE_URL:' in content:
-                    image_urls = re.findall(r'IMAGE_URL:\s*([^\n|]+)', content)
-                    for url in image_urls:
-                        result_parts.append(f"IMAGE_URL: {url.strip()}")
-                else:
-                    result_parts.append(f"[{source}] {content}")
+                result_parts.append(f"[{source}] {content}")
             
-            result = "\n\n".join(result_parts[:30]) if result_parts else "No results found."
+            result = "\n\n".join(result_parts[:5]) if result_parts else "No results found."
+        
+        logger.info(f"⏱️ SEARCH: Search returned {len(all_results)} results, result length: {len(result)}")
+        logger.info(f"⏱️ SEARCH: TOTAL handle_search_action took {time.time() - search_start:.3f}s")
         
         return {
             "messageVersion": "1.0",
@@ -1026,17 +1034,25 @@ def handle_search_action(event):
             }
         }
     except Exception as e:
-        logger.error(f"Search failed: {type(e).__name__}")
+        error_msg = str(e)
+        logger.error(f"Search failed: {type(e).__name__} | Details: {error_msg[:200]}")
+        
+        # Check if error is related to missing index
+        if "index" in error_msg.lower() or "faiss" in error_msg.lower() or "vector" in error_msg.lower() or "master_index" in error_msg.lower():
+            result_msg = "No documents have been uploaded yet. Please upload PDF files first to enable search functionality."
+        else:
+            result_msg = "Search encountered an error. Please try again or upload documents if you haven't already."
+        
         return {
             "messageVersion": "1.0",
             "response": {
                 "actionGroup": event.get("actionGroup", "LambdaTools"),
                 "apiPath": "/search",
                 "httpMethod": "POST",
-                "httpStatusCode": 500,
+                "httpStatusCode": 200,
                 "responseBody": {
                     "application/json": {
-                        "body": json.dumps({"error": "Search failed"})
+                        "body": json.dumps({"result": result_msg})
                     }
                 }
             }
@@ -1154,6 +1170,8 @@ def handle_agent_query(event):
         
         query = body.get("query", "")
         session_id = body.get("sessionId", f"session-{int(time.time())}")
+        logger.info(f"⏱️ TIMING: Parse body took {time.time() - parse_start:.3f}s")
+        
         # Validate inputs
         if not query or not isinstance(query, str):
             return cors_response({"error": "Query is required and must be a string"}, 400)
@@ -1161,6 +1179,7 @@ def handle_agent_query(event):
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
         
+        config_start = time.time()
         agent_id = os.getenv("BEDROCK_AGENT_ID")
         alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
         
@@ -1170,23 +1189,45 @@ def handle_agent_query(event):
         
         try:
             bedrock_agent_runtime = get_bedrock_client()
+            logger.info(f"⏱️ TIMING: Get Bedrock client took {time.time() - config_start:.3f}s")
         except Exception as e:
             logger.error(f"Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
         
         try:
-            response = bedrock_agent_runtime.invoke_agent(
-                agentId=agent_id,
-                agentAliasId=alias_id,
-                sessionId=session_id,
-                inputText=query,
-                enableTrace=False
-            )
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Agent invocation timed out")
+            
+            # Set 60 second timeout for agent invocation
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(60)
+            
+            invoke_start = time.time()
+            logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
+            try:
+                response = bedrock_agent_runtime.invoke_agent(
+                    agentId=agent_id,
+                    agentAliasId=alias_id,
+                    sessionId=session_id,
+                    inputText=query,
+                    enableTrace=False
+                )
+                logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
+            finally:
+                signal.alarm(0)  # Cancel the alarm
+                
+        except TimeoutError as e:
+            logger.error(f"Agent invocation timeout after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
+            return cors_response({"error": "Request timed out. Please try a simpler query."}, 504)
         except Exception as e:
-            logger.error(f"Agent invocation failed: {sanitize_for_logging(str(e))}")
+            logger.error(f"Agent invocation failed after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to invoke agent"}, 500)
         
+        stream_start = time.time()
         answer = ""
+        chunk_count = 0
         try:
             event_stream = response.get('completion')
             if not event_stream:
@@ -1195,16 +1236,21 @@ def handle_agent_query(event):
             for event in event_stream:
                 if 'chunk' in event and 'bytes' in event['chunk']:
                     answer += event['chunk']['bytes'].decode('utf-8')
+                    chunk_count += 1
+            logger.info(f"⏱️ TIMING: Stream processing took {time.time() - stream_start:.3f}s ({chunk_count} chunks, {len(answer)} bytes)")
         except Exception as e:
-            logger.error(f"Failed to process response stream: {sanitize_for_logging(str(e))}")
+            full_error = str(e)
+            logger.error(f"Failed to process response stream: {full_error}")
             return cors_response({"error": "Failed to process agent response"}, 500)
         
-        # Extract IMAGE_URL entries and generate presigned URLs (optimized)
+        # Extract IMAGE_URL: markers and generate presigned URLs
+        image_start = time.time()
         images = []
-        if 'IMAGE_URL:' in answer and len(answer) < 50000:  # Only process if reasonable size
+        if 'IMAGE_URL:' in answer:
             try:
                 import re
-                matches = re.findall(r'IMAGE_URL:\s*([^|\n]+)', answer)
+                # Match IMAGE_URL:path|PAGE:num|SOURCE:name pattern
+                matches = re.findall(r'IMAGE_URL:([^|\n]+)', answer)
                 
                 if matches:
                     s3_client = get_s3_client()
@@ -1220,19 +1266,32 @@ def handle_agent_query(event):
                                     ExpiresIn=3600
                                 )
                                 images.append(url)
-                            except:
-                                pass  # Skip failed URLs silently
-            except:
-                pass  # Skip image processing if it fails
+                                logger.info(f"Generated presigned URL for: {s3_key}")
+                            except Exception as e:
+                                logger.error(f"Failed to generate URL for {s3_key}: {e}")
+                    
+                    # Remove IMAGE_URL:... lines from response
+                    answer = re.sub(r'IMAGE_URL:[^\n]*\n?', '', answer).strip()
+                    
+                logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
+            except Exception as e:
+                logger.error(f"Image processing error: {e}")
         
+        logger.info(f"⏱️ TIMING: TOTAL agent query took {time.time() - total_start:.3f}s")
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error | Error: {type(e).__name__} | Details: {str(e)[:100]}")
         return cors_response({"error": "Invalid request format"}, 400)
     except Exception as e:
-        logger.error(f"Agent query failed | Error: {type(e).__name__} | Details: {str(e)[:200]} | Time: {time.time() - total_start:.2f}s")
-        return cors_response({"error": "Agent query failed"}, 500)
+        error_msg = str(e)
+        logger.error(f"Agent query failed | Error: {type(e).__name__} | Details: {error_msg[:200]} | Time: {time.time() - total_start:.2f}s")
+        
+        # Check if error is related to missing index
+        if "index" in error_msg.lower() or "faiss" in error_msg.lower() or "vector" in error_msg.lower():
+            return cors_response({"error": "No documents available. Please upload PDF files first to start asking questions."}, 200)
+        
+        return cors_response({"error": "Failed to process query. Please try again."}, 500)
 
 
 

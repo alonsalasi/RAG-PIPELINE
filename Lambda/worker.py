@@ -75,6 +75,56 @@ class ProcessingCancelled(Exception):
     """Exception raised when processing is cancelled by user."""
     pass
 
+def extract_images_from_pdf(pdf_path, base_name):
+    """Extract embedded images from PDF pages."""
+    from pypdf import PdfReader
+    import fitz  # PyMuPDF
+    
+    extracted_images = []
+    
+    try:
+        pdf_document = fitz.open(pdf_path)
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            image_list = page.get_images(full=True)
+            
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                base_image = pdf_document.extract_image(xref)
+                image_bytes = base_image["image"]
+                image_ext = base_image["ext"]
+                
+                # Skip very small images (likely icons/logos)
+                if len(image_bytes) < 10000:  # 10KB minimum
+                    continue
+                
+                # Convert to JPEG if needed
+                if image_ext != "jpeg":
+                    try:
+                        img_pil = Image.open(io.BytesIO(image_bytes))
+                        img_byte_arr = io.BytesIO()
+                        img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                        image_bytes = img_byte_arr.getvalue()
+                        image_ext = "jpg"
+                    except:
+                        continue
+                
+                extracted_images.append({
+                    'page': page_num + 1,
+                    'index': img_index,
+                    'data': image_bytes,
+                    'ext': image_ext
+                })
+        
+        pdf_document.close()
+        logger.info(f"Extracted {len(extracted_images)} embedded images from PDF")
+        return extracted_images
+        
+    except Exception as e:
+        logger.error(f"Image extraction failed: {e}")
+        return []
+
 def analyze_page_with_claude(image_data):
     """Comprehensive page analysis using Claude Vision - replaces all OCR and image extraction."""
     if not image_data or len(image_data) == 0:
@@ -99,7 +149,7 @@ def analyze_page_with_claude(image_data):
                     },
                     {
                         "type": "text",
-                        "text": "You are an expert document analyst. Analyze this single PDF page image and extract ALL information:\n\n1. **Full Text Transcription:** Transcribe *all* text on the page, including English and Hebrew. Preserve the general layout.\n2. **Table Extraction:** If you see any tables, transcribe them into structured format.\n3. **Image Analysis:** Identify each distinct photo or icon on the page. For *each* one, provide:\n   * A description of the visual\n   * The *exact* caption text from the document that is next to or clearly associated with that visual\n   * BRAND: [brand name if visible]\n   * TYPE: [vehicle type if automotive]\n   * PRIMARY_COLOR: [dominant color]\n   * SECONDARY_COLORS: [other colors]\n\nCombine all of this into a single, comprehensive text report for this page."
+                        "text": "Describe this image. CRITICAL: Only extract information that is EXPLICITLY VISIBLE in the image. DO NOT infer, assume, or add specifications that are not shown.\n\n1. **Visible Text:** Transcribe ALL text exactly as written (any language).\n\n2. **Tables:** If tables are visible, extract EVERY cell with labels.\n\n3. **Visual Description:** Describe what you see - vehicle type, colors, design features, setting, etc.\n\n4. **Brand/Model:** Only if explicitly visible in the image.\n\nIMPORTANT: Do NOT add technical specifications (dimensions, capacity, weight, etc.) unless they are explicitly written and visible in the image. If you see a car photo with no text, just describe the car visually."
                     }
                 ]
             }]
@@ -220,7 +270,37 @@ def process_message(record):
             
             if s3_key.lower().endswith('.pdf'):
                 try:
-                    logger.info(f"Processing with hybrid Tesseract + Claude Vision")
+                    # FIRST: Extract embedded images from PDF
+                    logger.info(f"Extracting embedded images from PDF")
+                    embedded_images = extract_images_from_pdf(local_path, base_name)
+                    
+                    # Process embedded images with Claude Vision
+                    for img_info in embedded_images:
+                        img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
+                        img_key = f"images/{base_name}/{img_name}"
+                        
+                        # Analyze image with Claude
+                        visual_analysis = analyze_page_with_claude(img_info['data'])
+                        if visual_analysis:
+                            s3_client = get_s3_client()
+                            s3_client.put_object(
+                                Bucket=BUCKET,
+                                Key=img_key,
+                                Body=img_info['data'],
+                                ContentType='image/jpeg'
+                            )
+                            
+                            image_metadata.append({
+                                'page': img_info['page'],
+                                'image_name': img_name,
+                                's3_key': img_key,
+                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                                'description': visual_analysis
+                            })
+                            logger.info(f"Saved embedded image from page {img_info['page']}")
+                    
+                    # SECOND: Process text with Tesseract + Claude for tables
+                    logger.info(f"Processing text with hybrid Tesseract + Claude Vision")
                     all_page_images = convert_from_path(local_path, dpi=200)
                     
                     for page_num, page_image in enumerate(all_page_images, 1):
@@ -231,50 +311,81 @@ def process_message(record):
                         page_image.save(img_byte_arr, format='JPEG', quality=90)
                         page_img_data = img_byte_arr.getvalue()
                         
-                        # PRIMARY: Tesseract OCR for text extraction (FREE)
+                        # PRIMARY: Tesseract OCR with confidence scoring (FREE)
                         logger.info(f"Page {page_num}: Tesseract OCR")
+                        use_claude = False
+                        avg_confidence = 0
                         try:
                             import pytesseract
+                            # Get OCR text
                             ocr_text = pytesseract.image_to_string(
                                 page_image, 
                                 lang='eng+heb+ara', 
                                 config='--psm 3 --oem 1'
                             )
+                            
+                            # Get confidence data to determine if Claude Vision is needed
+                            ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
+                            confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+                            
+                            if confidences:
+                                avg_confidence = sum(confidences) / len(confidences)
+                                logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
+                                
+                                # Use Claude Vision if:
+                                # 1. Low confidence (< 60%) - likely tables, complex layouts, or poor quality
+                                # 2. Very short text (< 100 chars) - might be mostly images/diagrams
+                                # 3. Contains table indicators
+                                has_table_indicators = any(word in ocr_text.lower() for word in ['|', 'row', 'column', 'specifications', 'specs'])
+                                
+                                if avg_confidence < 60 or len(ocr_text.strip()) < 100 or has_table_indicators:
+                                    use_claude = True
+                                    reason = "low confidence" if avg_confidence < 60 else "table detected" if has_table_indicators else "minimal text"
+                                    logger.info(f"Page {page_num}: Triggering Claude Vision ({reason})")
+                            else:
+                                # No confidence data - use Claude as fallback
+                                use_claude = True
+                                logger.info(f"Page {page_num}: No confidence data, using Claude Vision")
+                            
                             if ocr_text.strip():
-                                full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                                logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                # Add English translation for non-Latin text to improve cross-language search
+                                has_non_latin = any(ord(c) > 127 for c in ocr_text)
+                                if has_non_latin:
+                                    try:
+                                        bedrock = get_bedrock_client()
+                                        translate_body = {
+                                            "anthropic_version": "bedrock-2023-05-31",
+                                            "max_tokens": 2000,
+                                            "messages": [{"role": "user", "content": f"Translate this text to English. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{ocr_text[:1500]}"}]
+                                        }
+                                        response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
+                                        translation = json.loads(response['body'].read())['content'][0]['text']
+                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n[PAGE {page_num} ENGLISH]:\n{translation}\n"
+                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars + translation")
+                                    except Exception as trans_e:
+                                        logger.warning(f"Translation failed: {trans_e}")
+                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                else:
+                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                    logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
                         except Exception as ocr_e:
                             logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
+                            use_claude = True  # Fallback to Claude if Tesseract fails
                         
-                        # SECONDARY: Claude Vision for image analysis (PAID - only when needed)
-                        has_images = len(page_img_data) > 50000  # Rough heuristic for image content
-                        if has_images:
-                            logger.info(f"Page {page_num}: Claude Vision analysis")
+                        # SECONDARY: Claude Vision for table extraction (PAID - only when needed)
+                        if use_claude:
+                            logger.info(f"Page {page_num}: Claude Vision for table extraction (confidence: {avg_confidence:.1f}%)")
                             try:
                                 visual_analysis = analyze_page_with_claude(page_img_data)
-                                if visual_analysis and 'brand:' in visual_analysis.lower():
-                                    # Save page as searchable image
-                                    img_name = f"{base_name}_page{page_num}.jpg"
-                                    img_key = f"images/{base_name}/{img_name}"
-                                    
-                                    s3_client = get_s3_client()
-                                    s3_client.put_object(
-                                        Bucket=BUCKET,
-                                        Key=img_key,
-                                        Body=page_img_data,
-                                        ContentType='image/jpeg'
-                                    )
-                                    
-                                    image_metadata.append({
-                                        'page': page_num,
-                                        'image_name': img_name,
-                                        's3_key': img_key,
-                                        'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                        'description': visual_analysis
-                                    })
-                                    logger.info(f"Saved page {page_num} image: {img_key}")
+                                if visual_analysis:
+                                    # Add table data to text instead of saving as image
+                                    full_text += f"\n[PAGE {page_num} TABLE DATA]:\n{visual_analysis}\n"
+                                    logger.info(f"Extracted table data from page {page_num}")
                             except Exception as claude_e:
                                 logger.warning(f"Page {page_num} Claude Vision failed: {claude_e}")
+                        else:
+                            logger.info(f"Page {page_num}: Skipping Claude Vision (high confidence: {avg_confidence:.1f}%)")
                         
                         page_image.close()
                     
@@ -361,8 +472,8 @@ def process_message(record):
                         if primary_color and primary_color.lower() != 'none':
                             color_keywords.append(primary_color.lower())
                     
-                    # Add color keywords to make images more searchable
-                    searchable_content = f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}"
+                    # Add color keywords and IMAGE_URL marker for agent to return
+                    searchable_content = f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
                     if color_keywords:
                         searchable_content += f"\nColor tags: {' '.join(color_keywords)}"
                     

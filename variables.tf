@@ -144,3 +144,9 @@ variable "admin_password" {
   default     = ""
 }
 
+variable "bedrock_agent_alias_id" {
+  description = "Bedrock Agent Alias ID for production"
+  type        = string
+  default     = "WC7S5HGZS8"
+}
+
