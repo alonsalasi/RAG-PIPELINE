@@ -95,9 +95,22 @@ def get_s3_client():
         )
     return _s3_client
 
+# Track when client was created to detect stale connections
+_bedrock_client_created_at = None
+CLIENT_MAX_AGE_SECONDS = 300  # Refresh client every 5 minutes
+
 def get_bedrock_client():
-    """Get Bedrock client with optimized configuration."""
-    global _bedrock_client
+    """Get Bedrock client with optimized configuration and auto-refresh."""
+    global _bedrock_client, _bedrock_client_created_at
+    
+    # Refresh client if it's too old (prevents stale agent version issues)
+    current_time = time.time()
+    if _bedrock_client is not None and _bedrock_client_created_at is not None:
+        age = current_time - _bedrock_client_created_at
+        if age > CLIENT_MAX_AGE_SECONDS:
+            logger.info(f"Bedrock client is {age:.0f}s old, refreshing...")
+            _bedrock_client = None
+    
     if _bedrock_client is None:
         region = os.getenv("AWS_REGION")
         if not region:
@@ -112,6 +125,7 @@ def get_bedrock_client():
                 retries={'max_attempts': 1}
             )
         )
+        _bedrock_client_created_at = current_time
         logger.info(f"Bedrock client initialized: {region}")
     return _bedrock_client
 
@@ -134,21 +148,45 @@ if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
 
+# Track index timestamp to detect updates
+_index_s3_timestamp = None
+
 @retry_with_backoff(max_retries=2)
-def preload_master_index():
-    """Preload master FAISS index at Lambda startup with optimized loading."""
+def preload_master_index(force_reload=False):
+    """Preload master FAISS index with automatic update detection."""
     from langchain_community.vectorstores import FAISS
     import shutil
+    from datetime import datetime
     
+    global _index_s3_timestamp
     cache_key = "master_index"
     cache_dir = "/tmp/master_index"
     s3_client = get_s3_client()
     
-    # Check if already cached
-    if cache_key in _faiss_cache:
-        logger.info("Master index already cached")
-        return
+    # Check if S3 index was updated (new upload)
+    try:
+        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+        s3_last_modified = s3_obj['LastModified'].timestamp()
+        
+        # If we have a cached index, check if S3 version is newer
+        if cache_key in _faiss_cache and _index_s3_timestamp is not None:
+            if s3_last_modified > _index_s3_timestamp:
+                logger.info(f"S3 index updated (cached: {datetime.fromtimestamp(_index_s3_timestamp)}, S3: {datetime.fromtimestamp(s3_last_modified)}), reloading...")
+                del _faiss_cache[cache_key]
+            else:
+                logger.info("Master index cached and up-to-date")
+                return
+        elif cache_key in _faiss_cache:
+            logger.info("Master index already cached")
+            return
+            
+    except s3_client.exceptions.ClientError as e:
+        if e.response.get('Error', {}).get('Code') == '404':
+            logger.info("No master index exists yet")
+            return
+        logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
     
+    # Timestamp check is now done inside preload_master_index
     try:
         s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
     except s3_client.exceptions.ClientError as e:
@@ -180,6 +218,13 @@ def preload_master_index():
     embeddings = get_embeddings_client()
     master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
     _faiss_cache[cache_key] = master_index
+    
+    # Store S3 timestamp for future comparisons
+    try:
+        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+        _index_s3_timestamp = s3_obj['LastModified'].timestamp()
+    except:
+        _index_s3_timestamp = time.time()
     
     logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors in {time.time() - start_time:.2f}s")
 
@@ -385,6 +430,14 @@ def optimized_search(query, top_k=30):
                 embeddings = get_embeddings_client()
                 master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
                 _faiss_cache[cache_key] = master_index
+                
+                # Store S3 timestamp
+                try:
+                    s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+                    _index_s3_timestamp = s3_obj['LastModified'].timestamp()
+                except:
+                    _index_s3_timestamp = time.time()
+                    
                 logger.info("Loaded index from disk cache")
             else:
                 # Last resort: download and cache
@@ -926,21 +979,95 @@ def handle_search_action(event):
                 }
             master_index = _faiss_cache[cache_key]
         
-        # 1. Determine Intent
+        # 1. Smart Intent Detection - works for ANY subject
         query_lower = query.lower()
         original_lower = original_input.lower() if original_input else query_lower
         
-        image_triggers = ['image', 'picture', 'photo', 'drawing', 'figure', 'diagram', 'show', 'see', 'look', 'view']
-        text_triggers = ['text', 'read', 'info', 'details', 'specs', 'specification', 'data', 'written']
+        # Question words = user wants information (TEXT)
+        question_words = ['what', 'how', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom']
+        # Comparison/analysis = user wants details (TEXT)
+        analysis_words = ['compare', 'difference', 'versus', 'vs', 'between', 'analyze', 'explain', 'describe', 'tell', 'list', 'summarize']
+        # Visual commands = user wants to see (IMAGES)
+        visual_commands = ['show me', 'display', 'picture of', 'photo of', 'image of', 'look at', 'see the', 'view the']
         
-        # Check both original and transformed query
-        wants_images = any(word in original_lower for word in image_triggers) or any(word in query_lower for word in image_triggers)
-        wants_text = any(word in original_lower for word in text_triggers) or any(word in query_lower for word in text_triggers) or not wants_images
+        # Count intent signals
+        text_signals = 0
+        image_signals = 0
         
-        # 2. Wide Retrieval (Fetch many candidates)
+        # Check for question words at start (strong text signal)
+        first_word = query_lower.split()[0] if query_lower.split() else ''
+        if first_word in question_words:
+            text_signals += 2
+        
+        # Check for analysis/comparison words
+        if any(word in original_lower for word in analysis_words):
+            text_signals += 2
+        
+        # Check for visual commands
+        if any(cmd in original_lower for cmd in visual_commands):
+            image_signals += 2
+        
+        # Check for standalone visual words (weaker signal)
+        if any(word in original_lower.split() for word in ['picture', 'photo', 'image', 'drawing']):
+            image_signals += 1
+        
+        # Decision based on signal strength
+        if text_signals > image_signals:
+            wants_text = True
+            wants_images = False
+            logger.info(f"📄 Intent: TEXT (signals: text={text_signals}, image={image_signals})")
+        elif image_signals > text_signals:
+            wants_images = True
+            wants_text = False
+            logger.info(f"🖼️ Intent: IMAGES (signals: text={text_signals}, image={image_signals})")
+        else:
+            # Equal or no strong signals = hybrid
+            wants_text = True
+            wants_images = True
+            logger.info(f"🔄 Intent: HYBRID (signals: text={text_signals}, image={image_signals})")
+        
+        # 2. Wide Retrieval with fuzzy matching
         vector_start = time.time()
         raw_results = master_index.similarity_search_with_score(query, k=60)
         logger.info(f"⏱️ SEARCH: Vector search (k=60) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
+        
+        # Apply fuzzy matching to boost relevant results
+        from difflib import SequenceMatcher
+        
+        def fuzzy_score(text1, text2):
+            """Calculate fuzzy similarity between two strings (0-1)."""
+            return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+        
+        # Extract key terms from query (ignore stop words)
+        stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their'}
+        query_terms = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+        
+        # Re-score results with fuzzy matching boost
+        fuzzy_results = []
+        for doc, semantic_score in raw_results:
+            content_lower = doc.page_content.lower()
+            
+            # Calculate fuzzy match score for each query term
+            fuzzy_boost = 0
+            for term in query_terms:
+                # Check for exact match first
+                if term in content_lower:
+                    fuzzy_boost += 1.0
+                else:
+                    # Check for fuzzy match (e.g., "chery" matches "cherry")
+                    words_in_content = content_lower.split()
+                    best_match = max([fuzzy_score(term, word) for word in words_in_content] + [0])
+                    if best_match > 0.8:  # 80% similarity threshold
+                        fuzzy_boost += best_match
+                        logger.info(f"🔍 Fuzzy match: '{term}' → best_match={best_match:.2f}")
+            
+            # Adjust semantic score with fuzzy boost (lower score = better)
+            adjusted_score = semantic_score - (fuzzy_boost * 0.2)
+            fuzzy_results.append((doc, adjusted_score, semantic_score))
+        
+        # Sort by adjusted score
+        fuzzy_results.sort(key=lambda x: x[1])
+        raw_results = [(doc, adj_score) for doc, adj_score, _ in fuzzy_results]
         
         # 3. Separate Candidates
         text_candidates = []
@@ -956,28 +1083,33 @@ def handle_search_action(event):
         
         if wants_images and not wants_text:
             # PURE IMAGE QUERY
-            logger.info("🖼️ Intent: Pure Image")
             
-            # Apply color/object filtering for images
-            color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink']
-            query_colors = [color for color in color_words if color in query_lower]
-            stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo'}
-            query_words = [w for w in query_lower.split() if w not in stop_words and w not in color_words and len(w) > 2]
+            # Apply attribute filtering for images (colors, sizes, etc.)
+            color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink', 'gold', 'beige', 'tan']
+            size_words = ['large', 'small', 'big', 'tiny', 'huge', 'medium']
+            attribute_words = color_words + size_words
+            query_attributes = [attr for attr in attribute_words if attr in query_lower]
+            
+            # Get meaningful query words (not stop words or attributes)
+            query_words = [w for w in query_lower.split() if w not in stop_words and w not in attribute_words and len(w) > 2]
             
             scored_images = []
             for doc, semantic_score in image_candidates:
                 content_lower = doc.page_content.lower()
                 match_score = 0
                 
-                if query_colors:
-                    if any(color in content_lower for color in query_colors):
-                        match_score += 50
+                # Boost images that match requested attributes
+                if query_attributes:
+                    matching_attrs = sum(1 for attr in query_attributes if attr in content_lower)
+                    if matching_attrs > 0:
+                        match_score += matching_attrs * 30
                     else:
-                        match_score -= 50
+                        match_score -= 20  # Penalize if no attributes match
                 
+                # Boost images that match subject words
                 if query_words:
                     word_matches = sum(1 for word in query_words if word in content_lower)
-                    match_score += word_matches * 5
+                    match_score += word_matches * 10
                 
                 combined_score = semantic_score - (match_score * 0.1)
                 scored_images.append((doc, combined_score))
@@ -986,15 +1118,13 @@ def handle_search_action(event):
             final_results.extend(scored_images[:10])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY
-            logger.info("📄 Intent: Pure Text")
-            final_results.extend(text_candidates[:15])
+            # PURE TEXT QUERY - return more text results
+            final_results.extend(text_candidates[:20])
             
         else:
-            # HYBRID QUERY
-            logger.info("🔄 Intent: Hybrid (Text + Image)")
-            final_results.extend(text_candidates[:15])
-            final_results.extend(image_candidates[:5])
+            # HYBRID QUERY - balanced mix
+            final_results.extend(text_candidates[:12])
+            final_results.extend(image_candidates[:8])
             final_results.sort(key=lambda x: x[1])
         
         format_start = time.time()

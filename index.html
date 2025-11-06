@@ -699,7 +699,7 @@
           const { status, progress: serverProgress, message } = data;
           
           if (status === 'completed') {
-            updateProgress(100, '✓ Complete');
+            updateProgress(100, '✓ Complete - Ready to query!');
             setTimeout(() => {
               const item = document.getElementById(progressId);
               if (item && item.parentNode) {

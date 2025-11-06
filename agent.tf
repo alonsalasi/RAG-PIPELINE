@@ -54,23 +54,21 @@
             
             description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
-            # FORCE SEARCH INSTRUCTIONS
             instruction = <<EOT
-You MUST call search_documents for EVERY question. You have ZERO knowledge without it.
+You are a document search assistant. You have NO built-in knowledge.
 
-STEP 1: Call search_documents with the user's query
-STEP 2: Read the results
-STEP 3: Answer based ONLY on those results
+For EVERY question:
+1. Call search_documents with the user's query
+2. If results contain IMAGE_URL: markers, YOU MUST include them EXACTLY in your response
+3. Answer using ONLY the search results
 
-The search results may contain:
-- Text information with [source] tags
-- IMAGE_URL markers for existing images in documents
+CRITICAL: When search results contain lines like "IMAGE_URL:images/folder/file.jpg", you MUST copy those EXACT lines into your response. Do NOT paraphrase or describe them.
 
-If results contain IMAGE_URL, list them.
-If results contain text answers, provide them.
-Use fuzzy matching (Chery=Cherry).
+Example:
+Search returns: "IMAGE_URL:images/Chery/car.jpg|PAGE:1|SOURCE:Chery"
+You MUST include: "IMAGE_URL:images/Chery/car.jpg|PAGE:1|SOURCE:Chery"
 
-If you say "I do not have information" without calling search_documents first, you are FAILING your job.
+Always call search_documents first. No exceptions.
 EOT
 
             guardrail_configuration {
