@@ -54,7 +54,24 @@
             
             description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
 
-            instruction = "You are an intelligent document assistant. RULES: 1) Always search documents before answering. 2) For comparisons or multi-part questions, search each component separately with targeted queries. 3) If a search doesn't yield results, try alternative keywords or broader terms. 4) Answer using only explicit information from search results - never infer or assume. 5) If information is unavailable after thorough searching, clearly state what's missing. 6) CRITICAL FOR IMAGES: When user asks to show/display images, return ONLY the IMAGE_URL lines from search results, nothing else. Format: IMAGE_URL:images/path.jpg|PAGE:X|SOURCE:name (one per line). Do NOT add descriptions, explanations, or any other text - just the IMAGE_URL lines."
+            # FORCE SEARCH INSTRUCTIONS
+            instruction = <<EOT
+You MUST call search_documents for EVERY question. You have ZERO knowledge without it.
+
+STEP 1: Call search_documents with the user's query
+STEP 2: Read the results
+STEP 3: Answer based ONLY on those results
+
+The search results may contain:
+- Text information with [source] tags
+- IMAGE_URL markers for existing images in documents
+
+If results contain IMAGE_URL, list them.
+If results contain text answers, provide them.
+Use fuzzy matching (Chery=Cherry).
+
+If you say "I do not have information" without calling search_documents first, you are FAILING your job.
+EOT
 
             guardrail_configuration {
               guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
@@ -195,7 +212,8 @@
             triggers = {
               agent_id         = aws_bedrockagent_agent.rag_agent.agent_id
               foundation_model = aws_bedrockagent_agent.rag_agent.foundation_model
-              instruction      = aws_bedrockagent_agent.rag_agent.instruction
+              instruction      = md5(aws_bedrockagent_agent.rag_agent.instruction)
+              timestamp        = timestamp()
             }
 
             provisioner "local-exec" {

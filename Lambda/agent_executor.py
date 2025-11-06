@@ -368,8 +368,8 @@ def handle_delete_file(filename):
 # -----------------------------------------------------------
 # Optimized Search Function
 # -----------------------------------------------------------
-def optimized_search(query, top_k=15):
-    """Balanced search optimized for quality and performance."""
+def optimized_search(query, top_k=30):
+    """Intelligent search using semantic similarity."""
     try:
         # Use cached index first
         cache_key = "master_index"
@@ -394,9 +394,9 @@ def optimized_search(query, top_k=15):
                     return []
                 master_index = _faiss_cache[cache_key]
         
-        # Use adaptive search for better speed/quality balance
+        # Direct semantic search with higher k for better recall
         start_time = time.time()
-        results = adaptive_search(master_index, query)
+        results = master_index.similarity_search_with_score(query, k=top_k)
         search_time = time.time() - start_time
         
         # Minimal result formatting for speed
@@ -408,7 +408,7 @@ def optimized_search(query, top_k=15):
                 'semantic_score': float(semantic_score)
             })
         
-        logger.info(f"Adaptive search: {len(results)} results in {search_time:.3f}s")
+        logger.info(f"Semantic search: {len(results)} results in {search_time:.3f}s")
         return formatted_results
         
     except Exception as e:
@@ -675,21 +675,20 @@ def rebuild_master_index():
                 # Get rich document context
                 context_prefix = get_document_context(metadata, base_name)
                 
-                # Get original PDF and re-extract text (simplified - just get from metadata)
-                text_preview = metadata.get('text_preview', '')
-                if text_preview:
-                    # Create document chunks from preview
+                # Get full text from metadata (not just preview)
+                full_text = metadata.get('full_text', metadata.get('text_preview', ''))
+                if full_text:
+                    # Use smaller chunks for better ranking
                     from langchain.text_splitter import RecursiveCharacterTextSplitter
                     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-                    chunks = splitter.split_text(text_preview)
+                    chunks = splitter.split_text(full_text)
                     
                     for i, chunk in enumerate(chunks):
                         doc = Document(
-                            page_content=f"[{context_prefix}] {chunk}",
+                            page_content=f"Document: {base_name}\n{chunk}",
                             metadata={
                                 "source": base_name,
-                                "chunk_id": i,
-                                "context_summary": context_prefix
+                                "chunk_id": i
                             }
                         )
                         all_docs.append(doc)
@@ -700,8 +699,8 @@ def rebuild_master_index():
                     img_desc = img_meta.get('description', 'Image')
                     s3_key = img_meta.get('s3_key', '')
                     
-                    # Include IMAGE_URL in structured format for agent to return
-                    page_content = f"[{context_prefix}] Image page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
+                    # Add document name prefix to help with ranking
+                    page_content = f"Document: {base_name}\nImage from page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
                     
                     img_doc = Document(
                         page_content=page_content,
@@ -865,70 +864,13 @@ def handle_cancel_upload_api(event):
 
 
 
-def analyze_query_complexity(query):
-    """Determine if query needs comprehensive search."""
-    query_lower = query.lower()
-    
-    # Complex queries that need more context
-    complex_indicators = [
-        'compare', 'difference', 'vs', 'versus', 'all', 'list', 'specifications',
-        'details', 'complete', 'full', 'comprehensive', 'everything'
-    ]
-    
-    # Simple queries that can work with fewer results
-    simple_indicators = [
-        'what is', 'how much', 'tank capacity', 'fuel tank', 'engine', 'color'
-    ]
-    
-    if any(indicator in query_lower for indicator in complex_indicators):
-        return 'complex'
-    elif any(indicator in query_lower for indicator in simple_indicators):
-        return 'simple'
-    
-    return 'medium'
 
-def adaptive_search(master_index, query):
-    """Adaptive search that optimizes based on query complexity."""
-    complexity = analyze_query_complexity(query)
-    
-    if complexity == 'simple':
-        # Simple queries: start small, likely sufficient
-        results = master_index.similarity_search_with_score(query, k=6)
-        if len(results) >= 3:
-            return results
-    elif complexity == 'complex':
-        # Complex queries: start with more results
-        return master_index.similarity_search_with_score(query, k=18)
-    
-    # Medium complexity or simple query needs expansion
-    initial_results = master_index.similarity_search_with_score(query, k=8)
-    
-    # Check if we need more context
-    needs_more = False
-    if len(initial_results) < 4:
-        needs_more = True
-    else:
-        # Check result diversity
-        sources = set()
-        for doc, score in initial_results:
-            source = doc.metadata.get('source', '')
-            if source:
-                sources.add(source)
-        
-        # Expand if low diversity or very similar scores
-        if len(sources) <= 1 or (len(initial_results) > 3 and 
-            initial_results[0][1] - initial_results[-1][1] < 0.15):
-            needs_more = True
-    
-    if needs_more:
-        return master_index.similarity_search_with_score(query, k=16)
-    
-    return initial_results
 
 def handle_search_action(event):
-    """Enhanced search with multiple queries for better consistency."""
+    """Intelligent search using semantic similarity without hardcoded rules."""
     search_start = time.time()
     try:
+        logger.info(f"🔍 SEARCH ACTION CALLED - Agent is searching PDFs")
         parse_start = time.time()
         request_body = event.get("requestBody", {})
         content = request_body.get("content", {})
@@ -940,6 +882,11 @@ def handle_search_action(event):
             if prop.get("name") == "query":
                 query = prop.get("value", "")
                 break
+        
+        # Get original user input to check for visual triggers
+        original_input = event.get("inputText", "")
+        logger.info(f"🔍 ORIGINAL INPUT: {sanitize_for_logging(original_input)}")
+        logger.info(f"🔍 SEARCH QUERY: {sanitize_for_logging(query)}")
         logger.info(f"⏱️ SEARCH: Parse request took {time.time() - parse_start:.3f}s")
         
         if not query.strip():
@@ -979,45 +926,111 @@ def handle_search_action(event):
                 }
             master_index = _faiss_cache[cache_key]
         
-        # Dynamic k based on confidence
-        vector_start = time.time()
-        results = master_index.similarity_search_with_score(query, k=10)
-        logger.info(f"⏱️ SEARCH: Initial vector search (k=10) took {time.time() - vector_start:.3f}s")
+        # 1. Determine Intent
+        query_lower = query.lower()
+        original_lower = original_input.lower() if original_input else query_lower
         
-        # Check confidence and expand if needed
-        if results:
-            best_score = results[0][1]
-            avg_score = sum(score for _, score in results) / len(results)
+        image_triggers = ['image', 'picture', 'photo', 'drawing', 'figure', 'diagram', 'show', 'see', 'look', 'view']
+        text_triggers = ['text', 'read', 'info', 'details', 'specs', 'specification', 'data', 'written']
+        
+        # Check both original and transformed query
+        wants_images = any(word in original_lower for word in image_triggers) or any(word in query_lower for word in image_triggers)
+        wants_text = any(word in original_lower for word in text_triggers) or any(word in query_lower for word in text_triggers) or not wants_images
+        
+        # 2. Wide Retrieval (Fetch many candidates)
+        vector_start = time.time()
+        raw_results = master_index.similarity_search_with_score(query, k=60)
+        logger.info(f"⏱️ SEARCH: Vector search (k=60) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
+        
+        # 3. Separate Candidates
+        text_candidates = []
+        image_candidates = []
+        for doc, score in raw_results:
+            if doc.metadata.get('type') == 'image':
+                image_candidates.append((doc, score))
+            else:
+                text_candidates.append((doc, score))
+        
+        # 4. Select Best Results based on Intent
+        final_results = []
+        
+        if wants_images and not wants_text:
+            # PURE IMAGE QUERY
+            logger.info("🖼️ Intent: Pure Image")
             
-            # Expand if low confidence (high distance = low confidence)
-            if best_score > 0.6 or avg_score > 0.75:
-                expand_start = time.time()
-                logger.info(f"Low confidence (best={best_score:.2f}, avg={avg_score:.2f}), expanding to k=25")
-                results = master_index.similarity_search_with_score(query, k=25)
-                logger.info(f"⏱️ SEARCH: Expanded search (k=25) took {time.time() - expand_start:.3f}s")
-            elif best_score > 0.5:
-                expand_start = time.time()
-                logger.info(f"Medium confidence (best={best_score:.2f}), expanding to k=15")
-                results = master_index.similarity_search_with_score(query, k=15)
-                logger.info(f"⏱️ SEARCH: Expanded search (k=15) took {time.time() - expand_start:.3f}s")
+            # Apply color/object filtering for images
+            color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink']
+            query_colors = [color for color in color_words if color in query_lower]
+            stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo'}
+            query_words = [w for w in query_lower.split() if w not in stop_words and w not in color_words and len(w) > 2]
+            
+            scored_images = []
+            for doc, semantic_score in image_candidates:
+                content_lower = doc.page_content.lower()
+                match_score = 0
+                
+                if query_colors:
+                    if any(color in content_lower for color in query_colors):
+                        match_score += 50
+                    else:
+                        match_score -= 50
+                
+                if query_words:
+                    word_matches = sum(1 for word in query_words if word in content_lower)
+                    match_score += word_matches * 5
+                
+                combined_score = semantic_score - (match_score * 0.1)
+                scored_images.append((doc, combined_score))
+            
+            scored_images.sort(key=lambda x: x[1])
+            final_results.extend(scored_images[:10])
+            
+        elif wants_text and not wants_images:
+            # PURE TEXT QUERY
+            logger.info("📄 Intent: Pure Text")
+            final_results.extend(text_candidates[:15])
+            
+        else:
+            # HYBRID QUERY
+            logger.info("🔄 Intent: Hybrid (Text + Image)")
+            final_results.extend(text_candidates[:15])
+            final_results.extend(image_candidates[:5])
+            final_results.sort(key=lambda x: x[1])
         
         format_start = time.time()
-        all_results = [(doc.page_content, doc.metadata.get('source', 'unknown')) for doc, score in results]
+        all_results = [(doc.page_content, doc.metadata.get('source', 'unknown')) for doc, score in final_results]
         logger.info(f"⏱️ SEARCH: Format results took {time.time() - format_start:.3f}s")
-        logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={results[0][1] if results else 'N/A'}")
+        logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={final_results[0][1] if final_results else 'N/A'}")
+        logger.info(f"Intent: wants_images={wants_images}, wants_text={wants_text} | Candidates: text={len(text_candidates)}, images={len(image_candidates)} | Final: {len(final_results)}")
+        
+        # Log first 3 results for debugging
+        if final_results:
+            for i, (doc, score) in enumerate(final_results[:3]):
+                content_preview = doc.page_content[:100].replace('\n', ' ')
+                doc_type = doc.metadata.get('type', 'text')
+                logger.info(f"Result {i+1}: score={score:.3f}, type={doc_type}, content={content_preview}...")
         
         if not all_results:
             result = "No relevant information found."
         else:
+            # [OLD BUGGY CODE REMOVED]
+            # if has_images:
+            #    ... only returned IMAGE_URLs ...
+            # else:
+            #    ... returned text ...
+            
+            # [NEW FIXED CODE] Always return full content so the Agent can see both text AND image links
             result_parts = []
-            
             for content, source in all_results:
-                result_parts.append(f"[{source}] {content}")
-            
-            result = "\n\n".join(result_parts[:5]) if result_parts else "No results found."
+                # Ensure we don't accidentally break the format the agent expects
+                clean_content = content.strip()
+                result_parts.append(f"[{source}] {clean_content}")
+                
+            result = "\n\n".join(result_parts) if result_parts else "No relevant information found."
         
         logger.info(f"⏱️ SEARCH: Search returned {len(all_results)} results, result length: {len(result)}")
         logger.info(f"⏱️ SEARCH: TOTAL handle_search_action took {time.time() - search_start:.3f}s")
+        logger.info(f"✅ SEARCH COMPLETE - Returning {len(all_results)} results to agent")
         
         return {
             "messageVersion": "1.0",
@@ -1034,14 +1047,14 @@ def handle_search_action(event):
             }
         }
     except Exception as e:
+        import traceback
         error_msg = str(e)
+        stack_trace = traceback.format_exc()
         logger.error(f"Search failed: {type(e).__name__} | Details: {error_msg[:200]}")
+        logger.error(f"Stack trace: {stack_trace[:500]}")
         
-        # Check if error is related to missing index
-        if "index" in error_msg.lower() or "faiss" in error_msg.lower() or "vector" in error_msg.lower() or "master_index" in error_msg.lower():
-            result_msg = "No documents have been uploaded yet. Please upload PDF files first to enable search functionality."
-        else:
-            result_msg = "Search encountered an error. Please try again or upload documents if you haven't already."
+        # Return a generic success response with error details for debugging
+        result_msg = f"Search completed but encountered an issue. Please try rephrasing your question."
         
         return {
             "messageVersion": "1.0",
@@ -1206,13 +1219,15 @@ def handle_agent_query(event):
             
             invoke_start = time.time()
             logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
+            logger.info(f"🤖 AGENT QUERY: {sanitize_for_logging(query)}")
+            logger.info(f"📋 Agent ID: {agent_id[:20]}... | Alias: {alias_id[:20]}...")
             try:
                 response = bedrock_agent_runtime.invoke_agent(
                     agentId=agent_id,
                     agentAliasId=alias_id,
                     sessionId=session_id,
                     inputText=query,
-                    enableTrace=False
+                    enableTrace=True  # Enable trace to see if search is called
                 )
                 logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
             finally:
@@ -1228,12 +1243,23 @@ def handle_agent_query(event):
         stream_start = time.time()
         answer = ""
         chunk_count = 0
+        trace_info = []
         try:
             event_stream = response.get('completion')
             if not event_stream:
                 return cors_response({"error": "Invalid agent response"}, 500)
             
             for event in event_stream:
+                # Log trace events to see if search is being called
+                if 'trace' in event:
+                    trace = event['trace']
+                    if 'orchestrationTrace' in trace:
+                        orch = trace['orchestrationTrace']
+                        if 'invocationInput' in orch:
+                            logger.info(f"🔍 Agent is invoking action: {json.dumps(orch['invocationInput'])[:200]}")
+                        if 'observation' in orch:
+                            logger.info(f"📊 Agent received observation: {json.dumps(orch['observation'])[:200]}")
+                
                 if 'chunk' in event and 'bytes' in event['chunk']:
                     answer += event['chunk']['bytes'].decode('utf-8')
                     chunk_count += 1
@@ -1246,36 +1272,76 @@ def handle_agent_query(event):
         # Extract IMAGE_URL: markers and generate presigned URLs
         image_start = time.time()
         images = []
-        if 'IMAGE_URL:' in answer:
-            try:
-                import re
-                # Match IMAGE_URL:path|PAGE:num|SOURCE:name pattern
-                matches = re.findall(r'IMAGE_URL:([^|\n]+)', answer)
+        import re
+        
+        # [OLD CODE REMOVED] Matches strictly formatted IMAGE_URL tags
+        # matches = re.findall(r'IMAGE_URL:([^|\n]+)', answer)
+
+        # [NEW CODE] Robust regex to find any S3 image key pattern in the text
+        # recognized formats: images/folder/file.jpeg, images/file.png, etc.
+        image_path_pattern = r'(images/[\w\-\./]+?\.(?:jpeg|jpg|png))'
+        matches = re.findall(image_path_pattern, answer, re.IGNORECASE)
+        
+        if matches:
+            logger.info(f"Found {len(matches)} potential images in agent response")
+            s3_client = get_s3_client()
+            unique_keys = set()
+            
+            for s3_key in matches:
+                s3_key = s3_key.strip()
+                # Verify it's a valid image key and not a duplicate
+                if s3_key and s3_key not in unique_keys:
+                    unique_keys.add(s3_key)
+                    try:
+                        url = s3_client.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': BUCKET, 'Key': s3_key},
+                            ExpiresIn=3600
+                        )
+                        images.append(url)
+                        logger.info(f"Generated presigned URL for: {s3_key}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate URL for {s3_key}: {e}")
+            
+            # [UPDATED CLEANUP LOGIC]
+            if images:
+                # 1. Split into lines
+                lines = answer.split('\n')
+                clean_lines = []
+                for line in lines:
+                    # Skip lines that contain the raw image keys we just processed
+                    if any(key in line for key in unique_keys):
+                        continue
+                    
+                    # Skip lines that are just filler conversational text
+                    line_lower = line.strip().lower()
+                    filler_phrases = [
+                        'here are the images',
+                        'i will display these images',
+                        'the search results contain',
+                        'found the following images',
+                        'images for',
+                        'image urls for',
+                        '[system]',
+                    ]
+                    if any(phrase in line_lower for phrase in filler_phrases):
+                        continue
+                        
+                    # If it passed checks, keep the line
+                    if line.strip():
+                         clean_lines.append(line)
                 
-                if matches:
-                    s3_client = get_s3_client()
-                    unique_keys = set()
-                    for s3_key in matches:
-                        s3_key = s3_key.strip()
-                        if s3_key and s3_key.startswith('images/') and s3_key not in unique_keys:
-                            unique_keys.add(s3_key)
-                            try:
-                                url = s3_client.generate_presigned_url(
-                                    'get_object',
-                                    Params={'Bucket': BUCKET, 'Key': s3_key},
-                                    ExpiresIn=3600
-                                )
-                                images.append(url)
-                                logger.info(f"Generated presigned URL for: {s3_key}")
-                            except Exception as e:
-                                logger.error(f"Failed to generate URL for {s3_key}: {e}")
-                    
-                    # Remove IMAGE_URL:... lines from response
-                    answer = re.sub(r'IMAGE_URL:[^\n]*\n?', '', answer).strip()
-                    
-                logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
-            except Exception as e:
-                logger.error(f"Image processing error: {e}")
+                answer = '\n'.join(clean_lines).strip()
+                
+                # FINAL SAFETY CHECK: If we wiped everything out but found images, 
+                # return a standard message so the UI has something to show.
+                if not answer and images:
+                    answer = "Here are the images you asked for:"
+            
+            # Final polish to remove stale newlines
+            answer = re.sub(r'\n{3,}', '\n\n', answer)
+            
+        logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
         
         logger.info(f"⏱️ TIMING: TOTAL agent query took {time.time() - total_start:.3f}s")
         return cors_response({"response": answer, "sessionId": session_id, "images": images})

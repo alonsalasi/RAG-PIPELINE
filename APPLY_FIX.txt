@@ -1,0 +1,80 @@
+================================================================================
+QUICK FIX: Make Agent Search Your PDFs
+================================================================================
+
+PROBLEM: Agent responds but doesn't search your FAISS vector store
+
+SOLUTION: Updated agent instructions in agent.tf to explicitly use search tool
+
+================================================================================
+APPLY THE FIX (Choose ONE method):
+================================================================================
+
+METHOD 1 - PowerShell Script (EASIEST):
+----------------------------------------
+.\update_agent.ps1
+
+
+METHOD 2 - Manual Commands:
+---------------------------
+terraform apply -target=aws_bedrockagent_agent.rag_agent -auto-approve
+aws bedrock-agent prepare-agent --agent-id $(terraform output -raw bedrock_agent_id) --region us-east-1
+
+
+METHOD 3 - AWS Console:
+-----------------------
+1. Go to: https://console.aws.amazon.com/bedrock/home?region=us-east-1#/agents
+2. Click your agent
+3. Click "Edit" on instructions
+4. Copy new instruction from agent.tf (line 58)
+5. Click "Save and exit"
+6. Click "Prepare"
+
+================================================================================
+VERIFY THE FIX:
+================================================================================
+
+1. Test your application with a question about your PDFs
+
+2. Check CloudWatch Logs:
+   https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fpdfquery-agent-executor
+
+3. Look for these log messages:
+   ✅ "🔍 SEARCH ACTION CALLED - Agent is searching PDFs"
+   ✅ "🔍 SEARCH QUERY: [your question]"
+   ✅ "✅ SEARCH COMPLETE - Returning X results to agent"
+
+4. If you DON'T see these logs:
+   - Agent is using old version
+   - Go to AWS Console → Bedrock → Agents → Your Agent
+   - Click "Create version"
+   - Go to Aliases → Edit your alias (2XEBVXAZYI)
+   - Select the new version
+   - Save
+
+================================================================================
+EXPECTED BEHAVIOR AFTER FIX:
+================================================================================
+
+BEFORE:
+User: "What's in the PDF?"
+Agent: "I don't have access to specific PDFs..." (7 seconds)
+Logs: [No search action called]
+
+AFTER:
+User: "What's in the PDF?"
+Agent: [Searches PDFs] "According to document.pdf, it contains..." (7 seconds)
+Logs: 🔍 SEARCH ACTION CALLED
+      🔍 SEARCH QUERY: What's in the PDF?
+      ✅ SEARCH COMPLETE - Returning 30 results
+
+================================================================================
+NEED HELP?
+================================================================================
+
+Read: FIX_AGENT.md for detailed troubleshooting
+
+Check: CloudWatch logs to see if search is being called
+
+Test: Ask "What documents do you have?" to verify search works
+================================================================================

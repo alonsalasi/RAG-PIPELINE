@@ -18,6 +18,7 @@ from semantic_chunker import create_semantic_chunks
 import faiss
 from PIL import Image
 from pdf2image import convert_from_path
+from image_analysis import analyze_image
 
 # Logging setup with structured format
 logging.basicConfig(
@@ -125,50 +126,6 @@ def extract_images_from_pdf(pdf_path, base_name):
         logger.error(f"Image extraction failed: {e}")
         return []
 
-def analyze_page_with_claude(image_data):
-    """Comprehensive page analysis using Claude Vision - replaces all OCR and image extraction."""
-    if not image_data or len(image_data) == 0:
-        return None
-    
-    try:
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        request_body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": "Extract ALL text from this image, including handwritten text. Support Hebrew, Arabic, and English.\n\n1. **Printed Text:** Transcribe exactly as written\n2. **Handwritten Text:** Carefully read and transcribe cursive/handwriting in any language\n3. **Tables:** Extract with structure preserved\n4. **Visual Elements:** Describe images, diagrams, stamps\n\nFor Hebrew handwriting: Read carefully, consider context, provide best transcription.\n\nIMPORTANT: Only transcribe visible text. Do NOT infer specifications not shown."
-                    }
-                ]
-            }]
-        }
-        
-        bedrock = get_bedrock_client()
-        response = bedrock.invoke_model(
-            modelId="anthropic.claude-3-haiku-20240307-v1:0",
-            body=json.dumps(request_body)
-        )
-        
-        response_body = json.loads(response['body'].read())
-        return response_body['content'][0]['text']
-        
-    except Exception as e:
-        logger.warning(f"Page analysis failed: {e}")
-        return None
-
-
 
 def check_cancelled(base_name):
     """Check if processing was cancelled."""
@@ -274,80 +231,78 @@ def process_message(record):
                     logger.info(f"Extracting embedded images from PDF")
                     embedded_images = extract_images_from_pdf(local_path, base_name)
                     
-                    # Process embedded images with Claude Vision
+                    # Process embedded images with basic descriptions
                     for img_info in embedded_images:
                         img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                         img_key = f"images/{base_name}/{img_name}"
                         
-                        # Analyze image with Claude
-                        visual_analysis = analyze_page_with_claude(img_info['data'])
-                        if visual_analysis:
-                            s3_client = get_s3_client()
-                            s3_client.put_object(
-                                Bucket=BUCKET,
-                                Key=img_key,
-                                Body=img_info['data'],
-                                ContentType='image/jpeg'
-                            )
+                        # Analyze image with color and object detection
+                        try:
+                            analysis = analyze_image(img_info['data'])
                             
-                            image_metadata.append({
-                                'page': img_info['page'],
-                                'image_name': img_name,
-                                's3_key': img_key,
-                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': visual_analysis
-                            })
-                            logger.info(f"Saved embedded image from page {img_info['page']}")
+                            desc_parts = [f"Page {img_info['page']}"]
+                            if analysis['objects']:
+                                desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                            if analysis['colors']:
+                                desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                            
+                            # Add OCR text
+                            try:
+                                import pytesseract
+                                img_pil = Image.open(io.BytesIO(img_info['data']))
+                                img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                                if img_text.strip():
+                                    desc_parts.append(f"Text: {img_text.strip()[:50]}")
+                            except:
+                                pass
+                            
+                            description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                            logger.info(f"Image analysis: {description[:100]}...")
+                        except Exception as e:
+                            logger.warning(f"Image analysis failed: {e}")
+                            description = f"Image from {base_name}, page {img_info['page']}"
+                        
+                        # Save image to S3
+                        s3_client = get_s3_client()
+                        s3_client.put_object(
+                            Bucket=BUCKET,
+                            Key=img_key,
+                            Body=img_info['data'],
+                            ContentType='image/jpeg'
+                        )
+                        
+                        image_metadata.append({
+                            'page': img_info['page'],
+                            'image_name': img_name,
+                            's3_key': img_key,
+                            'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                            'description': description
+                        })
+                        logger.info(f"Saved image from page {img_info['page']}: {description[:80]}...")
                     
-                    # SECOND: Process text with Tesseract + Claude for tables
-                    logger.info(f"Processing text with hybrid Tesseract + Claude Vision")
+                    # SECOND: Process text with Tesseract OCR only
+                    logger.info(f"Processing text with Tesseract OCR")
                     all_page_images = convert_from_path(local_path, dpi=200)
                     
                     for page_num, page_image in enumerate(all_page_images, 1):
                         check_cancelled(base_name)
                         
-                        # Convert to bytes for Claude (if needed)
-                        img_byte_arr = io.BytesIO()
-                        page_image.save(img_byte_arr, format='JPEG', quality=90)
-                        page_img_data = img_byte_arr.getvalue()
-                        
-                        # PRIMARY: Tesseract OCR with confidence scoring (FREE)
+                        # Tesseract OCR (FREE)
                         logger.info(f"Page {page_num}: Tesseract OCR")
-                        use_claude = False
-                        avg_confidence = 0
                         try:
                             import pytesseract
-                            # Get OCR text
                             ocr_text = pytesseract.image_to_string(
                                 page_image, 
                                 lang='eng+heb+ara', 
                                 config='--psm 3 --oem 1'
                             )
                             
-                            # Get confidence data to determine next step
                             ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
                             confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                             
                             if confidences:
                                 avg_confidence = sum(confidences) / len(confidences)
                                 logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
-                                
-                                # Decision tree:
-                                # 1. Check for table indicators -> Claude Vision
-                                # 2. Low confidence (< 60%) -> Claude Vision (likely handwritten)
-                                # 3. High confidence -> Use Tesseract text
-                                has_table_indicators = any(word in ocr_text.lower() for word in ['|', 'row', 'column', 'specifications', 'specs'])
-                                
-                                if has_table_indicators:
-                                    use_claude = True
-                                    logger.info(f"Page {page_num}: Table detected, using Claude Vision")
-                                elif avg_confidence < 60:
-                                    use_claude = True
-                                    logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), likely handwritten, using Claude Vision")
-                            else:
-                                # No confidence data - use Claude Vision
-                                use_claude = True
-                                logger.info(f"Page {page_num}: No confidence data, using Claude Vision")
                             
                             if ocr_text.strip():
                                 # Add English translation for non-Latin text to improve cross-language search
@@ -373,27 +328,6 @@ def process_message(record):
                                     logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
                         except Exception as ocr_e:
                             logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
-                            use_claude = True  # Fallback to Claude Vision if Tesseract fails
-                        
-                        # SECONDARY: Claude Vision for handwriting/tables (PAID - only for low confidence or tables)
-                        if use_claude:
-                            logger.info(f"Page {page_num}: Claude Vision for handwriting/table extraction")
-                            try:
-                                visual_analysis = analyze_page_with_claude(page_img_data)
-                                if visual_analysis and visual_analysis.strip():
-                                    full_text += f"\n[PAGE {page_num} CLAUDE VISION]:\n{visual_analysis}\n"
-                                    logger.info(f"Claude Vision extracted {len(visual_analysis)} chars from page {page_num}")
-                                else:
-                                    # Fallback to Tesseract text
-                                    logger.warning(f"Claude Vision returned no text, using Tesseract fallback")
-                                    if ocr_text.strip():
-                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                            except Exception as claude_e:
-                                logger.warning(f"Page {page_num} Claude Vision failed: {claude_e}, using Tesseract fallback")
-                                if ocr_text.strip():
-                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                        else:
-                            logger.info(f"Page {page_num}: Using Tesseract text (high confidence: {avg_confidence:.1f}%)")
                         
                         page_image.close()
                     
@@ -514,15 +448,28 @@ def process_message(record):
             
             # Validate documents before embedding - Cohere has 512 token limit
             valid_docs = []
+            # Initialize fallback splitter once
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            safe_splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=100)
+
             for doc in docs:
                 content = doc.page_content.strip()
-                if content and len(content) <= 2000:  # Conservative limit for tokens
+                # IF content is safe size, keep it
+                if content and len(content) <= 2000:
                     valid_docs.append(doc)
+                # IF content is too big, split it safely instead of truncating
                 elif content:
-                    # Truncate to safe length
-                    truncated_content = content[:1800] + "..."
-                    doc.page_content = truncated_content
-                    valid_docs.append(doc)
+                    logger.warning(f"Chunk too large ({len(content)} chars), splitting safely to prevent data loss.")
+                    safe_chunks = safe_splitter.split_text(content)
+                    for i, safe_chunk in enumerate(safe_chunks):
+                        # Create new document for each sub-chunk preserving original metadata
+                        new_metadata = doc.metadata.copy()
+                        new_metadata.update({
+                            'original_chunk_id': doc.metadata.get('chunk_id'),
+                            'split_part': i,
+                            'is_fallback_split': True
+                        })
+                        valid_docs.append(Document(page_content=safe_chunk, metadata=new_metadata))
             
             if not valid_docs:
                 logger.error("No valid documents for embedding")
@@ -593,6 +540,7 @@ def process_message(record):
                 "status": "processed",
                 "images": image_metadata,
                 "text_chunks": len(docs) - len(image_metadata),
+                "full_text": full_text if full_text else "No text extracted",
                 "text_preview": full_text[:1000] if full_text else "No text extracted",
                 "text_length": len(full_text) if full_text else 0,
                 "completed_at": int(time.time())
