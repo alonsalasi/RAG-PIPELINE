@@ -104,14 +104,11 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
           "bedrock:GetFoundationModel",
-          "bedrock:ListFoundationModels"
+          "bedrock:ListFoundationModels",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles"
         ],
-        Resource = "*",
-        Condition = {
-          StringEquals = {
-            "aws:RequestedRegion" = data.aws_region.current.name
-          }
-        }
+        Resource = "*"
       },
       {
         Effect = "Allow",

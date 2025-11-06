@@ -9,7 +9,7 @@ RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted
 # -----------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        tesseract-ocr poppler-utils curl libgl1-mesa-glx libglib2.0-0 && \
+        tesseract-ocr poppler-utils curl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------
@@ -34,13 +34,6 @@ RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted
 # 🧠 Lambda Code
 # -----------------------------------------------------
 COPY lambda_ingest_handler.py worker.py semantic_chunker.py image_analysis.py /var/task/
-
-# -----------------------------------------------------
-# 🤖 MobileNet-SSD Model Files
-# -----------------------------------------------------
-RUN mkdir -p /opt/models
-COPY models/deploy.prototxt /opt/models/deploy.prototxt
-COPY models/mobilenet_iter_73000.caffemodel /opt/models/mobilenet_iter_73000.caffemodel
 
 # -----------------------------------------------------
 # ⚙️ Environment configuration

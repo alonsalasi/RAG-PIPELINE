@@ -955,35 +955,9 @@ def handle_search_action(event):
         final_results = []
         
         if wants_images and not wants_text:
-            # PURE IMAGE QUERY
+            # PURE IMAGE QUERY - Claude Vision descriptions are already detailed
             logger.info("🖼️ Intent: Pure Image")
-            
-            # Apply color/object filtering for images
-            color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink']
-            query_colors = [color for color in color_words if color in query_lower]
-            stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo'}
-            query_words = [w for w in query_lower.split() if w not in stop_words and w not in color_words and len(w) > 2]
-            
-            scored_images = []
-            for doc, semantic_score in image_candidates:
-                content_lower = doc.page_content.lower()
-                match_score = 0
-                
-                if query_colors:
-                    if any(color in content_lower for color in query_colors):
-                        match_score += 50
-                    else:
-                        match_score -= 50
-                
-                if query_words:
-                    word_matches = sum(1 for word in query_words if word in content_lower)
-                    match_score += word_matches * 5
-                
-                combined_score = semantic_score - (match_score * 0.1)
-                scored_images.append((doc, combined_score))
-            
-            scored_images.sort(key=lambda x: x[1])
-            final_results.extend(scored_images[:10])
+            final_results.extend(image_candidates[:10])
             
         elif wants_text and not wants_images:
             # PURE TEXT QUERY
@@ -1305,41 +1279,17 @@ def handle_agent_query(event):
             
             # [UPDATED CLEANUP LOGIC]
             if images:
-                # 1. Split into lines
-                lines = answer.split('\n')
-                clean_lines = []
-                for line in lines:
-                    # Skip lines that contain the raw image keys we just processed
-                    if any(key in line for key in unique_keys):
-                        continue
-                    
-                    # Skip lines that are just filler conversational text
-                    line_lower = line.strip().lower()
-                    filler_phrases = [
-                        'here are the images',
-                        'i will display these images',
-                        'the search results contain',
-                        'found the following images',
-                        'images for',
-                        'image urls for',
-                        '[system]',
-                    ]
-                    if any(phrase in line_lower for phrase in filler_phrases):
-                        continue
-                        
-                    # If it passed checks, keep the line
-                    if line.strip():
-                         clean_lines.append(line)
+                # Remove only the raw S3 paths, keep all descriptive text
+                for key in unique_keys:
+                    # Remove standalone lines with just the S3 path
+                    answer = re.sub(rf'^.*{re.escape(key)}.*$', '', answer, flags=re.MULTILINE)
                 
-                answer = '\n'.join(clean_lines).strip()
+                # Clean up excessive newlines
+                answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
                 
-                # FINAL SAFETY CHECK: If we wiped everything out but found images, 
-                # return a standard message so the UI has something to show.
-                if not answer and images:
+                # If answer is now empty or just generic filler, provide context
+                if not answer or len(answer) < 20:
                     answer = "Here are the images you asked for:"
-            
-            # Final polish to remove stale newlines
-            answer = re.sub(r'\n{3,}', '\n\n', answer)
             
         logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
         

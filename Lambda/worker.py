@@ -18,7 +18,7 @@ from semantic_chunker import create_semantic_chunks
 import faiss
 from PIL import Image
 from pdf2image import convert_from_path
-from image_analysis import analyze_image
+from image_analysis import analyze_image_with_claude
 
 # Logging setup with structured format
 logging.basicConfig(
@@ -231,36 +231,29 @@ def process_message(record):
                     logger.info(f"Extracting embedded images from PDF")
                     embedded_images = extract_images_from_pdf(local_path, base_name)
                     
-                    # Process embedded images with basic descriptions
+                    # Process embedded images with Claude Vision + Tesseract
                     for img_info in embedded_images:
                         img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                         img_key = f"images/{base_name}/{img_name}"
                         
-                        # Analyze image with color and object detection
+                        # Use Claude Vision for detailed image/table analysis
                         try:
-                            analysis = analyze_image(img_info['data'])
-                            
-                            desc_parts = [f"Page {img_info['page']}"]
-                            if analysis['objects']:
-                                desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                            if analysis['colors']:
-                                desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
-                            
-                            # Add OCR text
-                            try:
-                                import pytesseract
-                                img_pil = Image.open(io.BytesIO(img_info['data']))
-                                img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
-                                if img_text.strip():
-                                    desc_parts.append(f"Text: {img_text.strip()[:50]}")
-                            except:
-                                pass
-                            
-                            description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                            logger.info(f"Image analysis: {description[:100]}...")
+                            vision_result = analyze_image_with_claude(img_info['data'], img_info['page'], base_name)
+                            description = vision_result['description']
+                            logger.info(f"Claude Vision: {description[:100]}...")
                         except Exception as e:
-                            logger.warning(f"Image analysis failed: {e}")
+                            logger.warning(f"Claude Vision failed: {e}")
                             description = f"Image from {base_name}, page {img_info['page']}"
+                        
+                        # Also run Tesseract OCR (free, always useful)
+                        try:
+                            import pytesseract
+                            img_pil = Image.open(io.BytesIO(img_info['data']))
+                            ocr_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                            if ocr_text.strip():
+                                description += f"\nOCR Text: {ocr_text.strip()}"
+                        except Exception as ocr_e:
+                            logger.warning(f"Tesseract OCR failed: {ocr_e}")
                         
                         # Save image to S3
                         s3_client = get_s3_client()
@@ -300,11 +293,76 @@ def process_message(record):
                             ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
                             confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                             
+                            avg_confidence = 0
                             if confidences:
                                 avg_confidence = sum(confidences) / len(confidences)
                                 logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
                             
-                            if ocr_text.strip():
+                            # Check if Tesseract failed (low confidence or no text)
+                            use_claude_vision = False
+                            if not ocr_text.strip() or len(ocr_text.strip()) < 50:
+                                logger.info(f"Page {page_num}: Tesseract extracted minimal text, trying Claude Vision")
+                                use_claude_vision = True
+                            elif avg_confidence > 0 and avg_confidence < 40:
+                                logger.info(f"Page {page_num}: Low OCR confidence ({avg_confidence:.1f}%), trying Claude Vision")
+                                use_claude_vision = True
+                            
+                            # Use Claude Vision for handwritten/scanned pages
+                            if use_claude_vision:
+                                try:
+                                    # Convert PIL image to bytes
+                                    img_byte_arr = io.BytesIO()
+                                    page_image.save(img_byte_arr, format='JPEG', quality=85)
+                                    img_bytes = img_byte_arr.getvalue()
+                                    
+                                    vision_result = analyze_image_with_claude(img_bytes, page_num, base_name)
+                                    claude_text = vision_result['raw_description']
+                                    
+                                    if claude_text.strip():
+                                        logger.info(f"Page {page_num}: Claude Vision extracted {len(claude_text)} chars")
+                                        
+                                        # Add bidirectional translation like Tesseract
+                                        has_non_latin = any(ord(c) > 127 for c in claude_text)
+                                        has_latin = any(ord(c) < 128 and c.isalpha() for c in claude_text)
+                                        
+                                        full_text += f"\n[PAGE {page_num} TEXT (Claude Vision)]:\n{claude_text}\n"
+                                        
+                                        # Translate if needed
+                                        try:
+                                            bedrock = get_bedrock_client()
+                                            if has_non_latin and not has_latin:
+                                                # Hebrew/Arabic → English
+                                                translate_body = {
+                                                    "anthropic_version": "bedrock-2023-05-31",
+                                                    "max_tokens": 2000,
+                                                    "messages": [{"role": "user", "content": f"Translate this text to English. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{claude_text[:1500]}"}]
+                                                }
+                                                response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
+                                                translation = json.loads(response['body'].read())['content'][0]['text']
+                                                full_text += f"[PAGE {page_num} ENGLISH]:\n{translation}\n"
+                                                logger.info(f"Page {page_num} Claude Vision: translated to English")
+                                            elif has_latin and not has_non_latin:
+                                                # English → Hebrew
+                                                translate_body = {
+                                                    "anthropic_version": "bedrock-2023-05-31",
+                                                    "max_tokens": 2000,
+                                                    "messages": [{"role": "user", "content": f"Translate this text to Hebrew. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{claude_text[:1500]}"}]
+                                                }
+                                                response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
+                                                translation = json.loads(response['body'].read())['content'][0]['text']
+                                                full_text += f"[PAGE {page_num} HEBREW]:\n{translation}\n"
+                                                logger.info(f"Page {page_num} Claude Vision: translated to Hebrew")
+                                        except Exception as trans_e:
+                                            logger.warning(f"Translation failed: {trans_e}")
+                                    else:
+                                        # Fallback to Tesseract result even if poor
+                                        if ocr_text.strip():
+                                            full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                except Exception as vision_e:
+                                    logger.warning(f"Page {page_num} Claude Vision failed: {vision_e}, using Tesseract")
+                                    if ocr_text.strip():
+                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                            elif ocr_text.strip():
                                 # Add English translation for non-Latin text to improve cross-language search
                                 has_non_latin = any(ord(c) > 127 for c in ocr_text)
                                 if has_non_latin:
@@ -404,20 +462,10 @@ def process_message(record):
             # Add image descriptions as searchable documents
             if image_metadata:
                 for img_meta in image_metadata:
-                    # Use the AI-generated description as the searchable content
                     description = img_meta.get('description', 'Image content')
                     
-                    # Extract color information for better search
-                    color_keywords = []
-                    if 'PRIMARY_COLOR:' in description:
-                        primary_color = description.split('PRIMARY_COLOR:')[1].split('\n')[0].strip()
-                        if primary_color and primary_color.lower() != 'none':
-                            color_keywords.append(primary_color.lower())
-                    
-                    # Add color keywords and IMAGE_URL marker for agent to return
+                    # Create searchable content with IMAGE_URL marker
                     searchable_content = f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
-                    if color_keywords:
-                        searchable_content += f"\nColor tags: {' '.join(color_keywords)}"
                     
                     img_doc = Document(
                         page_content=searchable_content,

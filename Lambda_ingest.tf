@@ -6,8 +6,9 @@ resource "null_resource" "build_and_push_ingestion_image" {
     handler_hash         = filemd5("${path.module}/Lambda/lambda_ingest_handler.py")
     worker_hash          = filemd5("${path.module}/Lambda/worker.py")
     semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
+    image_analysis_hash  = filemd5("${path.module}/Lambda/image_analysis.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger      = "2025-01-15-profile-fix"
+    rebuild_trigger      = "2025-01-15-claude-vision"
   }
   
   provisioner "local-exec" {
