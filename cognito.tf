@@ -74,7 +74,8 @@ resource "aws_cognito_user_pool_client" "agent_client" {
   supported_identity_providers         = ["COGNITO"]
 
   explicit_auth_flows = [
-    "ALLOW_USER_SRP_AUTH"
+    "ALLOW_USER_SRP_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH"
   ]
   
   id_token_validity     = 240

@@ -121,7 +121,7 @@
   <div class="upload-section">
     <h3>&#128228; Upload Document</h3>
     <div class="upload-box">
-      <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff" multiple>
+      <input type="file" id="file-input" accept=".pdf,.pptx,.docx,.xlsx,.png,.jpg,.jpeg,.tiff" multiple>
       <label for="file-input" id="file-label">Click to select files...</label>
       <button type="button" id="upload-button">Upload</button>
       <button type="button" id="cancel-button" class="cancel" style="display:none;">Cancel Upload</button>
@@ -183,6 +183,17 @@
   function checkExistingSession() {
     cognitoUser = userPool.getCurrentUser();
     if (cognitoUser) {
+      // Check if session was created in this browser session
+      const sessionCreatedTime = sessionStorage.getItem('sessionCreatedTime');
+      const now = Date.now();
+      const maxSessionAge = 4 * 60 * 60 * 1000; // 4 hours
+      
+      // If no session timestamp or session is too old, force re-login with MFA
+      if (!sessionCreatedTime || (now - parseInt(sessionCreatedTime)) > maxSessionAge) {
+        cognitoUser.signOut();
+        return;
+      }
+      
       cognitoUser.getSession((err, session) => {
         if (!err && session.isValid()) {
           idToken = session.getIdToken().getJwtToken();
@@ -194,6 +205,9 @@
           fetchUploadedFiles();
           clearChat();
           startSessionTimer();
+        } else {
+          // Session invalid, force re-login
+          cognitoUser.signOut();
         }
       });
     }
@@ -219,6 +233,7 @@
     cognitoUser.authenticateUser(authenticationDetails, {
       onSuccess: (result) => {
         idToken = result.getIdToken().getJwtToken();
+        sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
         document.getElementById('user-email').textContent = email;
         document.body.classList.add('logged-in');
         document.getElementById('login-screen').style.display = 'none';
@@ -346,6 +361,7 @@
     cognitoUser.sendMFACode(code, {
       onSuccess: (result) => {
         idToken = result.getIdToken().getJwtToken();
+        sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
         document.getElementById('user-email').textContent = email;
         document.body.classList.add('logged-in');
         document.getElementById('mfa-screen').style.display = 'none';
@@ -388,6 +404,7 @@
           cognitoUser.getSession((err, session) => {
             if (!err && session.isValid()) {
               idToken = session.getIdToken().getJwtToken();
+              sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
               document.getElementById('user-email').textContent = email;
               document.body.classList.add('logged-in');
               document.getElementById('totp-setup-screen').style.display = 'none';
@@ -419,6 +436,7 @@
 
   document.getElementById('logout-btn').addEventListener('click', () => {
     if (sessionTimer) clearTimeout(sessionTimer);
+    sessionStorage.removeItem('sessionCreatedTime');
     cognitoUser = userPool.getCurrentUser();
     if (cognitoUser) {
       cognitoUser.signOut();
@@ -676,8 +694,11 @@
   });
 
   async function pollForProcessing(fileName, updateProgress, controller, progressId) {
-    const maxAttempts = 120;
-    const pollInterval = 3000;
+    const maxAttempts = 480;
+    const pollInterval = 2000;
+    let lastProgressUpdate = Date.now();
+    let lastProgress = 0;
+    const stuckThreshold = 120000; // 2 minutes without progress = stuck
     
     for (let i = 0; i < maxAttempts; i++) {
       if (controller.signal.aborted) {
@@ -708,27 +729,62 @@
             }, 3000);
             return true;
           } else if (status === 'failed') {
-            updateProgress(0, '✗ Processing failed');
+            updateProgress(0, `✗ ${message || 'Processing failed'}`);
+            const item = document.getElementById(progressId);
+            if (item) {
+              item.querySelector('.progress-status').style.color = '#dc3545';
+              const deleteBtn = item.querySelector('.delete-btn');
+              if (deleteBtn) deleteBtn.remove();
+            }
             return false;
+          } else if (status === 'not_found') {
+            // File not found - Lambda may have failed before writing progress
+            if (i > 30) { // Give it 60 seconds before declaring failure
+              updateProgress(0, '✗ Processing failed to start');
+              const item = document.getElementById(progressId);
+              if (item) {
+                item.querySelector('.progress-status').style.color = '#dc3545';
+                const deleteBtn = item.querySelector('.delete-btn');
+                if (deleteBtn) deleteBtn.remove();
+              }
+              return false;
+            }
+          } else if (status === 'processing' && serverProgress) {
+            // Check if progress is stuck
+            if (serverProgress > lastProgress) {
+              lastProgress = serverProgress;
+              lastProgressUpdate = Date.now();
+            } else if (Date.now() - lastProgressUpdate > stuckThreshold) {
+              updateProgress(serverProgress, '⚠ Processing appears stuck - may have timed out');
+              const item = document.getElementById(progressId);
+              if (item) {
+                item.querySelector('.progress-status').style.color = '#ff9800';
+              }
+            }
+            updateProgress(serverProgress, message || 'Processing...');
           } else {
-            const displayProgress = Math.max(50, serverProgress || (50 + (i / maxAttempts) * 45));
-            updateProgress(displayProgress, message || `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+            const fallbackProgress = 50 + Math.min(45, (i / maxAttempts) * 45);
+            updateProgress(fallbackProgress, message || `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
           }
         } else {
           const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
-          updateProgress(progress, `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+          updateProgress(progress, `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
         }
         
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       } catch (e) {
         console.error('Poll error:', e);
         const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
-        updateProgress(progress, `Processing... (${Math.floor(i * 3 / 60)}m ${(i * 3) % 60}s)`);
+        updateProgress(progress, `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
     }
     
-    updateProgress(95, '⚠ Processing timeout');
+    updateProgress(95, '⚠ Processing timeout - check logs');
+    const item = document.getElementById(progressId);
+    if (item) {
+      item.querySelector('.progress-status').style.color = '#ff9800';
+    }
     return false;
   }
 
@@ -805,9 +861,18 @@
           }
           
           updateProgress(30, 'Uploading to S3...');
+          const contentTypeMap = {
+            'pdf': 'application/pdf',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          };
+          const fileExt = file.name.split('.').pop().toLowerCase();
+          const contentType = contentTypeMap[fileExt] || 'application/octet-stream';
+          
           const uploadRes = await fetch(signedUrl, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/pdf' },
+            headers: { 'Content-Type': contentType },
             body: file,
             mode: 'cors',
             signal: controller.signal

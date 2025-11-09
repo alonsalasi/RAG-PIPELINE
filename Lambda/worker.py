@@ -9,6 +9,7 @@ import base64
 import time
 import requests
 import re
+from urllib.parse import unquote_plus
 from botocore.client import Config
 from langchain_aws import BedrockEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -19,6 +20,7 @@ import faiss
 from PIL import Image
 from pdf2image import convert_from_path
 from image_analysis import analyze_image
+from office_converter import extract_pptx, extract_docx, extract_xlsx
 
 # Logging setup with structured format
 logging.basicConfig(
@@ -76,6 +78,19 @@ class ProcessingCancelled(Exception):
     """Exception raised when processing is cancelled by user."""
     pass
 
+def enhanced_ocr(page_image, lang='eng+heb+ara'):
+    """Retry OCR with different PSM mode for low-confidence pages."""
+    import pytesseract
+    
+    # Try PSM 6 (uniform block of text) instead of PSM 3 (auto)
+    ocr_text = pytesseract.image_to_string(page_image, lang=lang, config='--psm 6 --oem 1')
+    ocr_data = pytesseract.image_to_data(page_image, lang=lang, config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
+    
+    confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+    avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+    
+    return ocr_text, avg_confidence
+
 def extract_images_from_pdf(pdf_path, base_name):
     """Extract embedded images from PDF pages."""
     from pypdf import PdfReader
@@ -127,6 +142,27 @@ def extract_images_from_pdf(pdf_path, base_name):
         return []
 
 
+def update_progress(base_name, progress, message, status="processing"):
+    """Write progress update to S3."""
+    if not base_name:
+        return
+    try:
+        s3_client = get_s3_client()
+        progress_data = {
+            "status": status,
+            "progress": progress,
+            "message": message,
+            "timestamp": int(time.time())
+        }
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"progress/{base_name}.json",
+            Body=json.dumps(progress_data),
+            ContentType="application/json"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update progress: {e}")
+
 def check_cancelled(base_name):
     """Check if processing was cancelled."""
     if not base_name or not isinstance(base_name, str):
@@ -151,7 +187,7 @@ def process_message(record):
         if "s3" in record:
             # Direct S3 event
             s3_bucket = record["s3"]["bucket"]["name"]
-            s3_key = record["s3"]["object"]["key"]
+            s3_key = unquote_plus(record["s3"]["object"]["key"])
         else:
             # SQS message with S3 event in body
             body = record.get("body")
@@ -170,7 +206,7 @@ def process_message(record):
             
             s3_record = s3_event["Records"][0]
             s3_bucket = s3_record["s3"]["bucket"]["name"]
-            s3_key = s3_record["s3"]["object"]["key"]
+            s3_key = unquote_plus(s3_record["s3"]["object"]["key"])
         
         # Validate S3 key to prevent path traversal and injection attacks
         if not s3_key or '..' in s3_key or s3_key.startswith('/') or '\\' in s3_key:
@@ -189,6 +225,28 @@ def process_message(record):
         # Remove any remaining path separators
         base_name = base_name.replace('/', '_').replace('\\', '_')
         logger.info(f"File info | Filename: {filename} | BaseName: {base_name}")
+        
+        # Check if already processed to prevent duplicate processing
+        s3_client = get_s3_client()
+        try:
+            # Get source file timestamp
+            source_obj = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
+            source_modified = source_obj['LastModified']
+            
+            # Get processed marker timestamp
+            processed_obj = s3_client.head_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
+            processed_time = processed_obj['LastModified']
+            
+            # Only skip if source file hasn't been modified since processing
+            if source_modified <= processed_time:
+                logger.info(f"File already processed and not modified, skipping: {base_name}")
+                return
+            else:
+                logger.info(f"File modified since last processing, reprocessing: {base_name}")
+        except s3_client.exceptions.ClientError:
+            pass  # Not processed yet or error checking, continue
+        
+        update_progress(base_name, 5, "Starting document processing...")
         
         # Check cancellation marker
         check_cancelled(base_name)
@@ -211,6 +269,7 @@ def process_message(record):
                 s3_client.download_file(s3_bucket, s3_key, local_path)
                 file_size = os.path.getsize(local_path)
                 logger.info(f"Download complete | Size: {file_size} bytes | Time: {time.time() - download_start:.2f}s")
+                update_progress(base_name, 10, "File downloaded, analyzing content...")
                 
                 max_size = 100 * 1024 * 1024
                 if file_size > max_size:
@@ -221,120 +280,327 @@ def process_message(record):
                 logger.error(f"File download failed: {type(e).__name__}")
                 raise
 
-            # ---- Hybrid Tesseract + Claude Vision Analysis ----
+            # ---- Document Processing ----
             full_text = ""
             image_metadata = []
+            file_ext = s3_key.lower().split('.')[-1]
             
-            if s3_key.lower().endswith('.pdf'):
+            if file_ext == 'pptx':
+                logger.info("Processing PowerPoint file")
+                update_progress(base_name, 20, "Extracting PowerPoint content...")
+                full_text, extracted_images = extract_pptx(local_path)
+                
+                # Save extracted images
+                for img_info in extracted_images:
+                    img_name = f"{base_name}_slide{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
+                    img_key = f"images/{base_name}/{img_name}"
+                    
+                    try:
+                        analysis = analyze_image(img_info['data'])
+                        desc_parts = [f"Slide {img_info['page']}"]
+                        if analysis['objects']:
+                            desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                        if analysis['colors']:
+                            desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                        description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                    except:
+                        description = f"Image from {base_name}, slide {img_info['page']}"
+                    
+                    s3_client.put_object(
+                        Bucket=BUCKET,
+                        Key=img_key,
+                        Body=img_info['data'],
+                        ContentType='image/jpeg'
+                    )
+                    
+                    image_metadata.append({
+                        'page': img_info['page'],
+                        'image_name': img_name,
+                        's3_key': img_key,
+                        'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                        'description': description
+                    })
+                
+                logger.info(f"PPTX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
+            
+            elif file_ext == 'docx':
+                logger.info("Processing Word document")
+                update_progress(base_name, 20, "Extracting Word document content...")
+                full_text, extracted_images = extract_docx(local_path)
+                
+                # Save extracted images
+                for img_info in extracted_images:
+                    img_name = f"{base_name}_img{img_info['index']}.{img_info['ext']}"
+                    img_key = f"images/{base_name}/{img_name}"
+                    
+                    try:
+                        analysis = analyze_image(img_info['data'])
+                        desc_parts = ["Document image"]
+                        if analysis['objects']:
+                            desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                        if analysis['colors']:
+                            desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                        description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                    except:
+                        description = f"Image from {base_name}"
+                    
+                    s3_client.put_object(
+                        Bucket=BUCKET,
+                        Key=img_key,
+                        Body=img_info['data'],
+                        ContentType='image/jpeg'
+                    )
+                    
+                    image_metadata.append({
+                        'page': 1,
+                        'image_name': img_name,
+                        's3_key': img_key,
+                        'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                        'description': description
+                    })
+                
+                logger.info(f"DOCX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
+            
+            elif file_ext == 'xlsx':
+                logger.info("Processing Excel spreadsheet")
+                update_progress(base_name, 20, "Extracting Excel data...")
+                full_text, _ = extract_xlsx(local_path)
+                logger.info(f"XLSX processing complete | Text: {len(full_text)} chars")
+            
+            elif file_ext == 'pdf':
                 try:
-                    # FIRST: Extract embedded images from PDF
-                    logger.info(f"Extracting embedded images from PDF")
-                    embedded_images = extract_images_from_pdf(local_path, base_name)
+                    # Check PDF page count for chunking decision
+                    from pypdf import PdfReader
+                    reader = PdfReader(local_path)
+                    total_pdf_pages = len(reader.pages)
+                    logger.info(f"PDF has {total_pdf_pages} pages")
                     
-                    # Process embedded images with basic descriptions
-                    for img_info in embedded_images:
-                        img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
-                        img_key = f"images/{base_name}/{img_name}"
+                    # If PDF is too large (>60 pages), process in chunks to avoid timeout
+                    if total_pdf_pages > 60:
+                        logger.info(f"Large PDF detected ({total_pdf_pages} pages), processing in chunks")
+                        update_progress(base_name, 10, f"Processing large PDF ({total_pdf_pages} pages) in chunks...")
                         
-                        # Analyze image with color and object detection
-                        try:
-                            analysis = analyze_image(img_info['data'])
+                        # Split into chunks of 30 pages for better memory management
+                        chunk_size = 30
+                        num_chunks = (total_pdf_pages + chunk_size - 1) // chunk_size
+                        
+                        all_text_parts = []
+                        all_images = []
+                        
+                        for chunk_idx in range(num_chunks):
+                            start_page = chunk_idx * chunk_size
+                            end_page = min(start_page + chunk_size, total_pdf_pages)
                             
-                            desc_parts = [f"Page {img_info['page']}"]
-                            if analysis['objects']:
-                                desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                            if analysis['colors']:
-                                desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                            chunk_progress = 10 + int((chunk_idx / num_chunks) * 70)
+                            update_progress(base_name, chunk_progress, f"Processing pages {start_page+1}-{end_page} of {total_pdf_pages}...")
+                            logger.info(f"Processing chunk {chunk_idx+1}/{num_chunks}: pages {start_page+1}-{end_page}")
                             
-                            # Add OCR text
+                            # Convert only this chunk's pages
+                            chunk_images = convert_from_path(local_path, dpi=150, first_page=start_page+1, last_page=end_page)
+                            
+                            for page_num, page_image in enumerate(chunk_images, start=start_page+1):
+                                # Update progress for each page
+                                page_progress = 10 + int(((page_num - 1) / total_pdf_pages) * 70)
+                                update_progress(base_name, page_progress, f"OCR processing page {page_num}/{total_pdf_pages}...")
+                                
+                                # Check cancellation every 5 pages
+                                if page_num % 5 == 0:
+                                    check_cancelled(base_name)
+                                
+                                try:
+                                    import pytesseract
+                                    ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                                    ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
+                                    confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+                                    
+                                    avg_confidence = 0
+                                    if confidences:
+                                        avg_confidence = sum(confidences) / len(confidences)
+                                        logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
+                                    
+                                    if avg_confidence < 70 and avg_confidence > 0:
+                                        logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), retrying with PSM 6")
+                                        ocr_text, avg_confidence = enhanced_ocr(page_image)
+                                        logger.info(f"Page {page_num}: PSM 6 confidence: {avg_confidence:.1f}%")
+                                    
+                                    logger.info(f"Page {page_num}: Final confidence {avg_confidence:.1f}%")
+                                    
+                                    if ocr_text.strip():
+                                        all_text_parts.append(f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n")
+                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                except Exception as ocr_e:
+                                    logger.warning(f"Page {page_num} OCR failed: {ocr_e}")
+                                
+                                page_image.close()
+                        
+                        full_text = ''.join(all_text_parts)
+                        logger.info(f"Chunked processing complete | Total pages: {total_pdf_pages} | Text: {len(full_text)} chars")
+                        
+                        # Extract images from full PDF (images are quick)
+                        embedded_images = extract_images_from_pdf(local_path, base_name)
+                        for img_info in embedded_images:
+                            img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
+                            img_key = f"images/{base_name}/{img_name}"
                             try:
-                                import pytesseract
-                                img_pil = Image.open(io.BytesIO(img_info['data']))
-                                img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
-                                if img_text.strip():
-                                    desc_parts.append(f"Text: {img_text.strip()[:50]}")
+                                analysis = analyze_image(img_info['data'])
+                                desc_parts = [f"Page {img_info['page']}"]
+                                if analysis['objects']:
+                                    desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                                if analysis['colors']:
+                                    desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                                
+                                # Add OCR text from image
+                                try:
+                                    import pytesseract
+                                    img_pil = Image.open(io.BytesIO(img_info['data']))
+                                    img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                                    if img_text.strip():
+                                        desc_parts.append(f"Text: {img_text.strip()[:50]}")
+                                except:
+                                    pass
+                                
+                                description = f"Image from {base_name}. {'. '.join(desc_parts)}"
                             except:
-                                pass
+                                description = f"Image from {base_name}, page {img_info['page']}"
                             
-                            description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                            logger.info(f"Image analysis: {description[:100]}...")
-                        except Exception as e:
-                            logger.warning(f"Image analysis failed: {e}")
-                            description = f"Image from {base_name}, page {img_info['page']}"
+                            s3_client.put_object(Bucket=BUCKET, Key=img_key, Body=img_info['data'], ContentType='image/jpeg')
+                            image_metadata.append({
+                                'page': img_info['page'],
+                                'image_name': img_name,
+                                's3_key': img_key,
+                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                                'description': description
+                            })
+                    else:
+                        # Original processing for smaller PDFs
+                        logger.info(f"Standard PDF processing for {total_pdf_pages} pages")
+                        # FIRST: Extract embedded images from PDF
+                        logger.info(f"Extracting embedded images from PDF")
+                        update_progress(base_name, 15, "Extracting images from PDF...")
+                        embedded_images = extract_images_from_pdf(local_path, base_name)
                         
-                        # Save image to S3
-                        s3_client = get_s3_client()
-                        s3_client.put_object(
-                            Bucket=BUCKET,
-                            Key=img_key,
-                            Body=img_info['data'],
-                            ContentType='image/jpeg'
-                        )
-                        
-                        image_metadata.append({
-                            'page': img_info['page'],
-                            'image_name': img_name,
-                            's3_key': img_key,
-                            'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                            'description': description
-                        })
-                        logger.info(f"Saved image from page {img_info['page']}: {description[:80]}...")
-                    
-                    # SECOND: Process text with Tesseract OCR only
-                    logger.info(f"Processing text with Tesseract OCR")
-                    all_page_images = convert_from_path(local_path, dpi=200)
-                    
-                    for page_num, page_image in enumerate(all_page_images, 1):
-                        check_cancelled(base_name)
-                        
-                        # Tesseract OCR (FREE)
-                        logger.info(f"Page {page_num}: Tesseract OCR")
-                        try:
-                            import pytesseract
-                            ocr_text = pytesseract.image_to_string(
-                                page_image, 
-                                lang='eng+heb+ara', 
-                                config='--psm 3 --oem 1'
+                        # Process embedded images with basic descriptions
+                        for img_info in embedded_images:
+                            img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
+                            img_key = f"images/{base_name}/{img_name}"
+                            
+                            # Analyze image with color and object detection
+                            try:
+                                analysis = analyze_image(img_info['data'])
+                                
+                                desc_parts = [f"Page {img_info['page']}"]
+                                if analysis['objects']:
+                                    desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                                if analysis['colors']:
+                                    desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                                
+                                # Add OCR text
+                                try:
+                                    import pytesseract
+                                    img_pil = Image.open(io.BytesIO(img_info['data']))
+                                    img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                                    if img_text.strip():
+                                        desc_parts.append(f"Text: {img_text.strip()[:50]}")
+                                except:
+                                    pass
+                                
+                                description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                                logger.info(f"Image analysis: {description[:100]}...")
+                            except Exception as e:
+                                logger.warning(f"Image analysis failed: {e}")
+                                description = f"Image from {base_name}, page {img_info['page']}"
+                            
+                            # Save image to S3
+                            s3_client = get_s3_client()
+                            s3_client.put_object(
+                                Bucket=BUCKET,
+                                Key=img_key,
+                                Body=img_info['data'],
+                                ContentType='image/jpeg'
                             )
                             
-                            ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
-                            confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+                            image_metadata.append({
+                                'page': img_info['page'],
+                                'image_name': img_name,
+                                's3_key': img_key,
+                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                                'description': description
+                            })
+                            logger.info(f"Saved image from page {img_info['page']}: {description[:80]}...")
+                        
+                        # SECOND: Process text with Tesseract OCR only
+                        logger.info(f"Processing text with Tesseract OCR")
+                        all_page_images = convert_from_path(local_path, dpi=150)
+                        total_pages = len(all_page_images)
+                        update_progress(base_name, 30, f"Running OCR on {total_pages} pages...")
+                        
+                        for page_num, page_image in enumerate(all_page_images, 1):
+                            ocr_progress = 30 + int((page_num / total_pages) * 40)
+                            update_progress(base_name, ocr_progress, f"OCR processing page {page_num}/{total_pages}...")
+                            # Check cancellation every 5 pages
+                            if page_num % 5 == 0:
+                                check_cancelled(base_name)
                             
-                            if confidences:
-                                avg_confidence = sum(confidences) / len(confidences)
-                                logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
-                            
-                            if ocr_text.strip():
-                                # Add English translation for non-Latin text to improve cross-language search
-                                has_non_latin = any(ord(c) > 127 for c in ocr_text)
-                                if has_non_latin:
-                                    try:
-                                        bedrock = get_bedrock_client()
-                                        translate_body = {
-                                            "anthropic_version": "bedrock-2023-05-31",
-                                            "max_tokens": 2000,
-                                            "messages": [{"role": "user", "content": f"Translate this text to English. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{ocr_text[:1500]}"}]
-                                        }
-                                        response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
-                                        translation = json.loads(response['body'].read())['content'][0]['text']
-                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n[PAGE {page_num} ENGLISH]:\n{translation}\n"
-                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars + translation")
-                                    except Exception as trans_e:
-                                        logger.warning(f"Translation failed: {trans_e}")
+                            # Tesseract OCR (FREE)
+                            logger.info(f"Page {page_num}: Tesseract OCR")
+                            try:
+                                import pytesseract
+                                ocr_text = pytesseract.image_to_string(
+                                    page_image, 
+                                    lang='eng+heb+ara', 
+                                    config='--psm 3 --oem 1'
+                                )
+                                
+                                ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
+                                confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+                                
+                                avg_confidence = 0
+                                if confidences:
+                                    avg_confidence = sum(confidences) / len(confidences)
+                                    logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
+                                
+                                # If confidence is very low, retry with different PSM mode
+                                if avg_confidence < 70 and avg_confidence > 0:
+                                    logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), retrying with PSM 6...")
+                                    enhanced_text, enhanced_confidence = enhanced_ocr(page_image)
+                                    if enhanced_confidence > avg_confidence:
+                                        logger.info(f"Page {page_num}: PSM 6 improved confidence to {enhanced_confidence:.1f}%")
+                                        ocr_text = enhanced_text
+                                        avg_confidence = enhanced_confidence
+                                
+                                logger.info(f"Page {page_num}: Final confidence {avg_confidence:.1f}%")
+                                
+                                if ocr_text.strip():
+                                    # Add English translation for non-Latin text to improve cross-language search
+                                    has_non_latin = any(ord(c) > 127 for c in ocr_text)
+                                    if has_non_latin:
+                                        try:
+                                            bedrock = get_bedrock_client()
+                                            translate_body = {
+                                                "anthropic_version": "bedrock-2023-05-31",
+                                                "max_tokens": 2000,
+                                                "messages": [{"role": "user", "content": f"Translate this text to English. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{ocr_text[:1500]}"}]
+                                            }
+                                            response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
+                                            translation = json.loads(response['body'].read())['content'][0]['text']
+                                            full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n[PAGE {page_num} ENGLISH]:\n{translation}\n"
+                                            logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars + translation")
+                                        except Exception as trans_e:
+                                            logger.warning(f"Translation failed: {trans_e}")
+                                            full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                            logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                    else:
                                         full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
                                         logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                                else:
-                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                                    logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                        except Exception as ocr_e:
-                            logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
+                            except Exception as ocr_e:
+                                logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
+                            
+                            page_image.close()
                         
-                        page_image.close()
-                    
-                    logger.info(f"Hybrid processing complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)}")
+                        logger.info(f"Hybrid processing complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)}")
                     
                 except Exception as e:
-                    logger.error(f"Hybrid processing failed: {e}")
+                    logger.error(f"PDF processing failed: {e}")
                     # Fallback to pypdf
                     try:
                         from pypdf import PdfReader
@@ -348,7 +614,7 @@ def process_message(record):
                         logger.error(f"All extraction failed: {fallback_e}")
                         full_text = f"Document: {base_name} - Processing failed"
             else:
-                logger.warning(f"Unsupported file type: {s3_key}")
+                logger.warning(f"Unsupported file type: {file_ext}")
                 return
 
             # Clean up the text
@@ -366,7 +632,8 @@ def process_message(record):
             
             # Semantic chunking to preserve table structure
             chunk_start = time.time()
-            doc_name = os.path.basename(s3_key).replace('.pdf', '')
+            doc_name = base_name
+            update_progress(base_name, 75, "Creating searchable chunks...")
             
             try:
                 # Use semantic chunking to preserve tables and structure
@@ -476,6 +743,7 @@ def process_message(record):
                 raise ValueError("No valid documents to embed")
             
             logger.info(f"Embedding {len(valid_docs)} valid documents (filtered from {len(docs)})")
+            update_progress(base_name, 85, "Creating AI embeddings...")
             embed = BedrockEmbeddings(model_id=model_id, region_name=region)
             docs = valid_docs
             
@@ -525,6 +793,7 @@ def process_message(record):
             
             # Upload master index
             upload_start = time.time()
+            update_progress(base_name, 95, "Finalizing and saving index...")
             try:
                 s3_client.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
                 s3_client.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
@@ -555,13 +824,17 @@ def process_message(record):
             )
             total_time = time.time() - start_time
             logger.info(f"Processing complete | File: {base_name} | Total time: {total_time:.2f}s | Marker: {marker_key}")
+            update_progress(base_name, 100, "Complete!", "completed")
 
     except ProcessingCancelled as e:
         logger.info(f"Processing cancelled | File: {base_name} | Time: {time.time() - start_time:.2f}s")
+        update_progress(base_name, 0, "Cancelled by user", "failed")
         return
     except (ValueError, IOError, OSError) as e:
         logger.error(f"Processing failed | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:100]} | Time: {time.time() - start_time:.2f}s")
+        update_progress(base_name, 0, f"Error: {type(e).__name__}", "failed")
         raise
     except Exception as e:
         logger.error(f"Unexpected error | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:200]} | Time: {time.time() - start_time:.2f}s")
+        update_progress(base_name, 0, f"Error: {type(e).__name__}", "failed")
         raise

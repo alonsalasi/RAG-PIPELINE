@@ -38,36 +38,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "rag_documents_enc
   }
 }
 
-resource "aws_s3_bucket_versioning" "rag_documents_versioning" {
-  bucket = aws_s3_bucket.rag_documents.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
 resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
   bucket = aws_s3_bucket.rag_documents.id
-
-  rule {
-    id     = "archive-old-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_transition {
-      noncurrent_days = 30
-      storage_class   = "STANDARD_IA"
-    }
-
-    noncurrent_version_transition {
-      noncurrent_days = 60
-      storage_class   = "GLACIER_IR"
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = 120
-    }
-  }
 
   rule {
     id     = "delete-incomplete-uploads"
@@ -117,6 +89,27 @@ resource "aws_s3_bucket_notification" "rag_documents_notification" {
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "uploads/"
     filter_suffix       = ".pdf"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".pptx"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".docx"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".xlsx"
   }
 
   depends_on = [

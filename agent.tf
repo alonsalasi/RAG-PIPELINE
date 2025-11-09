@@ -211,7 +211,6 @@ EOT
               agent_id         = aws_bedrockagent_agent.rag_agent.agent_id
               foundation_model = aws_bedrockagent_agent.rag_agent.foundation_model
               instruction      = md5(aws_bedrockagent_agent.rag_agent.instruction)
-              timestamp        = timestamp()
             }
 
             provisioner "local-exec" {

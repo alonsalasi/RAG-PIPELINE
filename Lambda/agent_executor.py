@@ -631,16 +631,29 @@ def handle_get_upload_url_api(event):
         except ValueError as e:
             return cors_response({"error": str(e)}, 400)
         
-        if not file_name.lower().endswith('.pdf'):
-            return cors_response({"error": "Only PDF files are allowed"}, 400)
+        allowed_extensions = ('.pdf', '.pptx', '.docx', '.xlsx')
+        if not file_name.lower().endswith(allowed_extensions):
+            return cors_response({"error": "Only PDF, PPTX, DOCX, and XLSX files are allowed"}, 400)
         
         base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
         
         key = f"uploads/{file_name}"
         s3_client = get_s3_client()
+        
+        # Determine content type based on file extension
+        content_type_map = {
+            '.pdf': 'application/pdf',
+            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        }
+        
+        file_ext = os.path.splitext(file_name)[1].lower()
+        content_type = content_type_map.get(file_ext, 'application/octet-stream')
+        
         signed_url = s3_client.generate_presigned_url(
             "put_object",
-            Params={"Bucket": BUCKET, "Key": key, "ContentType": "application/pdf"},
+            Params={"Bucket": BUCKET, "Key": key, "ContentType": content_type},
             ExpiresIn=3600
         )
         logger.info(f" Generated upload URL for key: {key}")
@@ -1580,14 +1593,29 @@ def handle_processing_status(event):
         except Exception as e:
             logger.error(f"Error checking processed: {type(e).__name__}")
         
-        # Check if file exists in uploads
+        # Check for progress updates from Lambda
+        try:
+            progress_obj = s3_client.get_object(Bucket=BUCKET, Key=f"progress/{base_name}.json")
+            progress_data = json.loads(progress_obj['Body'].read().decode('utf-8'))
+            logger.info(f"Found progress marker: {progress_data}")
+            return cors_response({
+                "status": progress_data.get("status", "processing"),
+                "progress": progress_data.get("progress", 50),
+                "message": progress_data.get("message", "Processing...")
+            })
+        except s3_client.exceptions.NoSuchKey:
+            logger.info(f"Progress marker not found")
+        except Exception as e:
+            logger.error(f"Error checking progress: {type(e).__name__}")
+        
+        # Check if file exists in uploads (fallback)
         try:
             s3_client.head_object(Bucket=BUCKET, Key=f"uploads/{file_name}")
             logger.info(f"File in uploads, processing")
             return cors_response({
                 "status": "processing",
-                "progress": 75,
-                "message": "Extracting text and creating vector embeddings..."
+                "progress": 50,
+                "message": "Processing document..."
             })
         except s3_client.exceptions.NoSuchKey:
             pass

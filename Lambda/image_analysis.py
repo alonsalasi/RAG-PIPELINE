@@ -23,7 +23,7 @@ def get_dominant_colors(image_bytes, top_n=3):
         # Count color occurrences with relaxed thresholds
         color_counts = {}
         for pixel in pixels:
-            r, g, b = pixel
+            r, g, b = int(pixel[0]), int(pixel[1]), int(pixel[2])
             color = None
             
             # Relaxed color detection - check red first

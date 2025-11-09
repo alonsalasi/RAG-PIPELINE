@@ -33,7 +33,7 @@ RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted
 # -----------------------------------------------------
 # 🧠 Lambda Code
 # -----------------------------------------------------
-COPY lambda_ingest_handler.py worker.py semantic_chunker.py image_analysis.py /var/task/
+COPY lambda_ingest_handler.py worker.py semantic_chunker.py image_analysis.py office_converter.py /var/task/
 
 # -----------------------------------------------------
 # 🤖 MobileNet-SSD Model Files
