@@ -1439,7 +1439,7 @@ def handle_agent_query(event):
                         url = s3_client.generate_presigned_url(
                             'get_object',
                             Params={'Bucket': BUCKET, 'Key': s3_key},
-                            ExpiresIn=3600
+                            ExpiresIn=300
                         )
                         images.append(url)
                         logger.info(f"Generated presigned URL for: {s3_key}")
@@ -1535,7 +1535,7 @@ def handle_get_image(event):
             url = s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": BUCKET, "Key": image_key},
-                ExpiresIn=7200
+                ExpiresIn=300
             )
             logger.info(f"Generated presigned URL: {image_key}")
             return cors_response({"url": url})
