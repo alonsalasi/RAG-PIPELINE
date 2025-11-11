@@ -69,23 +69,34 @@ def extract_docx(file_path):
             if para.text.strip():
                 text_content.append(para.text.strip())
         
-        # Extract images from document
-        for rel in doc.part.rels.values():
-            if "image" in rel.target_ref:
-                try:
-                    image_bytes = rel.target_part.blob
-                    if len(image_bytes) > 10000:  # Min 10KB
-                        img_pil = Image.open(io.BytesIO(image_bytes))
-                        img_byte_arr = io.BytesIO()
-                        img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
-                        images.append({
-                            'page': 1,
-                            'index': len(images),
-                            'data': img_byte_arr.getvalue(),
-                            'ext': 'jpg'
-                        })
-                except Exception as e:
-                    logger.warning(f"Failed to extract image from DOCX: {e}")
+        # Extract images in document order by iterating through runs
+        seen_blobs = set()
+        for para in doc.paragraphs:
+            for run in para.runs:
+                # Check if run contains an image
+                if 'graphic' in run._element.xml:
+                    # Extract relationship ID from the run's XML
+                    import re
+                    rId_match = re.search(r'r:embed="(rId\d+)"', run._element.xml)
+                    if rId_match:
+                        rId = rId_match.group(1)
+                        try:
+                            rel = run.part.rels[rId]
+                            if "image" in rel.target_ref:
+                                image_bytes = rel.target_part.blob
+                                if len(image_bytes) > 10000 and image_bytes not in seen_blobs:
+                                    seen_blobs.add(image_bytes)
+                                    img_pil = Image.open(io.BytesIO(image_bytes))
+                                    img_byte_arr = io.BytesIO()
+                                    img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                                    images.append({
+                                        'page': 1,
+                                        'index': len(images),
+                                        'data': img_byte_arr.getvalue(),
+                                        'ext': 'jpg'
+                                    })
+                        except Exception as e:
+                            logger.warning(f"Failed to extract image from DOCX: {e}")
         
         full_text = "\n\n".join(text_content)
         logger.info(f"DOCX: Extracted {len(doc.paragraphs)} paragraphs, {len(images)} images, {len(full_text)} chars")

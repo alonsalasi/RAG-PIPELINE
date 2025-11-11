@@ -25,7 +25,7 @@
     .upload-box button.cancel:hover { background:#c82333;}
     #upload-status { font-size:.8em; color:#333; margin-top:10px; font-weight:500;}
     .progress-item { margin:8px 0; padding:8px; background:#f8f9fa; border-radius:6px; position:relative; }
-    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:auto;}
     .progress-bar-bg { height:6px; background:#e9ecef; border-radius:3px; overflow:hidden;}
     .progress-bar-fill { height:100%; background:linear-gradient(90deg, #667eea, #764ba2); transition:width .3s; border-radius:3px;}
     .progress-status { font-size:.75em; color:#6c757d; margin-top:4px;}
@@ -39,7 +39,7 @@
     .toggle-btn:hover { color:#495057; }
     .progress-container.collapsed { display:none; }
     #file-list { list-style:none; padding:0; margin:0; flex-grow:1;}
-    #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-break:break-all; display:flex; justify-content:space-between; align-items:center;}
+    #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-wrap:break-word; overflow-wrap:break-word; display:flex; justify-content:space-between; align-items:center;}
     .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
     .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10; display:flex; justify-content:space-between; align-items:center;}
     .user-info { font-size:0.8em; display:flex; gap:10px; align-items:center;}
@@ -56,6 +56,12 @@
     .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em;}
     .files-section { flex-grow:1; display:flex; flex-direction:column;}
     .files-section h3 { margin-bottom:10px;}
+    .file-actions { display:flex; gap:8px; margin-bottom:10px; align-items:center; }
+    .file-actions button { padding:6px 12px; font-size:0.85em; border:none; border-radius:4px; cursor:pointer; }
+    .file-actions .delete-selected { background:#dc3545; color:white; }
+    .file-actions .delete-selected:hover { background:#c82333; }
+    .file-actions .delete-selected:disabled { background:#ccc; cursor:not-allowed; }
+    .file-checkbox { margin-right:8px; cursor:pointer; width:16px; height:16px; }
     .spinner { width:16px; height:16px; border:2px solid currentColor; border-bottom-color:transparent; border-radius:50%; display:inline-block; animation:spin 1s linear infinite;}
     @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
     #login-screen, #change-password-screen, #mfa-screen, #totp-setup-screen { display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding:20px;}
@@ -121,7 +127,7 @@
   <div class="upload-section">
     <h3>&#128228; Upload Document</h3>
     <div class="upload-box">
-      <input type="file" id="file-input" accept=".pdf,.pptx,.docx,.xlsx,.png,.jpg,.jpeg,.tiff" multiple>
+      <input type="file" id="file-input" accept=".pdf,.pptx,.docx,.xlsx,.jpg,.jpeg,.png,.tiff" multiple>
       <label for="file-input" id="file-label">Click to select files...</label>
       <button type="button" id="upload-button">Upload</button>
       <button type="button" id="cancel-button" class="cancel" style="display:none;">Cancel Upload</button>
@@ -134,6 +140,20 @@
       &#128218; Documents
       <button id="refresh-btn" class="btn" style="background:#6c757d; padding:6px 12px; font-size:.85em;">&#128260;</button>
     </h3>
+    <input type="text" id="file-search" placeholder="Search files..." style="width:100%; padding:8px; margin-bottom:8px; border:1px solid #dee2e6; border-radius:6px; font-size:0.9em;">
+    <select id="file-sort" style="width:100%; padding:8px; margin-bottom:8px; border:1px solid #dee2e6; border-radius:6px; font-size:0.9em;">
+      <option value="date-desc">Sort by: Newest First</option>
+      <option value="date-asc">Sort by: Oldest First</option>
+      <option value="name-asc">Sort by: Name (A-Z)</option>
+      <option value="name-desc">Sort by: Name (Z-A)</option>
+    </select>
+    <div class="file-actions">
+      <label style="display:flex; align-items:center; font-size:0.85em; color:#6c757d; cursor:pointer;">
+        <input type="checkbox" id="select-all" class="file-checkbox">
+        Select All
+      </label>
+      <button id="delete-selected" class="delete-selected" disabled>Delete Selected</button>
+    </div>
     <ul id="file-list"></ul>
     <div id="file-list-status"></div>
   </div>
@@ -459,6 +479,9 @@
   
   let uploadControllers = [];
   let uploadedFiles = [];
+  let allFiles = [];
+  let currentSort = 'date-desc';
+  let selectedFiles = new Set();
   
   let sessionId = generateSessionId();
   
@@ -618,7 +641,13 @@
       if(fullResponse) {
         // Images are already presigned URLs from backend
         let responseText = fullResponse;
-        const finalImages = data.images || [];
+        // Decode HTML entities in image URLs
+        const rawImages = data.images || [];
+        const finalImages = rawImages.map(url => {
+          const textarea = document.createElement('textarea');
+          textarea.innerHTML = url;
+          return textarea.value;
+        });
         const showImages = finalImages.length > 0;
         
         appendMessage('assistant', responseText, null, false, showImages ? finalImages : null);
@@ -638,47 +667,209 @@
     appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
   }
 
-  function renderFileList(filenames){
+  function renderFileList(filenames, searchTerm = '', sortBy = currentSort){
     FILE_LIST_UL.innerHTML = '';
+    allFiles = filenames || [];
+    currentSort = sortBy;
     if(filenames && filenames.length){
-      filenames.sort().forEach(fullName=>{
-        const clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_') : fullName;
-        const li = document.createElement('li');
-        const span = document.createElement('span');
-        span.textContent = clean;
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = '&#128465;&#65039;';
-        deleteBtn.title = 'Delete file';
-        deleteBtn.onclick = async () => {
-          if (!confirm(`Delete ${clean}?`)) return;
-          deleteBtn.disabled = true;
-          deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
-          try {
-            const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`, {
-              method: 'DELETE',
-              headers: getAuthHeaders()
-            });
-            if (res.ok) {
-              deleteBtn.innerHTML = '✓';
-              deleteBtn.style.color = '#28a745';
-              setTimeout(() => fetchUploadedFiles(), 500);
-            } else {
-              deleteBtn.innerHTML = '✗';
-              deleteBtn.disabled = false;
-              alert('Failed to delete file');
-            }
-          } catch (e) {
-            deleteBtn.innerHTML = '✗';
-            deleteBtn.disabled = false;
-            alert('Error deleting file: ' + e.message);
-          }
-        };
-        li.appendChild(span);
-        li.appendChild(deleteBtn);
-        FILE_LIST_UL.appendChild(li);
+      // Parse files with metadata
+      let fileObjects = filenames.map(fullName => {
+        const baseName = fullName.replace('.json', '');
+        const parts = baseName.split('_');
+        const timestamp = parts[0];
+        const ts = parseInt(timestamp);
+        // Use timestamp if valid, otherwise use current time
+        const date = (!isNaN(ts) && ts > 1000000000 && ts < 9999999999) ? new Date(ts * 1000) : new Date();
+        let clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_').replace('.json', '') : fullName.replace('.json', '');
+        // Decode HTML entities
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = clean;
+        clean = textarea.value;
+        // Use valid timestamp or fallback to 0 for sorting
+        const sortTimestamp = (!isNaN(ts) && ts > 1000000000 && ts < 9999999999) ? ts : 0;
+        return { fullName, clean, date, timestamp: sortTimestamp };
       });
-      FILE_LIST_STATUS.textContent = `${filenames.length} document(s) available.`;
+      
+      // Filter by search
+      let filteredFiles = searchTerm ? 
+        fileObjects.filter(f => f.clean.toLowerCase().includes(searchTerm.toLowerCase())) : 
+        fileObjects;
+      
+      // Sort
+      if (sortBy === 'date-desc') {
+        filteredFiles.sort((a, b) => b.timestamp - a.timestamp);
+      } else if (sortBy === 'date-asc') {
+        filteredFiles.sort((a, b) => a.timestamp - b.timestamp);
+      } else if (sortBy === 'name-asc') {
+        filteredFiles.sort((a, b) => a.clean.localeCompare(b.clean, undefined, {numeric: true, sensitivity: 'base'}));
+      } else if (sortBy === 'name-desc') {
+        filteredFiles.sort((a, b) => b.clean.localeCompare(a.clean, undefined, {numeric: true, sensitivity: 'base'}));
+      }
+      
+      if (filteredFiles.length === 0) {
+        FILE_LIST_STATUS.textContent = searchTerm ? `No files matching "${searchTerm}"` : 'No documents uploaded yet.';
+        return;
+      }
+      
+      // Group files
+      const filesByDate = {};
+      filteredFiles.forEach(fileObj => {
+        const dateKey = sortBy.startsWith('date') ? 
+          fileObj.date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 
+          'All Files';
+        
+        if (!filesByDate[dateKey]) {
+          filesByDate[dateKey] = [];
+        }
+        filesByDate[dateKey].push(fileObj);
+      });
+      
+      // Sort date groups
+      const sortedDates = Object.keys(filesByDate).sort((a, b) => {
+        if (a === 'All Files' || b === 'All Files') return 0;
+        const dateA = filesByDate[a][0].date;
+        const dateB = filesByDate[b][0].date;
+        return sortBy === 'date-asc' ? dateA - dateB : dateB - dateA;
+      });
+      
+      // Render tree structure
+      sortedDates.forEach(dateKey => {
+        const files = filesByDate[dateKey];
+        
+        const fileContainer = document.createElement('ul');
+        fileContainer.style.cssText = sortBy.startsWith('name') ? 'list-style:none; padding-left:0; margin:0;' : 'list-style:none; padding-left:20px; margin:0;';
+        
+        let dateHeader = null;
+        if (sortBy.startsWith('date')) {
+          dateHeader = document.createElement('li');
+          dateHeader.style.cssText = 'background:#f0f0f0; font-weight:600; cursor:pointer; padding:8px 5px; border-bottom:1px solid #ddd; user-select:none;';
+          dateHeader.innerHTML = `<span style="display:inline-block; width:20px;">▼</span>${dateKey} (${files.length})`;
+          
+          dateHeader.onclick = () => {
+            const isCollapsed = fileContainer.style.display === 'none';
+            fileContainer.style.display = isCollapsed ? 'block' : 'none';
+            dateHeader.querySelector('span').textContent = isCollapsed ? '▼' : '▶';
+          };
+        }
+        
+        // Add files under this date
+        files.forEach(({ fullName, clean }) => {
+          const li = document.createElement('li');
+          li.style.cssText = 'padding:8px 5px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;';
+          
+          const leftDiv = document.createElement('div');
+          leftDiv.style.cssText = 'display:flex; align-items:center; flex:1;';
+          
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'file-checkbox';
+          checkbox.dataset.filename = fullName;
+          checkbox.checked = selectedFiles.has(fullName);
+          checkbox.onchange = () => {
+            if (checkbox.checked) {
+              selectedFiles.add(fullName);
+            } else {
+              selectedFiles.delete(fullName);
+            }
+            updateDeleteButton();
+            updateSelectAllCheckbox();
+          };
+          
+          const span = document.createElement('span');
+          span.textContent = clean;
+          span.style.cssText = 'font-size:0.9em; color:#6c757d; word-wrap:break-word; overflow-wrap:break-word; flex:1; direction:auto;';
+          
+          leftDiv.appendChild(checkbox);
+          leftDiv.appendChild(span);
+          
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'delete-btn';
+          deleteBtn.innerHTML = '🗑️';
+          deleteBtn.title = 'Delete file';
+          deleteBtn.onclick = async () => {
+            if (!confirm(`Delete ${clean}?`)) return;
+            deleteBtn.disabled = true;
+            deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+            try {
+              const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+              });
+              
+              // Handle 503 timeout - check if file was actually deleted
+              if (res.status === 503) {
+                console.log('503 timeout - checking if file was deleted...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const checkRes = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
+                const checkData = await checkRes.json();
+                const fileStillExists = (checkData.filenames || []).includes(fullName);
+                
+                if (!fileStillExists) {
+                  deleteBtn.innerHTML = '✓';
+                  deleteBtn.style.color = '#28a745';
+                  setTimeout(() => fetchUploadedFiles(), 1000);
+                } else {
+                  deleteBtn.innerHTML = '✗';
+                  deleteBtn.disabled = false;
+                  alert('✗ Deletion timed out and file still exists.\n\nPlease try again.');
+                }
+                return;
+              }
+              
+              const data = await res.json();
+              if (res.ok && data.success) {
+                deleteBtn.innerHTML = '✓';
+                deleteBtn.style.color = '#28a745';
+                setTimeout(() => fetchUploadedFiles(), 500);
+              } else {
+                console.error('Delete failed:', data);
+                deleteBtn.innerHTML = '✗';
+                deleteBtn.disabled = false;
+                alert('Failed to delete file: ' + (data.error || data.message || 'Unknown error'));
+              }
+            } catch (e) {
+              console.log('Delete request failed, checking if file was deleted...', e);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              try {
+                const checkRes = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
+                const checkData = await checkRes.json();
+                const fileStillExists = (checkData.filenames || []).includes(fullName);
+                
+                if (!fileStillExists) {
+                  deleteBtn.innerHTML = '✓';
+                  deleteBtn.style.color = '#28a745';
+                  setTimeout(() => fetchUploadedFiles(), 1000);
+                } else {
+                  deleteBtn.innerHTML = '✗';
+                  deleteBtn.disabled = false;
+                  alert('✗ Failed to delete file.\n\nPlease try again or contact support if the issue persists.');
+                }
+              } catch (checkError) {
+                deleteBtn.innerHTML = '✗';
+                deleteBtn.disabled = false;
+                alert('✗ Network error while verifying deletion.\n\nPlease refresh the page to see if the file was deleted.');
+              }
+            }
+          };
+          
+          li.appendChild(leftDiv);
+          li.appendChild(deleteBtn);
+          fileContainer.appendChild(li);
+        });
+        
+        if (dateHeader) {
+          FILE_LIST_UL.appendChild(dateHeader);
+        }
+        FILE_LIST_UL.appendChild(fileContainer);
+      });
+      
+      const totalCount = filenames.length;
+      const displayCount = filteredFiles.length;
+      FILE_LIST_STATUS.textContent = searchTerm ? 
+        `Showing ${displayCount} of ${totalCount} document(s)` : 
+        `${totalCount} document(s) available.`;
     } else {
       FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
     }
@@ -695,7 +886,7 @@
 
   async function pollForProcessing(fileName, updateProgress, controller, progressId) {
     const maxAttempts = 480;
-    const pollInterval = 2000;
+    const pollInterval = 1500; // Poll faster (1.5s) for more responsive updates
     let lastProgressUpdate = Date.now();
     let lastProgress = 0;
     const stuckThreshold = 120000; // 2 minutes without progress = stuck
@@ -718,9 +909,12 @@
         if (res.ok) {
           const data = await res.json();
           const { status, progress: serverProgress, message } = data;
+          console.log(`[Poll ${i}] Status: ${status}, Progress: ${serverProgress}, Message: ${message}`);
           
           if (status === 'completed') {
+            console.log(`[Poll ${i}] File completed!`);
             updateProgress(100, '✓ Complete - Ready to query!');
+            fetchUploadedFiles();
             setTimeout(() => {
               const item = document.getElementById(progressId);
               if (item && item.parentNode) {
@@ -733,49 +927,62 @@
             const item = document.getElementById(progressId);
             if (item) {
               item.querySelector('.progress-status').style.color = '#dc3545';
+              item.querySelector('.progress-bar-fill').style.background = '#dc3545';
               const deleteBtn = item.querySelector('.delete-btn');
-              if (deleteBtn) deleteBtn.remove();
+              if (deleteBtn) {
+                deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+                deleteBtn.title = 'Remove from list';
+              }
             }
             return false;
           } else if (status === 'not_found') {
-            // File not found - Lambda may have failed before writing progress
-            if (i > 30) { // Give it 60 seconds before declaring failure
+            if (i > 40) {
               updateProgress(0, '✗ Processing failed to start');
               const item = document.getElementById(progressId);
               if (item) {
                 item.querySelector('.progress-status').style.color = '#dc3545';
+                item.querySelector('.progress-bar-fill').style.background = '#dc3545';
                 const deleteBtn = item.querySelector('.delete-btn');
-                if (deleteBtn) deleteBtn.remove();
+                if (deleteBtn) {
+                  deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+                  deleteBtn.title = 'Remove from list';
+                }
               }
               return false;
             }
-          } else if (status === 'processing' && serverProgress) {
-            // Check if progress is stuck
-            if (serverProgress > lastProgress) {
-              lastProgress = serverProgress;
+            updateProgress(50, 'Starting document processor...');
+          } else if (status === 'processing') {
+            const currentProgress = serverProgress || 50;
+            const currentMessage = message || 'Processing document...';
+            console.log(`[Poll ${i}] Processing - ${currentProgress}% - ${currentMessage}`);
+            
+            if (currentProgress > lastProgress) {
+              lastProgress = currentProgress;
               lastProgressUpdate = Date.now();
             } else if (Date.now() - lastProgressUpdate > stuckThreshold) {
-              updateProgress(serverProgress, '⚠ Processing appears stuck - may have timed out');
+              updateProgress(currentProgress, '⚠ Processing appears stuck - may have timed out');
               const item = document.getElementById(progressId);
               if (item) {
                 item.querySelector('.progress-status').style.color = '#ff9800';
               }
+            } else {
+              updateProgress(currentProgress, currentMessage);
             }
-            updateProgress(serverProgress, message || 'Processing...');
           } else {
             const fallbackProgress = 50 + Math.min(45, (i / maxAttempts) * 45);
-            updateProgress(fallbackProgress, message || `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
+            updateProgress(fallbackProgress, message || `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
           }
         } else {
+          // HTTP error - show elapsed time
           const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
-          updateProgress(progress, `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
+          updateProgress(progress, `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
         }
         
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       } catch (e) {
         console.error('Poll error:', e);
         const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
-        updateProgress(progress, `Processing... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)`);
+        updateProgress(progress, `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
     }
@@ -784,6 +991,12 @@
     const item = document.getElementById(progressId);
     if (item) {
       item.querySelector('.progress-status').style.color = '#ff9800';
+      item.querySelector('.progress-bar-fill').style.background = '#ff9800';
+      const deleteBtn = item.querySelector('.delete-btn');
+      if (deleteBtn) {
+        deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+        deleteBtn.title = 'Remove from list';
+      }
     }
     return false;
   }
@@ -795,18 +1008,40 @@
       return;
     }
     
-    UPLOAD_STATUS.innerHTML = '<div class="progress-header"><h4>Upload Progress</h4><button class="toggle-btn" onclick="toggleProgress()" title="Minimize/Expand">▼</button></div><div class="progress-container" id="progress-container"></div>';
+    // Create or get progress container
+    let progressContainer = document.getElementById('progress-container');
+    if (!progressContainer) {
+      UPLOAD_STATUS.innerHTML = '<div class="progress-header"><h4>Upload Progress</h4><button class="toggle-btn" onclick="toggleProgress()" title="Minimize/Expand">▼</button></div><div class="progress-container" id="progress-container"></div><div id="batch-summary" style="padding:10px;background:#f8f9fa;border-top:1px solid #dee2e6;font-size:0.85em;color:#495057;"></div>';
+      progressContainer = document.getElementById('progress-container');
+    }
+    
     UPLOAD_BUTTON.disabled = true;
     CANCEL_BUTTON.style.display = 'block';
-    uploadControllers = [];
-    uploadedFiles = [];
-    const progressContainer = document.getElementById('progress-container');
+    
+    // Don't reset - append to existing uploads
+    const startIndex = uploadControllers.length;
+    const batchId = Date.now();
+    const batchStats = { total: files.length, completed: 0, failed: 0, batchId };
+    
+    function updateBatchSummary() {
+      const summaryDiv = document.getElementById('batch-summary');
+      if (summaryDiv) {
+        const parts = [];
+        parts.push(`✓ Completed: ${batchStats.completed}/${batchStats.total}`);
+        if (batchStats.failed > 0) {
+          parts.push(`<span style="color:#dc3545;">✗ Failed: ${batchStats.failed}</span>`);
+        }
+        summaryDiv.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+      }
+    }
+    
+    updateBatchSummary();
     
     const uploadPromises = [];
     
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const progressId = `progress-${i}`;
+      const progressId = `progress-${startIndex + i}`;
       const controller = new AbortController();
       uploadControllers.push(controller);
       
@@ -865,7 +1100,11 @@
             'pdf': 'application/pdf',
             'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
             'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'tiff': 'image/tiff'
           };
           const fileExt = file.name.split('.').pop().toLowerCase();
           const contentType = contentTypeMap[fileExt] || 'application/octet-stream';
@@ -889,13 +1128,34 @@
             throw new Error('Cancelled');
           }
           
-          updateProgress(50, 'Processing document...');
-          await pollForProcessing(file.name, updateProgress, controller, progressId);
+          updateProgress(50, 'Waiting for processor to start...');
+          console.log(`[${file.name}] Waiting 5 seconds before polling...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          console.log(`[${file.name}] Starting to poll for processing status...`);
+          const success = await pollForProcessing(file.name, updateProgress, controller, progressId);
+          console.log(`[${file.name}] Polling finished. Success: ${success}`);
+          if (success) {
+            batchStats.completed++;
+          } else {
+            batchStats.failed++;
+          }
+          updateBatchSummary();
         } catch (e) {
+          batchStats.failed++;
+          updateBatchSummary();
           const item = document.getElementById(progressId);
           if (item) {
             item.querySelector('.progress-status').textContent = '✗ ' + e.message;
             item.querySelector('.progress-status').style.color = '#dc3545';
+            item.querySelector('.progress-bar-fill').style.background = '#dc3545';
+            // Remove cancel button, add manual delete button
+            const cancelBtn = item.querySelector('.delete-btn');
+            if (cancelBtn) {
+              cancelBtn.onclick = () => {
+                if (item.parentNode) item.remove();
+              };
+              cancelBtn.title = 'Remove from list';
+            }
           }
           if (e.name !== 'AbortError' && e.message !== 'Cancelled') throw e;
         }
@@ -908,19 +1168,35 @@
       await Promise.all(uploadPromises);
       FILE_INPUT.value = '';
       FILE_LABEL.textContent = 'Click to select files...';
-      setTimeout(() => { fetchUploadedFiles(); UPLOAD_STATUS.innerHTML = ''; CANCEL_BUTTON.style.display = 'none'; }, 3000);
+      
+      // Clear failed count from summary after batch completes
+      setTimeout(() => {
+        const summaryDiv = document.getElementById('batch-summary');
+        if (summaryDiv && batchStats.completed + batchStats.failed >= batchStats.total) {
+          summaryDiv.innerHTML = `✓ Batch complete: ${batchStats.completed}/${batchStats.total} successful`;
+          setTimeout(() => {
+            if (summaryDiv) summaryDiv.innerHTML = '';
+          }, 5000);
+        }
+        fetchUploadedFiles();
+      }, 2000);
     } catch (e) {
       console.error('Upload error:', e);
     } finally {
       UPLOAD_BUTTON.disabled = false;
-      if (uploadControllers.every(c => c.signal.aborted)) {
-        CANCEL_BUTTON.style.display = 'none';
-      }
+      // Hide cancel button when batch is complete
+      setTimeout(() => {
+        const allDone = batchStats.completed + batchStats.failed >= batchStats.total;
+        if (allDone) {
+          CANCEL_BUTTON.style.display = 'none';
+        }
+      }, 1000);
     }
   });
   
   window.cancelSingleFile = async (progressId, fileName) => {
     const index = parseInt(progressId.replace('progress-', ''));
+    if (index >= uploadControllers.length) return;
     const controller = uploadControllers[index];
     
     if (controller && !controller.signal.aborted) {
@@ -952,24 +1228,28 @@
   };
   
   CANCEL_BUTTON.addEventListener('click', async () => {
-    if (!confirm('Cancel all uploads and delete uploaded files?')) return;
+    if (!confirm('Cancel all active uploads?')) return;
     
     CANCEL_BUTTON.disabled = true;
     CANCEL_BUTTON.textContent = 'Cancelling...';
     
-    // Abort all controllers and create cancellation markers
+    // Abort all active controllers
     const cancelPromises = uploadControllers.map(async (controller, index) => {
-      if (!controller.signal.aborted) {
+      if (controller && !controller.signal.aborted) {
         controller.abort();
-        const file = FILE_INPUT.files[index];
-        if (file) {
-          try {
-            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
-              method: 'DELETE',
-              headers: getAuthHeaders()
-            });
-          } catch (e) {
-            console.error('Failed to cancel:', file.name, e);
+        // Try to get filename from progress item
+        const progressItem = document.getElementById(`progress-${index}`);
+        if (progressItem) {
+          const fileName = progressItem.querySelector('.progress-name')?.textContent;
+          if (fileName) {
+            try {
+              await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+              });
+            } catch (e) {
+              console.error('Failed to cancel:', fileName, e);
+            }
           }
         }
       }
@@ -977,15 +1257,10 @@
     
     await Promise.all(cancelPromises);
     
-    uploadedFiles = [];
-    UPLOAD_STATUS.innerHTML = '<span style="color:#dc3545;">All uploads cancelled</span>';
-    setTimeout(() => { UPLOAD_STATUS.innerHTML = ''; }, 3000);
     CANCEL_BUTTON.textContent = 'Cancel Upload';
     CANCEL_BUTTON.disabled = false;
-    CANCEL_BUTTON.style.display = 'none';
     FILE_INPUT.value = '';
     FILE_LABEL.textContent = 'Click to select files...';
-    fetchUploadedFiles();
   });
 
   window.toggleProgress = () => {
@@ -1001,6 +1276,92 @@
   USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
   REFRESH_BTN.addEventListener('click', fetchUploadedFiles);
   CLEAR_CHAT.addEventListener('click', clearChat);
+  
+  document.getElementById('file-search').addEventListener('input', (e) => {
+    renderFileList(allFiles, e.target.value, currentSort);
+  });
+  
+  document.getElementById('file-sort').addEventListener('change', (e) => {
+    const searchTerm = document.getElementById('file-search').value;
+    renderFileList(allFiles, searchTerm, e.target.value);
+  });
+  
+  function updateDeleteButton() {
+    const deleteBtn = document.getElementById('delete-selected');
+    deleteBtn.disabled = selectedFiles.size === 0;
+    deleteBtn.textContent = selectedFiles.size > 0 ? `Delete Selected (${selectedFiles.size})` : 'Delete Selected';
+  }
+  
+  function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('select-all');
+    const allCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+    const checkedCount = Array.from(allCheckboxes).filter(cb => cb.checked).length;
+    selectAllCheckbox.checked = allCheckboxes.length > 0 && checkedCount === allCheckboxes.length;
+    selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < allCheckboxes.length;
+  }
+  
+  document.getElementById('select-all').addEventListener('change', (e) => {
+    const checkboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+    checkboxes.forEach(cb => {
+      cb.checked = e.target.checked;
+      if (e.target.checked) {
+        selectedFiles.add(cb.dataset.filename);
+      } else {
+        selectedFiles.delete(cb.dataset.filename);
+      }
+    });
+    updateDeleteButton();
+  });
+  
+  document.getElementById('delete-selected').addEventListener('click', async () => {
+    if (selectedFiles.size === 0) return;
+    
+    if (!confirm(`Delete ${selectedFiles.size} selected file(s)?`)) return;
+    
+    const deleteBtn = document.getElementById('delete-selected');
+    deleteBtn.disabled = true;
+    
+    const filesToDelete = Array.from(selectedFiles);
+    const total = filesToDelete.length;
+    let completed = 0;
+    
+    for (const fileName of filesToDelete) {
+      deleteBtn.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> Deleting ${completed + 1}/${total}...`;
+      
+      try {
+        const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+        
+        const data = await res.json();
+        if (res.ok && data.success) {
+          selectedFiles.delete(fileName);
+        }
+      } catch (e) {
+        console.error('Delete failed:', fileName, e);
+      }
+      
+      completed++;
+    }
+    
+    deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> Rebuilding index...';
+    
+    try {
+      await fetch(`${API_GATEWAY_URL}/batch-delete`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ fileNames: [] })
+      });
+    } catch (e) {
+      console.error('Index rebuild failed:', e);
+    }
+    
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = 'Delete Selected';
+    updateDeleteButton();
+    fetchUploadedFiles();
+  });
 </script>
 </body>
 </html>

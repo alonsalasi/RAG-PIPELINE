@@ -631,9 +631,9 @@ def handle_get_upload_url_api(event):
         except ValueError as e:
             return cors_response({"error": str(e)}, 400)
         
-        allowed_extensions = ('.pdf', '.pptx', '.docx', '.xlsx')
+        allowed_extensions = ('.pdf', '.pptx', '.docx', '.xlsx', '.jpg', '.jpeg', '.png', '.tiff')
         if not file_name.lower().endswith(allowed_extensions):
-            return cors_response({"error": "Only PDF, PPTX, DOCX, and XLSX files are allowed"}, 400)
+            return cors_response({"error": "Only PDF, PPTX, DOCX, XLSX, JPG, JPEG, PNG, and TIFF files are allowed"}, 400)
         
         base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
         
@@ -645,7 +645,11 @@ def handle_get_upload_url_api(event):
             '.pdf': 'application/pdf',
             '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
             '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.tiff': 'image/tiff'
         }
         
         file_ext = os.path.splitext(file_name)[1].lower()
@@ -665,11 +669,15 @@ def handle_get_upload_url_api(event):
 def handle_list_files_api(event):
     """API Gateway handler for listing files."""
     try:
+        import html
         objects = list_all_s3_objects(BUCKET, "processed/")
         filenames = []
         for obj in objects:
             if obj["Key"].endswith(".json"):
-                filenames.append(os.path.basename(obj["Key"]))
+                filename = os.path.basename(obj["Key"])
+                # Decode HTML entities and URL encoding
+                filename = html.unescape(filename)
+                filenames.append(filename)
         return cors_response({"filenames": filenames})
     except Exception as e:
         logger.error(f" List files error: {type(e).__name__}")
@@ -761,12 +769,11 @@ def rebuild_master_index():
                 
                 # Add image documents
                 images = metadata.get('images', [])
-                for img_meta in images:
+                for idx, img_meta in enumerate(images, 1):
                     img_desc = img_meta.get('description', 'Image')
                     s3_key = img_meta.get('s3_key', '')
                     
-                    # Add document name prefix to help with ranking
-                    page_content = f"Document: {base_name}\nImage from page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
+                    page_content = f"Document: {base_name}\nImage #{idx} (Image number {idx}) from page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
                     
                     img_doc = Document(
                         page_content=page_content,
@@ -774,6 +781,7 @@ def rebuild_master_index():
                             "source": base_name,
                             "type": "image",
                             "page": img_meta['page'],
+                            "image_number": idx,
                             "image_url": img_meta.get('url', ''),
                             "s3_key": s3_key,
                             "context_summary": context_prefix
@@ -810,25 +818,38 @@ def rebuild_master_index():
         logger.error(f" Failed to rebuild master index: {e}")
         raise
 
+def handle_batch_delete_api(event):
+    """API Gateway handler for rebuilding index after batch delete."""
+    try:
+        logger.info("Rebuilding master index after batch deletion")
+        rebuild_master_index()
+        logger.info("Master index rebuilt successfully")
+        return cors_response({"success": True, "message": "Index rebuilt"})
+    except Exception as e:
+        logger.error(f"Index rebuild error: {type(e).__name__} - {str(e)}")
+        return cors_response({"error": f"Index rebuild failed: {str(e)}"}, 500)
+
 def handle_delete_file_api(event):
     """API Gateway handler for deleting files."""
     try:
+        from urllib.parse import unquote
         params = event.get("queryStringParameters") or {}
-        display_name = params.get("fileName")
+        display_name = unquote(params.get("fileName", ""))
         
         try:
             display_name = validate_filename(display_name)
         except (ValueError, TypeError) as e:
-            return cors_response({"error": "Invalid fileName"}, 400)
+            logger.error(f"Invalid filename: {e}")
+            return cors_response({"error": f"Invalid fileName: {str(e)}"}, 400)
         
-        logger.info(f" Deleting file: {sanitize_for_logging(display_name)}")
+        logger.info(f"Deleting file: {sanitize_for_logging(display_name)}")
         base_name = display_name.replace('.json', '') if display_name.endswith('.json') else display_name
         
         # Collect all keys to delete
-        keys_to_delete = []
-        
-        # Add JSON marker
-        keys_to_delete.append(f"processed/{base_name}.json")
+        keys_to_delete = [
+            f"processed/{base_name}.json",
+            f"progress/{base_name}.json"
+        ]
         
         # Collect PDFs
         try:
@@ -837,31 +858,34 @@ def handle_delete_file_api(event):
                 if obj['Key'].startswith(f"uploads/{base_name}."):
                     keys_to_delete.append(obj['Key'])
         except Exception as e:
-            logger.error(f" Failed to list PDFs: {e}")
+            logger.error(f"Failed to list PDFs: {e}")
         
         # Collect images
         try:
             image_objects = list_all_s3_objects(BUCKET, f"images/{base_name}/")
             keys_to_delete.extend([obj['Key'] for obj in image_objects])
         except Exception as e:
-            logger.error(f" Failed to list images: {e}")
+            logger.error(f"Failed to list images: {e}")
         
         # Batch delete all collected keys
-        deleted_count = batch_delete_s3_objects(BUCKET, keys_to_delete)
-        logger.info(f" Deleted {deleted_count} objects for {base_name}")
+        try:
+            deleted_count = batch_delete_s3_objects(BUCKET, keys_to_delete)
+            logger.info(f"Deleted {deleted_count} objects for {base_name}")
+        except Exception as e:
+            logger.error(f"Batch delete failed: {e}")
+            return cors_response({"error": f"Delete failed: {str(e)}"}, 500)
         
-        # Rebuild master index without this document
+        # Rebuild master index
         try:
             rebuild_master_index()
-            logger.info(" Master index rebuilt after deletion")
+            logger.info("Master index rebuilt after deletion")
         except Exception as e:
-            logger.error(f" Failed to rebuild master index: {e}")
-            # Don't fail the delete operation if rebuild fails
+            logger.error(f"Failed to rebuild master index: {e}")
         
-        return cors_response({"message": f"{base_name} deleted successfully"})
+        return cors_response({"success": True, "message": f"{base_name} deleted successfully"})
     except Exception as e:
-        logger.error(f" Delete file error: {type(e).__name__}")
-        return cors_response({"error": "Failed to delete file"}, 500)
+        logger.error(f"Delete file error: {type(e).__name__} - {str(e)}")
+        return cors_response({"error": f"Failed to delete file: {str(e)}"}, 500)
 
 def handle_cancel_upload_api(event):
     """API Gateway handler for cancelling uploads and cleaning up partial files."""
@@ -997,19 +1021,28 @@ def handle_search_action(event):
         original_lower = original_input.lower() if original_input else query_lower
         
         # Question words = user wants information (TEXT)
-        question_words = ['what', 'how', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom']
+        question_words = ['what', 'how', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom', 'מה', 'איך', 'למה', 'מתי', 'איפה', 'מי']
         # Comparison/analysis = user wants details (TEXT ONLY)
-        analysis_words = ['compare', 'difference', 'versus', 'vs', 'between', 'analyze', 'explain', 'describe', 'list', 'summarize']
-        # Visual commands = user wants to see (IMAGES) - VERY STRONG
+        analysis_words = ['compare', 'difference', 'versus', 'vs', 'between', 'analyze', 'explain', 'describe', 'list', 'summarize', 'השווה', 'הבדל', 'הסבר', 'תאר']
+        # Visual commands = user wants to see (IMAGES) - VERY STRONG (English + Hebrew)
         visual_commands = ['show me', 'display', 'picture of', 'photo of', 'image of', 'look at', 'see the', 'view the', 'let me see']
+        hebrew_visual_commands = ['תראה', 'הצג', 'תמונה', 'דיאגרמה', 'תרשים', 'דיאגרמות', 'תמונות']
         
         # Count intent signals
         text_signals = 0
         image_signals = 0
         
         # Check for visual commands FIRST (highest priority)
+        # English commands (substring match)
         if any(cmd in original_lower for cmd in visual_commands):
             image_signals += 10
+            logger.info(f"🖼️ English visual command detected")
+        
+        # Hebrew commands (word match)
+        original_words = original_input.split() if original_input else []
+        if any(hebrew_cmd in original_words for hebrew_cmd in hebrew_visual_commands):
+            image_signals += 10
+            logger.info(f"🖼️ Hebrew visual command detected")
         
         # Check for question words at start (strong text signal)
         first_word = query_lower.split()[0] if query_lower.split() else ''
@@ -1021,7 +1054,7 @@ def handle_search_action(event):
             text_signals += 5
         
         # Check for standalone visual words (weaker signal)
-        if any(word in original_lower.split() for word in ['picture', 'photo', 'image', 'drawing']):
+        if any(word in original_lower.split() for word in ['picture', 'photo', 'image', 'drawing', 'תמונה', 'תמונות']):
             image_signals += 1
         
         # Decision based on signal strength
@@ -1046,8 +1079,73 @@ def handle_search_action(event):
         
         # 2. Wide Retrieval with fuzzy matching
         vector_start = time.time()
-        raw_results = master_index.similarity_search_with_score(query, k=100)
-        logger.info(f"⏱️ SEARCH: Vector search (k=100) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
+        
+        # Check for specific image number request (e.g., "image 5", "איור מספר 5")
+        import re
+        image_number_match = re.search(r'(?:image|picture|photo|diagram|תמונה|תמונות|איור|דיאגרמה)\s*(?:number|num|#|מספר)?\s*(\d+)', original_input)
+        requested_image_num = None
+        if image_number_match:
+            requested_image_num = int(image_number_match.group(1))
+            logger.info(f"🔢 Specific image number requested: {requested_image_num}")
+        
+        # Extract document name - try to match against actual document names in index
+        doc_filter = None
+        
+        # For specific image number requests with document name, search by document name
+        search_k = 200 if requested_image_num else 100
+        
+        # Extract document name early to use in search
+        doc_name_in_query = None
+        patterns = [r'(?:in|from)\s+(?:document|the document)?[:\s]+(.+?)(?:\s*$)', r'(?:in|from)\s+(.+?)(?:\s*$)']
+        for pattern in patterns:
+            match = re.search(pattern, original_input, re.IGNORECASE)
+            if match:
+                doc_name_in_query = match.group(1).strip()
+                break
+        
+        # If document name specified, search by document name instead of query
+        if doc_name_in_query and requested_image_num:
+            search_query = doc_name_in_query
+            logger.info(f"🔍 Searching by document name: '{search_query}'")
+        else:
+            search_query = query
+        
+        raw_results = master_index.similarity_search_with_score(search_query, k=search_k)
+        logger.info(f"⏱️ SEARCH: Vector search (k={search_k}) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
+        
+        # Get all unique document names from results
+        unique_sources = set(doc.metadata.get('source', '') for doc, _ in raw_results)
+        logger.info(f"📁 ALL available documents: {sorted(list(unique_sources))}")
+        
+        if doc_name_in_query:
+            logger.info(f"🔍 Extracted doc name from query: '{doc_name_in_query}'")
+        else:
+            logger.info("⚠️ No document name extracted from query")
+        
+        # Match document name
+        if doc_name_in_query:
+            # Exact match
+            if doc_name_in_query in unique_sources:
+                doc_filter = doc_name_in_query
+                logger.info(f"🎯 ✅ Exact match: '{doc_filter}'")
+            else:
+                # Substring match
+                for source in unique_sources:
+                    if doc_name_in_query in source or source in doc_name_in_query:
+                        doc_filter = source
+                        logger.info(f"🎯 ✅ Substring match: '{doc_filter}'")
+                        break
+                if not doc_filter:
+                    logger.warning(f"⚠️ Document '{doc_name_in_query}' not found in vector results")
+            
+            # Filter results
+            if doc_filter:
+                filtered = [(doc, score) for doc, score in raw_results if doc.metadata.get('source', '') == doc_filter]
+                if filtered:
+                    raw_results = filtered
+                    logger.info(f"🎯 Filtered to {len(raw_results)} results from '{doc_filter}'")
+                else:
+                    logger.warning(f"⚠️ No vector results for '{doc_filter}'")
         
         # Apply fuzzy matching to boost relevant results
         from difflib import SequenceMatcher
@@ -1057,7 +1155,7 @@ def handle_search_action(event):
             return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
         
         # Extract key terms from query (ignore stop words)
-        stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their', 'about', 'tell', 'what', 'how', 'why', 'when', 'where'}
+        stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their', 'about', 'tell', 'what', 'how', 'why', 'when', 'where', 'file', 'document', 'pdf'}
         query_terms = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
         
         # Boost results where document name matches query terms
@@ -1079,7 +1177,7 @@ def handle_search_action(event):
             for term in query_terms:
                 # VERY STRONG BOOST: Document name matches query term
                 if term in source:
-                    fuzzy_boost += 3.0
+                    fuzzy_boost += 5.0
                     logger.info(f"📄 Document name match: '{term}' in '{source}'")
                 
                 # Check for exact match in content
@@ -1094,7 +1192,7 @@ def handle_search_action(event):
                         logger.info(f"🔍 Fuzzy match: '{term}' → best_match={best_match:.2f}")
             
             # Adjust semantic score with fuzzy boost (lower score = better)
-            adjusted_score = semantic_score - (fuzzy_boost * 0.25)
+            adjusted_score = semantic_score - (fuzzy_boost * 0.3)
             fuzzy_results.append((doc, adjusted_score, semantic_score))
         
         # Sort by adjusted score
@@ -1113,7 +1211,47 @@ def handle_search_action(event):
         # 4. Select Best Results based on Intent
         final_results = []
         
-        if wants_images and not wants_text:
+        # If specific image number requested, filter to that image only
+        if requested_image_num and image_candidates:
+            logger.info(f"🔢 Filtering for image #{requested_image_num}")
+            numbered_images = []
+            for doc, score in image_candidates:
+                img_num = doc.metadata.get('image_number', 0)
+                source = doc.metadata.get('source', '')
+                
+                if doc_filter:
+                    if img_num == requested_image_num and source == doc_filter:
+                        numbered_images.append((doc, score))
+                        logger.info(f"✅ MATCH: Image #{img_num} from {source}")
+                    elif img_num == requested_image_num:
+                        logger.info(f"❌ SKIP: Image #{img_num} from {source} (wrong document)")
+                else:
+                    if img_num == requested_image_num:
+                        numbered_images.append((doc, score))
+                        logger.info(f"✅ MATCH: Image #{img_num} from {source} (no filter)")
+            
+            if numbered_images:
+                final_results.extend(numbered_images[:1])
+                wants_images = True
+                wants_text = False
+                logger.info(f"🎯 Returning image #{requested_image_num}")
+            else:
+                if doc_filter:
+                    result = f"Image #{requested_image_num} not found in document '{doc_filter}'. The document may not be indexed or the image number may be incorrect."
+                else:
+                    result = f"Image #{requested_image_num} not found."
+                logger.warning(f"⚠️ {result}")
+                return {
+                    "messageVersion": "1.0",
+                    "response": {
+                        "actionGroup": event.get("actionGroup", "LambdaTools"),
+                        "apiPath": "/search",
+                        "httpMethod": "POST",
+                        "httpStatusCode": 200,
+                        "responseBody": {"application/json": {"body": json.dumps({"result": result})}}
+                    }
+                }
+        elif wants_images and not wants_text:
             # PURE IMAGE QUERY
             
             # Apply attribute filtering for images (colors, sizes, etc.)
@@ -1161,7 +1299,19 @@ def handle_search_action(event):
             final_results.sort(key=lambda x: x[1])
         
         format_start = time.time()
-        all_results = [(doc.page_content, doc.metadata.get('source', 'unknown')) for doc, score in final_results]
+        all_results = []
+        for doc, score in final_results:
+            source = doc.metadata.get('source', 'unknown')
+            page = doc.metadata.get('page', '')
+            img_num = doc.metadata.get('image_number', '')
+            
+            # Add image number and page to source for images
+            if doc.metadata.get('type') == 'image' and img_num:
+                source_label = f"{source} (Image #{img_num}, Page {page})"
+            else:
+                source_label = source
+            
+            all_results.append((doc.page_content, source_label))
         logger.info(f"⏱️ SEARCH: Format results took {time.time() - format_start:.3f}s")
         logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={final_results[0][1] if final_results else 'N/A'}")
         logger.info(f"Intent: wants_images={wants_images}, wants_text={wants_text} | Candidates: text={len(text_candidates)}, images={len(image_candidates)} | Final: {len(final_results)}")
@@ -1443,73 +1593,68 @@ def handle_agent_query(event):
         image_start = time.time()
         images = []
         import re
+        import html
         
-        # [OLD CODE REMOVED] Matches strictly formatted IMAGE_URL tags
-        # matches = re.findall(r'IMAGE_URL:([^|\n]+)', answer)
-
-        # [NEW CODE] Robust regex to find any S3 image key pattern in the text
-        # recognized formats: images/folder/file.jpeg, images/file.png, etc.
-        image_path_pattern = r'(images/[\w\-\./]+?\.(?:jpeg|jpg|png))'
-        matches = re.findall(image_path_pattern, answer, re.IGNORECASE)
+        # Extract IMAGE_URL lines (format: IMAGE_URL:path|PAGE:n|SOURCE:name)
+        # Use a more flexible pattern that handles Hebrew filenames and HTML entities
+        image_url_pattern = r'IMAGE_URL:([^|\n]+)\|'
+        matches = re.findall(image_url_pattern, answer)
         
         if matches:
-            logger.info(f"Found {len(matches)} potential images in agent response")
+            logger.info(f"Found {len(matches)} IMAGE_URL markers in agent response")
             s3_client = get_s3_client()
             unique_keys = set()
             
             for s3_key in matches:
-                s3_key = s3_key.strip()
+                # Decode HTML entities (e.g., &quot; -> ")
+                s3_key = html.unescape(s3_key.strip())
                 # Verify it's a valid image key and not a duplicate
-                if s3_key and s3_key not in unique_keys:
+                if s3_key and s3_key not in unique_keys and s3_key.startswith('images/'):
                     unique_keys.add(s3_key)
                     try:
                         url = s3_client.generate_presigned_url(
                             'get_object',
                             Params={'Bucket': BUCKET, 'Key': s3_key},
-                            ExpiresIn=300
+                            ExpiresIn=3600
                         )
                         images.append(url)
                         logger.info(f"Generated presigned URL for: {s3_key}")
                     except Exception as e:
                         logger.error(f"Failed to generate URL for {s3_key}: {e}")
             
-            # [UPDATED CLEANUP LOGIC]
+            # Extract source info from IMAGE_URL lines before removing them
             if images:
-                # 1. Split into lines
-                lines = answer.split('\n')
-                clean_lines = []
-                for line in lines:
-                    # Skip lines that contain the raw image keys we just processed
-                    if any(key in line for key in unique_keys):
-                        continue
-                    
-                    # Skip lines that are just filler conversational text
-                    line_lower = line.strip().lower()
-                    filler_phrases = [
-                        'here are the images',
-                        'i will display these images',
-                        'the search results contain',
-                        'found the following images',
-                        'images for',
-                        'image urls for',
-                        '[system]',
-                    ]
-                    if any(phrase in line_lower for phrase in filler_phrases):
-                        continue
-                        
-                    # If it passed checks, keep the line
-                    if line.strip():
-                         clean_lines.append(line)
+                source_info = []
+                for match in re.finditer(r'IMAGE_URL:([^|]+)\|PAGE:(\d+)\|SOURCE:([^\n]+)', answer):
+                    s3_key, page, source = match.groups()
+                    # Extract image number from s3_key if present
+                    img_num_match = re.search(r'_img(\d+)\.', s3_key)
+                    img_num = int(img_num_match.group(1)) + 1 if img_num_match else ''
+                    if img_num:
+                        source_info.append(f"Image #{img_num} from {source} (Page {page})")
+                    else:
+                        source_info.append(f"Image from {source} (Page {page})")
                 
-                answer = '\n'.join(clean_lines).strip()
+                # Remove IMAGE_URL lines
+                answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer)
                 
-                # FINAL SAFETY CHECK: If we wiped everything out but found images, 
-                # return a standard message so the UI has something to show.
-                if not answer and images:
-                    answer = "Here are the images you asked for:"
-            
-            # Final polish to remove stale newlines
-            answer = re.sub(r'\n{3,}', '\n\n', answer)
+                # Remove filler phrases
+                filler_phrases = [
+                    r'Here are the relevant diagrams from the search results:',
+                    r'Here are the images you asked for:',
+                    r'The search results contain the following images:',
+                ]
+                for phrase in filler_phrases:
+                    answer = re.sub(phrase, '', answer, flags=re.IGNORECASE)
+                
+                answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
+                
+                # Add source information
+                if source_info:
+                    if answer:
+                        answer += "\n\nSource: " + ", ".join(source_info)
+                    else:
+                        answer = "Source: " + ", ".join(source_info)
             
         logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
         
@@ -1603,6 +1748,21 @@ def handle_processing_status(event):
         except Exception as e:
             logger.error(f"Error checking cancellation: {type(e).__name__}")
         
+        # Check for progress updates FIRST (more current than processed marker)
+        try:
+            progress_obj = s3_client.get_object(Bucket=BUCKET, Key=f"progress/{base_name}.json")
+            progress_data = json.loads(progress_obj['Body'].read().decode('utf-8'))
+            logger.info(f"Found progress marker: {progress_data}")
+            return cors_response({
+                "status": progress_data.get("status", "processing"),
+                "progress": progress_data.get("progress", 50),
+                "message": progress_data.get("message", "Processing...")
+            })
+        except s3_client.exceptions.NoSuchKey:
+            logger.info(f"Progress marker not found")
+        except Exception as e:
+            logger.error(f"Error checking progress: {type(e).__name__}")
+        
         # Check if processing is complete
         try:
             logger.info(f"Checking: s3://{BUCKET}/processed/{base_name}.json")
@@ -1619,21 +1779,6 @@ def handle_processing_status(event):
             logger.info(f"Processed marker not found")
         except Exception as e:
             logger.error(f"Error checking processed: {type(e).__name__}")
-        
-        # Check for progress updates from Lambda
-        try:
-            progress_obj = s3_client.get_object(Bucket=BUCKET, Key=f"progress/{base_name}.json")
-            progress_data = json.loads(progress_obj['Body'].read().decode('utf-8'))
-            logger.info(f"Found progress marker: {progress_data}")
-            return cors_response({
-                "status": progress_data.get("status", "processing"),
-                "progress": progress_data.get("progress", 50),
-                "message": progress_data.get("message", "Processing...")
-            })
-        except s3_client.exceptions.NoSuchKey:
-            logger.info(f"Progress marker not found")
-        except Exception as e:
-            logger.error(f"Error checking progress: {type(e).__name__}")
         
         # Check if file exists in uploads (fallback)
         try:
@@ -1671,6 +1816,17 @@ def lambda_handler(event, context):
     correlation_id_var.set(request_id)
     
     logger.info(f"Lambda triggered | RequestId: {request_id} | Event: {json.dumps(event)[:500]}")
+    
+    # Handle async index rebuild
+    if event.get("action") == "rebuild_index":
+        logger.info("Starting async index rebuild")
+        try:
+            rebuild_master_index()
+            logger.info("Async index rebuild completed successfully")
+            return {"statusCode": 200, "body": json.dumps({"status": "rebuild_complete"})}
+        except Exception as e:
+            logger.error(f"Async index rebuild failed: {e}")
+            return {"statusCode": 500, "body": json.dumps({"status": "rebuild_failed", "error": str(e)})}
     
     # Handle warmup ping from EventBridge
     if event.get("source") == "aws.events" and event.get("detail-type") == "Scheduled Event":
@@ -1728,6 +1884,8 @@ def lambda_handler(event, context):
             return handle_list_files_api(event)
         elif path == "/delete-file" and method in ["DELETE", "GET"]:
             return handle_delete_file_api(event)
+        elif path == "/batch-delete" and method == "POST":
+            return handle_batch_delete_api(event)
         elif path == "/cancel-upload" and method == "DELETE":
             return handle_cancel_upload_api(event)
         elif path == "/agent-query" and method == "POST":

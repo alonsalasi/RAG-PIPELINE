@@ -112,6 +112,34 @@ resource "aws_s3_bucket_notification" "rag_documents_notification" {
     filter_suffix       = ".xlsx"
   }
 
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".jpg"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".jpeg"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".png"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "uploads/"
+    filter_suffix       = ".tiff"
+  }
+
   depends_on = [
     aws_lambda_permission.allow_s3_invoke,
     aws_lambda_function.ingestion_worker

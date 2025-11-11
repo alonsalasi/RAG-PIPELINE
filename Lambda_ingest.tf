@@ -6,6 +6,7 @@ resource "null_resource" "build_and_push_ingestion_image" {
     handler_hash         = filemd5("${path.module}/Lambda/lambda_ingest_handler.py")
     worker_hash          = filemd5("${path.module}/Lambda/worker.py")
     semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
+    office_converter_hash = filemd5("${path.module}/Lambda/office_converter.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
     rebuild_trigger      = "2025-02-15-s3client-fix"
   }
@@ -54,6 +55,8 @@ resource "aws_lambda_function" "ingestion_worker" {
   dead_letter_config {
     target_arn = aws_sqs_queue.ingestion_dlq.arn
   }
+  
+  reserved_concurrent_executions = 10
 
   depends_on = [
     null_resource.build_and_push_ingestion_image

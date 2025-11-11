@@ -78,13 +78,61 @@ class ProcessingCancelled(Exception):
     """Exception raised when processing is cancelled by user."""
     pass
 
+def detect_actual_tables(image):
+    """Detect if image contains actual table structures (not just text with | or Hebrew ן)."""
+    import cv2
+    import numpy as np
+    
+    img_array = np.array(image)
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    
+    # Detect horizontal and vertical lines (actual table borders)
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+    
+    horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+    vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+    
+    # Count actual line pixels
+    h_count = cv2.countNonZero(horizontal_lines)
+    v_count = cv2.countNonZero(vertical_lines)
+    
+    # Table must have both horizontal AND vertical lines
+    return h_count > 500 and v_count > 500
+
+def preprocess_for_tables(image):
+    """Enhance image for better table detection."""
+    import cv2
+    import numpy as np
+    
+    img_array = np.array(image)
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    gray = cv2.equalizeHist(gray)
+    gray = cv2.fastNlMeansDenoising(gray, h=10)
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return Image.fromarray(binary)
+
 def enhanced_ocr(page_image, lang='eng+heb+ara'):
-    """Retry OCR with different PSM mode for low-confidence pages."""
+    """Retry OCR with table-optimized settings only if actual table detected."""
     import pytesseract
     
-    # Try PSM 6 (uniform block of text) instead of PSM 3 (auto)
-    ocr_text = pytesseract.image_to_string(page_image, lang=lang, config='--psm 6 --oem 1')
-    ocr_data = pytesseract.image_to_data(page_image, lang=lang, config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
+    # Check if page has actual table structure
+    has_table = detect_actual_tables(page_image)
+    
+    if has_table:
+        # Use table preprocessing and preserve spaces
+        processed_image = preprocess_for_tables(page_image)
+        config = '--psm 6 --oem 1 --preserve-interword-spaces 1'
+        logger.info("Table detected, using table-optimized OCR")
+    else:
+        # Regular text processing without table optimization
+        processed_image = page_image
+        config = '--psm 6 --oem 1'
+        logger.info("No table detected, using standard OCR")
+    
+    ocr_text = pytesseract.image_to_string(processed_image, lang=lang, config=config)
+    ocr_data = pytesseract.image_to_data(processed_image, lang=lang, config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
     
     confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0
@@ -92,21 +140,46 @@ def enhanced_ocr(page_image, lang='eng+heb+ara'):
     return ocr_text, avg_confidence
 
 def extract_images_from_pdf(pdf_path, base_name):
-    """Extract embedded images from PDF pages."""
+    """Extract embedded images from PDF pages, skipping headers/footers and duplicates."""
     from pypdf import PdfReader
     import fitz  # PyMuPDF
+    import hashlib
     
     extracted_images = []
+    seen_hashes = set()
     
     try:
         pdf_document = fitz.open(pdf_path)
+        total_pages = len(pdf_document)
         
-        for page_num in range(len(pdf_document)):
+        for page_num in range(total_pages):
             page = pdf_document[page_num]
+            page_height = page.rect.height
             image_list = page.get_images(full=True)
             
             for img_index, img in enumerate(image_list):
                 xref = img[0]
+                
+                # Get image position to detect headers/footers
+                try:
+                    img_rects = [item for item in page.get_image_rects(xref)]
+                    if img_rects:
+                        img_rect = img_rects[0]
+                        img_y = img_rect.y0
+                        img_height = img_rect.height
+                        
+                        # Skip ONLY small images in header/footer zones
+                        # Large images (>15% of page height) are kept even if they start in header/footer
+                        is_in_header = img_y < page_height * 0.05
+                        is_in_footer = img_y > page_height * 0.95
+                        is_large_image = img_height > page_height * 0.15
+                        
+                        if (is_in_header or is_in_footer) and not is_large_image:
+                            logger.info(f"Skipping small header/footer image on page {page_num + 1}")
+                            continue
+                except:
+                    pass
+                
                 base_image = pdf_document.extract_image(xref)
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
@@ -114,6 +187,13 @@ def extract_images_from_pdf(pdf_path, base_name):
                 # Skip very small images (likely icons/logos)
                 if len(image_bytes) < 10000:  # 10KB minimum
                     continue
+                
+                # Check for duplicate images using hash
+                img_hash = hashlib.md5(image_bytes).hexdigest()
+                if img_hash in seen_hashes:
+                    logger.info(f"Skipping duplicate image on page {page_num + 1}")
+                    continue
+                seen_hashes.add(img_hash)
                 
                 # Convert to JPEG if needed
                 if image_ext != "jpeg":
@@ -134,7 +214,7 @@ def extract_images_from_pdf(pdf_path, base_name):
                 })
         
         pdf_document.close()
-        logger.info(f"Extracted {len(extracted_images)} embedded images from PDF")
+        logger.info(f"Extracted {len(extracted_images)} unique images from PDF (skipped duplicates and headers/footers)")
         return extracted_images
         
     except Exception as e:
@@ -240,6 +320,7 @@ def process_message(record):
             # Only skip if source file hasn't been modified since processing
             if source_modified <= processed_time:
                 logger.info(f"File already processed and not modified, skipping: {base_name}")
+                update_progress(base_name, 100, "Already processed - ready to query!", "completed")
                 return
             else:
                 logger.info(f"File modified since last processing, reprocessing: {base_name}")
@@ -285,7 +366,58 @@ def process_message(record):
             image_metadata = []
             file_ext = s3_key.lower().split('.')[-1]
             
-            if file_ext == 'pptx':
+            if file_ext in ['jpg', 'jpeg', 'png', 'tiff']:
+                logger.info(f"Processing image file: {file_ext}")
+                update_progress(base_name, 20, "Analyzing image...")
+                
+                # Read image file
+                with open(local_path, 'rb') as f:
+                    image_data = f.read()
+                
+                # Analyze image
+                try:
+                    analysis = analyze_image(image_data)
+                    desc_parts = [f"Image file: {base_name}"]
+                    if analysis['objects']:
+                        desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                    if analysis['colors']:
+                        desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
+                    description = '. '.join(desc_parts)
+                except:
+                    description = f"Image file: {base_name}"
+                
+                # OCR on image
+                try:
+                    import pytesseract
+                    img_pil = Image.open(local_path)
+                    ocr_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
+                    if ocr_text.strip():
+                        full_text = f"Image text content:\n{ocr_text}"
+                        description += f"\nText: {ocr_text.strip()[:100]}"
+                except:
+                    full_text = f"Image: {base_name}"
+                
+                # Save image to S3
+                img_name = f"{base_name}.{file_ext}"
+                img_key = f"images/{base_name}/{img_name}"
+                s3_client.put_object(
+                    Bucket=BUCKET,
+                    Key=img_key,
+                    Body=image_data,
+                    ContentType=f'image/{"jpeg" if file_ext in ["jpg", "jpeg"] else file_ext}'
+                )
+                
+                image_metadata.append({
+                    'page': 1,
+                    'image_name': img_name,
+                    's3_key': img_key,
+                    'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                    'description': description
+                })
+                
+                logger.info(f"Image processing complete | Description: {description[:100]}")
+            
+            elif file_ext == 'pptx':
                 logger.info("Processing PowerPoint file")
                 update_progress(base_name, 20, "Extracting PowerPoint content...")
                 full_text, extracted_images = extract_pptx(local_path)
@@ -329,8 +461,8 @@ def process_message(record):
                 full_text, extracted_images = extract_docx(local_path)
                 
                 # Save extracted images
-                for img_info in extracted_images:
-                    img_name = f"{base_name}_img{img_info['index']}.{img_info['ext']}"
+                for img_idx, img_info in enumerate(extracted_images):
+                    img_name = f"{base_name}_img{img_idx}.{img_info['ext']}"
                     img_key = f"images/{base_name}/{img_name}"
                     
                     try:
@@ -402,6 +534,7 @@ def process_message(record):
                                 # Update progress for each page
                                 page_progress = 10 + int(((page_num - 1) / total_pdf_pages) * 70)
                                 update_progress(base_name, page_progress, f"OCR processing page {page_num}/{total_pdf_pages}...")
+                                logger.info(f"Progress update: {page_progress}% - Page {page_num}/{total_pdf_pages}")
                                 
                                 # Check cancellation every 5 pages
                                 if page_num % 5 == 0:
@@ -409,8 +542,13 @@ def process_message(record):
                                 
                                 try:
                                     import pytesseract
-                                    ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config='--psm 3 --oem 1')
-                                    ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
+                                    # Detect if page has actual table
+                                    has_table = detect_actual_tables(page_image)
+                                    config = '--psm 6 --oem 1 --preserve-interword-spaces 1' if has_table else '--psm 6 --oem 1'
+                                    logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
+                                    
+                                    ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config=config)
+                                    ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
                                     confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                                     
                                     avg_confidence = 0
@@ -537,21 +675,27 @@ def process_message(record):
                         for page_num, page_image in enumerate(all_page_images, 1):
                             ocr_progress = 30 + int((page_num / total_pages) * 40)
                             update_progress(base_name, ocr_progress, f"OCR processing page {page_num}/{total_pages}...")
+                            logger.info(f"Progress update: {ocr_progress}% - Page {page_num}/{total_pages}")
                             # Check cancellation every 5 pages
                             if page_num % 5 == 0:
                                 check_cancelled(base_name)
                             
-                            # Tesseract OCR (FREE)
+                            # Tesseract OCR with table detection
                             logger.info(f"Page {page_num}: Tesseract OCR")
                             try:
                                 import pytesseract
+                                # Detect if page has actual table
+                                has_table = detect_actual_tables(page_image)
+                                config = '--psm 6 --oem 1 --preserve-interword-spaces 1' if has_table else '--psm 6 --oem 1'
+                                logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
+                                
                                 ocr_text = pytesseract.image_to_string(
                                     page_image, 
                                     lang='eng+heb+ara', 
-                                    config='--psm 3 --oem 1'
+                                    config=config
                                 )
                                 
-                                ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', output_type=pytesseract.Output.DICT)
+                                ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
                                 confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                                 
                                 avg_confidence = 0
@@ -670,19 +814,16 @@ def process_message(record):
             
             # Add image descriptions as searchable documents
             if image_metadata:
-                for img_meta in image_metadata:
-                    # Use the AI-generated description as the searchable content
+                for idx, img_meta in enumerate(image_metadata, 1):
                     description = img_meta.get('description', 'Image content')
                     
-                    # Extract color information for better search
                     color_keywords = []
                     if 'PRIMARY_COLOR:' in description:
                         primary_color = description.split('PRIMARY_COLOR:')[1].split('\n')[0].strip()
                         if primary_color and primary_color.lower() != 'none':
                             color_keywords.append(primary_color.lower())
                     
-                    # Add color keywords and IMAGE_URL marker for agent to return
-                    searchable_content = f"Document: {doc_name}\nImage on page {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
+                    searchable_content = f"Document: {doc_name}\nImage #{idx} (Image number {idx}) on page {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
                     if color_keywords:
                         searchable_content += f"\nColor tags: {' '.join(color_keywords)}"
                     
@@ -692,13 +833,14 @@ def process_message(record):
                             "source": os.path.basename(s3_key),
                             "type": "image",
                             "page": img_meta['page'],
+                            "image_number": idx,
                             "image_url": img_meta['url'],
                             "s3_key": img_meta['s3_key'],
                             "description": description
                         }
                     )
                     docs.append(img_doc)
-                    logger.info(f"Added image document: {description[:50]}...")
+                    logger.info(f"Added image #{idx}: {description[:50]}...")
             
             logger.info(f"Document preparation complete | Total docs: {len(docs)} | Images: {len(image_metadata)}")
 
@@ -802,7 +944,10 @@ def process_message(record):
                 logger.error(f"Master index upload failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
                 raise
 
-            # Mark as processed
+            # Mark as processed - add image_number to each image in metadata
+            for idx, img_meta in enumerate(image_metadata, 1):
+                img_meta['image_number'] = idx
+            
             marker_key = f"processed/{base_name}.json"
             marker_content = {
                 "source_file": s3_key,
