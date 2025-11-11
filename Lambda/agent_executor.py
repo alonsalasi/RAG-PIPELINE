@@ -998,34 +998,39 @@ def handle_search_action(event):
         
         # Question words = user wants information (TEXT)
         question_words = ['what', 'how', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom']
-        # Comparison/analysis = user wants details (TEXT)
-        analysis_words = ['compare', 'difference', 'versus', 'vs', 'between', 'analyze', 'explain', 'describe', 'tell', 'list', 'summarize']
-        # Visual commands = user wants to see (IMAGES)
-        visual_commands = ['show me', 'display', 'picture of', 'photo of', 'image of', 'look at', 'see the', 'view the']
+        # Comparison/analysis = user wants details (TEXT ONLY)
+        analysis_words = ['compare', 'difference', 'versus', 'vs', 'between', 'analyze', 'explain', 'describe', 'list', 'summarize']
+        # Visual commands = user wants to see (IMAGES) - VERY STRONG
+        visual_commands = ['show me', 'display', 'picture of', 'photo of', 'image of', 'look at', 'see the', 'view the', 'let me see']
         
         # Count intent signals
         text_signals = 0
         image_signals = 0
         
+        # Check for visual commands FIRST (highest priority)
+        if any(cmd in original_lower for cmd in visual_commands):
+            image_signals += 10
+        
         # Check for question words at start (strong text signal)
         first_word = query_lower.split()[0] if query_lower.split() else ''
         if first_word in question_words:
-            text_signals += 2
+            text_signals += 3
         
-        # Check for analysis/comparison words
+        # Check for analysis/comparison words (VERY STRONG text signal)
         if any(word in original_lower for word in analysis_words):
-            text_signals += 2
-        
-        # Check for visual commands
-        if any(cmd in original_lower for cmd in visual_commands):
-            image_signals += 2
+            text_signals += 5
         
         # Check for standalone visual words (weaker signal)
         if any(word in original_lower.split() for word in ['picture', 'photo', 'image', 'drawing']):
             image_signals += 1
         
         # Decision based on signal strength
-        if text_signals > image_signals:
+        if image_signals >= 10:
+            # Strong visual command detected - IMAGES ONLY
+            wants_images = True
+            wants_text = False
+            logger.info(f"🖼️ Intent: IMAGES (signals: text={text_signals}, image={image_signals})")
+        elif text_signals > image_signals:
             wants_text = True
             wants_images = False
             logger.info(f"📄 Intent: TEXT (signals: text={text_signals}, image={image_signals})")
@@ -1041,8 +1046,8 @@ def handle_search_action(event):
         
         # 2. Wide Retrieval with fuzzy matching
         vector_start = time.time()
-        raw_results = master_index.similarity_search_with_score(query, k=60)
-        logger.info(f"⏱️ SEARCH: Vector search (k=60) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
+        raw_results = master_index.similarity_search_with_score(query, k=100)
+        logger.info(f"⏱️ SEARCH: Vector search (k=100) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
         
         # Apply fuzzy matching to boost relevant results
         from difflib import SequenceMatcher
@@ -1052,30 +1057,44 @@ def handle_search_action(event):
             return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
         
         # Extract key terms from query (ignore stop words)
-        stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their'}
+        stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their', 'about', 'tell', 'what', 'how', 'why', 'when', 'where'}
         query_terms = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
         
-        # Re-score results with fuzzy matching boost
+        # Boost results where document name matches query terms
+        doc_name_boost = 0
+        for term in query_terms:
+            if term in ['project', 'chapter', 'section', 'document']:
+                continue  # Skip generic terms
+            # Check if term appears in any document metadata
+            doc_name_boost = 0.3  # Will apply per-result below
+        
+        # Re-score results with fuzzy matching boost and document name matching
         fuzzy_results = []
         for doc, semantic_score in raw_results:
             content_lower = doc.page_content.lower()
+            source = doc.metadata.get('source', '').lower()
             
             # Calculate fuzzy match score for each query term
             fuzzy_boost = 0
             for term in query_terms:
-                # Check for exact match first
+                # VERY STRONG BOOST: Document name matches query term
+                if term in source:
+                    fuzzy_boost += 3.0
+                    logger.info(f"📄 Document name match: '{term}' in '{source}'")
+                
+                # Check for exact match in content
                 if term in content_lower:
                     fuzzy_boost += 1.0
                 else:
-                    # Check for fuzzy match (e.g., "chery" matches "cherry")
+                    # Check for fuzzy match for typos and variations
                     words_in_content = content_lower.split()
                     best_match = max([fuzzy_score(term, word) for word in words_in_content] + [0])
-                    if best_match > 0.8:  # 80% similarity threshold
+                    if best_match > 0.75:  # 75% similarity threshold
                         fuzzy_boost += best_match
                         logger.info(f"🔍 Fuzzy match: '{term}' → best_match={best_match:.2f}")
             
             # Adjust semantic score with fuzzy boost (lower score = better)
-            adjusted_score = semantic_score - (fuzzy_boost * 0.2)
+            adjusted_score = semantic_score - (fuzzy_boost * 0.25)
             fuzzy_results.append((doc, adjusted_score, semantic_score))
         
         # Sort by adjusted score
@@ -1131,8 +1150,9 @@ def handle_search_action(event):
             final_results.extend(scored_images[:10])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - return more text results
-            final_results.extend(text_candidates[:20])
+            # PURE TEXT QUERY - return more text results for comprehensive coverage
+            final_results.extend(text_candidates[:30])
+            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:30])} text chunks, skipped {len(image_candidates)} images")
             
         else:
             # HYBRID QUERY - balanced mix
@@ -1162,12 +1182,16 @@ def handle_search_action(event):
             # else:
             #    ... returned text ...
             
-            # [NEW FIXED CODE] Always return full content so the Agent can see both text AND image links
+            # Return results based on intent
             result_parts = []
             for content, source in all_results:
-                # Ensure we don't accidentally break the format the agent expects
                 clean_content = content.strip()
-                result_parts.append(f"[{source}] {clean_content}")
+                # For TEXT-ONLY queries, strip out IMAGE_URL lines
+                if wants_text and not wants_images:
+                    if 'IMAGE_URL:' not in clean_content:
+                        result_parts.append(f"[{source}] {clean_content}")
+                else:
+                    result_parts.append(f"[{source}] {clean_content}")
                 
             result = "\n\n".join(result_parts) if result_parts else "No relevant information found."
         
@@ -1193,12 +1217,11 @@ def handle_search_action(event):
         import traceback
         error_msg = str(e)
         stack_trace = traceback.format_exc()
-        logger.error(f"Search failed: {type(e).__name__} | Details: {error_msg[:200]}")
-        logger.error(f"Stack trace: {stack_trace[:500]}")
+        logger.error(f"❌ SEARCH FAILED: {type(e).__name__}")
+        logger.error(f"Error details: {error_msg}")
+        logger.error(f"Stack trace: {stack_trace}")
         
-        # Return a generic success response with error details for debugging
-        result_msg = f"Search completed but encountered an issue. Please try rephrasing your question."
-        
+        # Return error in proper format
         return {
             "messageVersion": "1.0",
             "response": {
@@ -1208,105 +1231,109 @@ def handle_search_action(event):
                 "httpStatusCode": 200,
                 "responseBody": {
                     "application/json": {
-                        "body": json.dumps({"result": result_msg})
+                        "body": json.dumps({"result": f"I encountered an error while searching. Please try again. Error: {type(e).__name__}"})
                     }
                 }
             }
         }
 
-def handle_send_email_action(event):
-    """Send email via SES - called by Bedrock Agent."""
-    try:
-        request_body = event.get("requestBody", {})
-        content = request_body.get("content", {})
-        app_json = content.get("application/json", {})
-        properties = app_json.get("properties", [])
-        
-        to_email = ""
-        subject = ""
-        body = ""
-        
-        for prop in properties:
-            name = prop.get("name", "")
-            value = prop.get("value", "")
-            if name == "to_email":
-                to_email = value
-            elif name == "subject":
-                subject = value
-            elif name == "body":
-                body = value
-        
-        logger.info(f"Sending email to: {sanitize_for_logging(to_email)}")
-        
-        if not to_email or not subject or not body:
-            return {
-                "messageVersion": "1.0",
-                "response": {
-                    "actionGroup": event.get("actionGroup", "LambdaTools"),
-                    "apiPath": "/send-email",
-                    "httpMethod": "POST",
-                    "httpStatusCode": 400,
-                    "responseBody": {
-                        "application/json": {
-                            "body": json.dumps({"error": "Missing required fields: to_email, subject, body"})
-                        }
-                    }
-                }
-            }
-        
-        # Send email via SES
-        region = os.getenv("AWS_REGION")
-        if not region:
-            raise ValueError("AWS_REGION must be configured")
-        
-        sender_email = os.getenv("SES_SENDER_EMAIL")
-        if not sender_email:
-            raise ValueError("SES_SENDER_EMAIL must be configured")
-        
-        ses = boto3.client('ses', region_name=region)
-        
-        response = ses.send_email(
-            Source=sender_email,
-            Destination={'ToAddresses': [to_email]},
-            Message={
-                'Subject': {'Data': subject, 'Charset': 'UTF-8'},
-                'Body': {'Text': {'Data': body, 'Charset': 'UTF-8'}}
-            }
-        )
-        
-        logger.info(f" Email sent successfully. MessageId: {response['MessageId']}")
-        
-        return {
-            "messageVersion": "1.0",
-            "response": {
-                "actionGroup": event.get("actionGroup", "LambdaTools"),
-                "apiPath": "/send-email",
-                "httpMethod": "POST",
-                "httpStatusCode": 200,
-                "responseBody": {
-                    "application/json": {
-                        "body": json.dumps({"result": f"Email sent successfully to {to_email}"})
-                    }
-                }
-            }
-        }
-    
-    except Exception as e:
-        logger.error(f"Email send failed: {sanitize_for_logging(str(e))}")
-        return {
-            "messageVersion": "1.0",
-            "response": {
-                "actionGroup": event.get("actionGroup", "LambdaTools"),
-                "apiPath": "/send-email",
-                "httpMethod": "POST",
-                "httpStatusCode": 500,
-                "responseBody": {
-                    "application/json": {
-                        "body": json.dumps({"error": "Email sending failed"})
-                    }
-                }
-            }
-        }
+# SES Email Action - DISABLED to save $64/month on NAT Gateway
+# SES requires internet access (no VPC endpoint), which needs NAT Gateway
+# Uncomment this function and restore NAT Gateway if email functionality is needed
+
+# def handle_send_email_action(event):
+#     """Send email via SES - called by Bedrock Agent."""
+#     try:
+#         request_body = event.get("requestBody", {})
+#         content = request_body.get("content", {})
+#         app_json = content.get("application/json", {})
+#         properties = app_json.get("properties", [])
+#         
+#         to_email = ""
+#         subject = ""
+#         body = ""
+#         
+#         for prop in properties:
+#             name = prop.get("name", "")
+#             value = prop.get("value", "")
+#             if name == "to_email":
+#                 to_email = value
+#             elif name == "subject":
+#                 subject = value
+#             elif name == "body":
+#                 body = value
+#         
+#         logger.info(f"Sending email to: {sanitize_for_logging(to_email)}")
+#         
+#         if not to_email or not subject or not body:
+#             return {
+#                 "messageVersion": "1.0",
+#                 "response": {
+#                     "actionGroup": event.get("actionGroup", "LambdaTools"),
+#                     "apiPath": "/send-email",
+#                     "httpMethod": "POST",
+#                     "httpStatusCode": 400,
+#                     "responseBody": {
+#                         "application/json": {
+#                             "body": json.dumps({"error": "Missing required fields: to_email, subject, body"})
+#                         }
+#                     }
+#                 }
+#             }
+#         
+#         # Send email via SES
+#         region = os.getenv("AWS_REGION")
+#         if not region:
+#             raise ValueError("AWS_REGION must be configured")
+#         
+#         sender_email = os.getenv("SES_SENDER_EMAIL")
+#         if not sender_email:
+#             raise ValueError("SES_SENDER_EMAIL must be configured")
+#         
+#         ses = boto3.client('ses', region_name=region)
+#         
+#         response = ses.send_email(
+#             Source=sender_email,
+#             Destination={'ToAddresses': [to_email]},
+#             Message={
+#                 'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+#                 'Body': {'Text': {'Data': body, 'Charset': 'UTF-8'}}
+#             }
+#         )
+#         
+#         logger.info(f" Email sent successfully. MessageId: {response['MessageId']}")
+#         
+#         return {
+#             "messageVersion": "1.0",
+#             "response": {
+#                 "actionGroup": event.get("actionGroup", "LambdaTools"),
+#                 "apiPath": "/send-email",
+#                 "httpMethod": "POST",
+#                 "httpStatusCode": 200,
+#                 "responseBody": {
+#                     "application/json": {
+#                         "body": json.dumps({"result": f"Email sent successfully to {to_email}"})
+#                     }
+#                 }
+#             }
+#         }
+#     
+#     except Exception as e:
+#         logger.error(f"Email send failed: {sanitize_for_logging(str(e))}")
+#         return {
+#             "messageVersion": "1.0",
+#             "response": {
+#                 "actionGroup": event.get("actionGroup", "LambdaTools"),
+#                 "apiPath": "/send-email",
+#                 "httpMethod": "POST",
+#                 "httpStatusCode": 500,
+#                 "responseBody": {
+#                     "application/json": {
+#                         "body": json.dumps({"error": "Email sending failed"})
+#                     }
+#                 }
+#             }
+#         }
 
 
 
@@ -1656,8 +1683,8 @@ def lambda_handler(event, context):
         logger.info(f"Bedrock Agent action | Path: {api_path}")
         if api_path == "/search":
             return handle_search_action(event)
-        elif api_path == "/send-email":
-            return handle_send_email_action(event)
+        # elif api_path == "/send-email":  # DISABLED - SES email action commented out
+        #     return handle_send_email_action(event)
         else:
             return {
                 "messageVersion": "1.0",

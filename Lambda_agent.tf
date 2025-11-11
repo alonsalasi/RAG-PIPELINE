@@ -9,7 +9,7 @@ resource "null_resource" "build_and_push_agent_image" {
     requirements_hash = filemd5("${path.module}/Lambda/agent_requirements.txt")
     source_code_hash  = filemd5("${path.module}/Lambda/agent_executor.py")
     repo_url          = aws_ecr_repository.agent_lambda_repo.repository_url
-    rebuild_trigger   = "2025-01-15-profile-fix"
+    rebuild_trigger   = "2025-02-15-profile-fix"
   }
 
   provisioner "local-exec" {

@@ -261,12 +261,12 @@ resource "aws_iam_policy" "lambda_agent_policy" {
         Action = ["sqs:SendMessage"],
         Resource = "*"
       },
-      # SES email sending
-      {
-        Effect = "Allow",
-        Action = ["ses:SendEmail", "ses:SendRawEmail"],
-        Resource = "*"
-      }
+      # SES email sending - DISABLED (requires NAT Gateway)
+      # {
+      #   Effect = "Allow",
+      #   Action = ["ses:SendEmail", "ses:SendRawEmail"],
+      #   Resource = "*"
+      # }
     ]
   })
 }
