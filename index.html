@@ -8,10 +8,12 @@
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
   <style>
     :root { --primary-color: #007bff; --secondary-color: #6c757d; --bg-light: #f8f9fa; --bg-white: #ffffff; --border-color: #dee2e6; --text-dark: #343a40; --text-light: #6c757d; --error-color: #dc3545; }
-    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; margin:0; padding:0; background-color:var(--bg-light); height:100vh; color:var(--text-dark); overflow:hidden;}
-    body.logged-in { display:flex; }
-    .sidebar { width:320px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; flex-shrink:0; gap:20px;}
-    .container { flex-grow:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light);}
+    * { box-sizing: border-box; margin:0; padding:0; }
+    html, body { margin:0 !important; padding:0 !important; height:100vh; width:100vw; overflow:hidden; }
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; background-color:var(--bg-light); color:var(--text-dark); }
+    body.logged-in { display:flex; flex-direction:row; height:100vh; width:100vw; overflow:hidden; }
+    .sidebar { width:320px; min-width:320px; max-width:320px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; gap:20px; height:100vh; flex-shrink:0; }
+    .container { flex:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light); height:100vh; min-height:0; min-width:0; }
     .sidebar h3 { margin:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
     .upload-section { background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:12px; padding:20px; box-shadow:0 4px 6px rgba(0,0,0,.1);}
     .upload-section h3 { color:white; border:none; margin-bottom:15px; font-size:1em;}
@@ -45,7 +47,7 @@
     .user-info { font-size:0.8em; display:flex; gap:10px; align-items:center;}
     .logout-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em;}
     .logout-btn:hover { background:rgba(255,255,255,0.3);}
-    .chat-log { flex-grow:1; padding:20px; overflow-y:auto; background-color:#fdfdfd;}
+    .chat-log { flex:1; min-height:0; padding:20px; overflow-y:auto; background-color:#fdfdfd; height:0; }
     .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5;}
     .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
     .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px;}
@@ -73,10 +75,11 @@
     .login-box button:hover { background:#0056b3;}
     .login-box button:disabled { background:#ccc; cursor:not-allowed;}
     .error-msg { color:var(--error-color); font-size:0.9em; margin-top:15px; text-align:center; padding:10px; background:#fff5f5; border-radius:6px; border:1px solid #ffdddd;}
-    #app { display:none;}
+    #app { display:none; height:100vh; width:100vw; overflow:hidden; }
+    #app[style*="display: flex"] { display:flex !important; flex-direction:row; }
   </style>
 </head>
-<body>
+<body style="margin:0!important;padding:0!important;">
 
 <div id="login-screen">
   <div class="login-box">
@@ -492,6 +495,17 @@
   function getAuthHeaders() {
     return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
   }
+  
+  function handleAuthError(response) {
+    if (response.status === 401) {
+      alert('Your session has expired. Please login again.');
+      if (cognitoUser) cognitoUser.signOut();
+      sessionStorage.removeItem('sessionCreatedTime');
+      location.reload();
+      return true;
+    }
+    return false;
+  }
 
   function appendMessage(role, content, sources=null, isError=false, images=null){
     const div=document.createElement('div');
@@ -627,6 +641,8 @@
         headers: getAuthHeaders(),
         body: JSON.stringify({query, sessionId})
       });
+      
+      if(handleAuthError(res)) return;
       
       if(!res.ok) {
         CHAT_LOG.removeChild(responseDiv);
@@ -790,11 +806,15 @@
             if (!confirm(`Delete ${clean}?`)) return;
             deleteBtn.disabled = true;
             deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+            console.log('Deleting file:', fullName);
             try {
-              const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`, {
+              const url = `${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`;
+              console.log('DELETE URL:', url);
+              const res = await fetch(url, {
                 method: 'DELETE',
                 headers: getAuthHeaders()
               });
+              console.log('DELETE response status:', res.status);
               
               // Handle 503 timeout - check if file was actually deleted
               if (res.status === 503) {
@@ -818,9 +838,12 @@
               }
               
               const data = await res.json();
+              console.log('DELETE response data:', data);
               if (res.ok && data.success) {
                 deleteBtn.innerHTML = '✓';
                 deleteBtn.style.color = '#28a745';
+                selectedFiles.delete(fullName);
+                updateDeleteButton();
                 setTimeout(() => fetchUploadedFiles(), 500);
               } else {
                 console.error('Delete failed:', data);
@@ -888,7 +911,7 @@
     const maxAttempts = 480;
     const pollInterval = 1500; // Poll faster (1.5s) for more responsive updates
     let lastProgressUpdate = Date.now();
-    let lastProgress = 0;
+    let lastProgress = 60; // Start from 60 (after "Waiting for processor")
     const stuckThreshold = 120000; // 2 minutes without progress = stuck
     
     for (let i = 0; i < maxAttempts; i++) {
@@ -952,7 +975,7 @@
             }
             updateProgress(50, 'Starting document processor...');
           } else if (status === 'processing') {
-            const currentProgress = serverProgress || 50;
+            const currentProgress = Math.max(serverProgress || 50, lastProgress);
             const currentMessage = message || 'Processing document...';
             console.log(`[Poll ${i}] Processing - ${currentProgress}% - ${currentMessage}`);
             
@@ -965,9 +988,8 @@
               if (item) {
                 item.querySelector('.progress-status').style.color = '#ff9800';
               }
-            } else {
-              updateProgress(currentProgress, currentMessage);
             }
+            updateProgress(currentProgress, currentMessage);
           } else {
             const fallbackProgress = 50 + Math.min(45, (i / maxAttempts) * 45);
             updateProgress(fallbackProgress, message || `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
@@ -1128,7 +1150,7 @@
             throw new Error('Cancelled');
           }
           
-          updateProgress(50, 'Waiting for processor to start...');
+          updateProgress(60, 'Waiting for processor to start...');
           console.log(`[${file.name}] Waiting 5 seconds before polling...`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           console.log(`[${file.name}] Starting to poll for processing status...`);

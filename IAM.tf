@@ -235,7 +235,10 @@ resource "aws_iam_policy" "lambda_agent_policy" {
       {
         Effect = "Allow",
         Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-        Resource = "*"
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:*:inference-profile/*"
+        ]
       },
       # KMS for encryption
       {
@@ -345,7 +348,10 @@ resource "aws_iam_policy" "bedrock_agent_policy" {
           "bedrock:GetInferenceProfile",
           "bedrock:ListInferenceProfiles"
         ],
-        Resource = "*"
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:*:inference-profile/*"
+        ]
       },
       
       # Guardrail access

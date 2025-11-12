@@ -95,12 +95,56 @@ def detect_objects(image_bytes, model_path='/opt/models', confidence_threshold=0
         logger.warning(f"Object detection failed: {e}")
         return []
 
+def detect_diagram_type(image_bytes):
+    """Detect if image is a diagram/architecture and what type."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img_array = np.array(img.convert('RGB'))
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Detect edges and shapes
+        edges = cv2.Canny(gray, 50, 150)
+        edge_density = np.count_nonzero(edges) / edges.size
+        
+        # Detect rectangles (boxes in diagrams)
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        rectangles = sum(1 for cnt in contours if len(cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)) == 4)
+        
+        # Detect lines (connections in diagrams)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
+        line_count = len(lines) if lines is not None else 0
+        
+        # LOWERED THRESHOLDS for better detection
+        # Classify diagram type
+        if rectangles > 3 and line_count > 5:  # Was: rectangles > 5 and line_count > 10
+            if rectangles > 10:  # Was: > 15
+                return "architecture diagram"
+            return "system diagram"
+        elif edge_density > 0.10 and rectangles > 2:  # Was: > 0.15 and > 3
+            return "flowchart"
+        elif line_count > 10:  # Was: > 20
+            return "network diagram"
+        elif rectangles > 2 or line_count > 3:  # NEW: catch any technical diagram
+            return "technical diagram"
+        
+        return None
+    except:
+        return None
+
 def analyze_image(image_bytes, model_path='/opt/models'):
-    """Analyze image for colors and objects."""
+    """Analyze image for colors, objects, and diagram type."""
     colors = get_dominant_colors(image_bytes)
-    objects = detect_objects(image_bytes, model_path)
+    diagram_type = detect_diagram_type(image_bytes)
+    
+    # Only run object detection if NOT a diagram (avoid false positives)
+    objects = [] if diagram_type else detect_objects(image_bytes, model_path)
     
     description_parts = []
+    if diagram_type:
+        description_parts.append(f"Type: {diagram_type}")
+        # Add searchable keywords for all diagrams
+        if 'architecture' in diagram_type or 'system' in diagram_type or 'diagram' in diagram_type:
+            description_parts.append("Keywords: architecture, system design, cloud architecture, infrastructure")
     if objects:
         description_parts.append(f"Objects: {', '.join(objects)}")
     if colors:
@@ -109,5 +153,6 @@ def analyze_image(image_bytes, model_path='/opt/models'):
     return {
         'colors': colors,
         'objects': objects,
+        'diagram_type': diagram_type,
         'description': '. '.join(description_parts) if description_parts else 'Image content'
     }

@@ -7,8 +7,9 @@ resource "null_resource" "build_and_push_ingestion_image" {
     worker_hash          = filemd5("${path.module}/Lambda/worker.py")
     semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
     office_converter_hash = filemd5("${path.module}/Lambda/office_converter.py")
+    image_analysis_hash  = filemd5("${path.module}/Lambda/image_analysis.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger      = "2025-02-15-s3client-fix"
+    rebuild_trigger      = "2025-03-15-s3client-fix"
   }
   
   provisioner "local-exec" {

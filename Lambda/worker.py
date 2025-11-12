@@ -299,9 +299,13 @@ def process_message(record):
             return
 
         logger.info(f"Processing started | Bucket: {s3_bucket} | Key: {s3_key}")
-        # Sanitize base_name
-        filename = os.path.basename(s3_key)
-        base_name = os.path.splitext(filename)[0]
+        # Sanitize base_name - use string split to preserve Unicode
+        filename = s3_key.split('/')[-1]
+        # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
+        if '.' in filename:
+            base_name = '.'.join(filename.split('.')[:-1])
+        else:
+            base_name = filename
         # Remove any remaining path separators
         base_name = base_name.replace('/', '_').replace('\\', '_')
         logger.info(f"File info | Filename: {filename} | BaseName: {base_name}")
@@ -333,9 +337,10 @@ def process_message(record):
         check_cancelled(base_name)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Secure filename handling to prevent path traversal
+            # Secure filename handling to prevent path traversal while preserving Unicode
             safe_filename = os.path.basename(s3_key)
-            safe_filename = ''.join(c for c in safe_filename if c.isalnum() or c in '._-')
+            # Remove only dangerous characters, keep Unicode (Hebrew, Arabic, etc.)
+            safe_filename = ''.join(c for c in safe_filename if c not in ['/', '\\', '\0', ':', '*', '?', '"', '<', '>', '|'])
             if not safe_filename or safe_filename.startswith('.') or len(safe_filename) > 255:
                 safe_filename = 'document.pdf'
             
@@ -460,9 +465,9 @@ def process_message(record):
                 update_progress(base_name, 20, "Extracting Word document content...")
                 full_text, extracted_images = extract_docx(local_path)
                 
-                # Save extracted images
-                for img_idx, img_info in enumerate(extracted_images):
-                    img_name = f"{base_name}_img{img_idx}.{img_info['ext']}"
+                # Save extracted images (no page numbers for DOCX)
+                for img_idx, img_info in enumerate(extracted_images, 1):
+                    img_name = f"{base_name}_img{img_idx-1}.{img_info['ext']}"
                     img_key = f"images/{base_name}/{img_name}"
                     
                     try:
@@ -484,7 +489,7 @@ def process_message(record):
                     )
                     
                     image_metadata.append({
-                        'page': 1,
+                        'page': None,
                         'image_name': img_name,
                         's3_key': img_key,
                         'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
@@ -801,7 +806,7 @@ def process_message(record):
                     doc = Document(
                         page_content=f"Document: {doc_name}\n{chunk}",
                         metadata={
-                            "source": os.path.basename(s3_key),
+                            "source": base_name,
                             "chunk_id": i,
                             "total_chunks": len(chunks),
                             "has_images": len(image_metadata) > 0,
@@ -823,14 +828,19 @@ def process_message(record):
                         if primary_color and primary_color.lower() != 'none':
                             color_keywords.append(primary_color.lower())
                     
-                    searchable_content = f"Document: {doc_name}\nImage #{idx} (Image number {idx}) on page {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
+                    # Make image number VERY prominent for better search matching
+                    if img_meta['page'] is not None:
+                        searchable_content = f"Document: {doc_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\nPage {img_meta['page']}: {description}\nIMAGE_URL:{img_meta['s3_key']}|PAGE:{img_meta['page']}|SOURCE:{doc_name}"
+                    else:
+                        searchable_content = f"Document: {doc_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\n{description}\nIMAGE_URL:{img_meta['s3_key']}|SOURCE:{doc_name}"
+                    
                     if color_keywords:
                         searchable_content += f"\nColor tags: {' '.join(color_keywords)}"
                     
                     img_doc = Document(
                         page_content=searchable_content,
                         metadata={
-                            "source": os.path.basename(s3_key),
+                            "source": base_name,
                             "type": "image",
                             "page": img_meta['page'],
                             "image_number": idx,
@@ -948,7 +958,9 @@ def process_message(record):
             for idx, img_meta in enumerate(image_metadata, 1):
                 img_meta['image_number'] = idx
             
-            marker_key = f"processed/{base_name}.json"
+            # Add timestamp prefix to match frontend expectations
+            timestamp = int(time.time())
+            marker_key = f"processed/{timestamp}_{base_name}.json"
             marker_content = {
                 "source_file": s3_key,
                 "status": "processed",

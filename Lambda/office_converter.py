@@ -57,46 +57,136 @@ def extract_pptx(file_path):
         return "", []
 
 def extract_docx(file_path):
-    """Extract text and images from Word document"""
+    """Extract text and images from Word document in document order"""
     text_content = []
     images = []
     
     try:
         doc = DocxDocument(file_path)
+        seen_rIds = set()  # Track relationship IDs instead of blobs to avoid missing images
         
         # Extract text from paragraphs
         for para in doc.paragraphs:
             if para.text.strip():
                 text_content.append(para.text.strip())
         
-        # Extract images in document order by iterating through runs
-        seen_blobs = set()
+        # Extract images in document order by walking through all elements
+        import re
+        
+        # Walk through paragraphs in order
         for para in doc.paragraphs:
             for run in para.runs:
-                # Check if run contains an image
                 if 'graphic' in run._element.xml:
-                    # Extract relationship ID from the run's XML
-                    import re
                     rId_match = re.search(r'r:embed="(rId\d+)"', run._element.xml)
                     if rId_match:
                         rId = rId_match.group(1)
-                        try:
-                            rel = run.part.rels[rId]
-                            if "image" in rel.target_ref:
-                                image_bytes = rel.target_part.blob
-                                if len(image_bytes) > 10000 and image_bytes not in seen_blobs:
-                                    seen_blobs.add(image_bytes)
-                                    img_pil = Image.open(io.BytesIO(image_bytes))
-                                    img_byte_arr = io.BytesIO()
-                                    img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
-                                    images.append({
-                                        'page': 1,
-                                        'index': len(images),
-                                        'data': img_byte_arr.getvalue(),
-                                        'ext': 'jpg'
-                                    })
-                        except Exception as e:
-                            logger.warning(f"Failed to extract image from DOCX: {e}")
+                        if rId not in seen_rIds:
+                            seen_rIds.add(rId)
+                            try:
+                                rel = run.part.rels[rId]
+                                if "image" in rel.target_ref:
+                                    image_bytes = rel.target_part.blob
+                                    if len(image_bytes) > 10000:
+                                        img_pil = Image.open(io.BytesIO(image_bytes))
+                                        img_byte_arr = io.BytesIO()
+                                        img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                                        images.append({
+                                            'page': None,
+                                            'index': len(images),
+                                            'data': img_byte_arr.getvalue(),
+                                            'ext': 'jpg'
+                                        })
+                            except Exception as e:
+                                logger.warning(f"Failed to extract image from paragraph: {e}")
+        
+        # Walk through tables in order
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            if 'graphic' in run._element.xml:
+                                rId_match = re.search(r'r:embed="(rId\d+)"', run._element.xml)
+                                if rId_match:
+                                    rId = rId_match.group(1)
+                                    if rId not in seen_rIds:
+                                        seen_rIds.add(rId)
+                                        try:
+                                            rel = run.part.rels[rId]
+                                            if "image" in rel.target_ref:
+                                                image_bytes = rel.target_part.blob
+                                                if len(image_bytes) > 10000:
+                                                    img_pil = Image.open(io.BytesIO(image_bytes))
+                                                    img_byte_arr = io.BytesIO()
+                                                    img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                                                    images.append({
+                                                        'page': None,
+                                                        'index': len(images),
+                                                        'data': img_byte_arr.getvalue(),
+                                                        'ext': 'jpg'
+                                                    })
+                                        except Exception as e:
+                                            logger.warning(f"Failed to extract image from table: {e}")
+        
+        # Check headers/footers last
+        for section in doc.sections:
+            for header in [section.header, section.first_page_header, section.even_page_header]:
+                try:
+                    for para in header.paragraphs:
+                        for run in para.runs:
+                            if 'graphic' in run._element.xml:
+                                rId_match = re.search(r'r:embed="(rId\d+)"', run._element.xml)
+                                if rId_match:
+                                    rId = rId_match.group(1)
+                                    if rId not in seen_rIds:
+                                        seen_rIds.add(rId)
+                                        try:
+                                            rel = run.part.rels[rId]
+                                            if "image" in rel.target_ref:
+                                                image_bytes = rel.target_part.blob
+                                                if len(image_bytes) > 10000:
+                                                    img_pil = Image.open(io.BytesIO(image_bytes))
+                                                    img_byte_arr = io.BytesIO()
+                                                    img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                                                    images.append({
+                                                        'page': None,
+                                                        'index': len(images),
+                                                        'data': img_byte_arr.getvalue(),
+                                                        'ext': 'jpg'
+                                                    })
+                                        except Exception as e:
+                                            logger.warning(f"Failed to extract image from header: {e}")
+                except:
+                    pass
+            
+            for footer in [section.footer, section.first_page_footer, section.even_page_footer]:
+                try:
+                    for para in footer.paragraphs:
+                        for run in para.runs:
+                            if 'graphic' in run._element.xml:
+                                rId_match = re.search(r'r:embed="(rId\d+)"', run._element.xml)
+                                if rId_match:
+                                    rId = rId_match.group(1)
+                                    if rId not in seen_rIds:
+                                        seen_rIds.add(rId)
+                                        try:
+                                            rel = run.part.rels[rId]
+                                            if "image" in rel.target_ref:
+                                                image_bytes = rel.target_part.blob
+                                                if len(image_bytes) > 10000:
+                                                    img_pil = Image.open(io.BytesIO(image_bytes))
+                                                    img_byte_arr = io.BytesIO()
+                                                    img_pil.convert('RGB').save(img_byte_arr, format='JPEG', quality=90)
+                                                    images.append({
+                                                        'page': None,
+                                                        'index': len(images),
+                                                        'data': img_byte_arr.getvalue(),
+                                                        'ext': 'jpg'
+                                                    })
+                                        except Exception as e:
+                                            logger.warning(f"Failed to extract image from footer: {e}")
+                except:
+                    pass
         
         full_text = "\n\n".join(text_content)
         logger.info(f"DOCX: Extracted {len(doc.paragraphs)} paragraphs, {len(images)} images, {len(full_text)} chars")

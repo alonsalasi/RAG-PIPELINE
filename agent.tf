@@ -50,7 +50,7 @@
             agent_name              = "${var.project_name}-rag-agent"
             agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
             
-            foundation_model        = "anthropic.claude-3-haiku-20240307-v1:0"
+            foundation_model        = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
             
             description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
             
@@ -59,82 +59,25 @@
             # Deterministic behavior is controlled through prompt instructions
 
             instruction = <<EOT
-You are a document retrieval assistant.
-You have no built-in world knowledge — you rely only on your data sources.
+You are a search assistant. Always use search_documents.
 
-⚠️ CRITICAL RULES:
-1. ALWAYS call search_documents for EVERY new question
-2. Use ALL information from search results - don't say "limited information"
-3. If search returns results, provide a complete answer using that data
-4. MANDATORY: EVERY response MUST end with "---\nSources: DocumentName1, DocumentName2"
-5. NEVER respond without citing sources - this is a strict requirement
+CRITICAL: When search results contain IMAGE_URL lines, you MUST copy them EXACTLY into your response.
+Example: If search returns "IMAGE_URL:images/doc/file.jpg|SOURCE:doc", you MUST output that EXACT line.
 
-🔹 CALL search_documents when:
-- User asks about ANY new subject/topic
-- User mentions ANY specific name, number, or identifier
-- User switches from one topic to another (cars→projects, Project3→Project4)
-- DEFAULT: When in doubt, ALWAYS search
+For image requests ("show", "photo", "image", "תמונה", "הצג"), output ONLY the IMAGE_URL lines.
+For text questions, skip IMAGE_URL lines.
 
-🔹 REUSE previous results ONLY when:
-- User asks follow-up about EXACT SAME subject
-- User uses pronouns ("it", "that") referring to previous answer
-
-EXAMPLES:
-- "Tell me about Project 3" → search_documents
-- "What's the budget?" (after Project 3) → Reuse
-- "What about Project 4?" → search_documents (different project)
-- "Show me the car" → search_documents
-- Discussing cars, then asks about projects → search_documents (topic changed)
-
-📚 CITATIONS - MANDATORY FOR EVERY RESPONSE
-You MUST ALWAYS cite sources. NO EXCEPTIONS.
-EVERY answer must end with:
----
-Sources: DocumentName1, DocumentName2
-
-If search returns results, provide a COMPLETE answer using ALL the information.
-Don't say "limited information" - use what you have.
-
-Citation Format
-
-🖼️ IMAGES - YOU CAN DISPLAY IMAGES
-When user asks to see/show/display images, YOU MUST:
-1. Call search_documents to find images
-2. Output IMAGE_URL lines EXACTLY as they appear in search results
-3. MANDATORY: Add source citations at the end
-
-You HAVE the ability to show images by outputting IMAGE_URL lines.
-NEVER say "I cannot display images" - you CAN by using IMAGE_URL format.
-
-When to show images:
-- "Show me the car" → Call search_documents, output IMAGE_URL lines + citations
-- "Display the image" → Call search_documents, output IMAGE_URL lines + citations
-- "Let me see the photo" → Call search_documents, output IMAGE_URL lines + citations
-
-When NOT to show images:
-- "Compare the engines" → Return text comparison + citations
-- "What's the difference" → Return text analysis + citations
-
-Image output format:
-IMAGE_URL:images/Cherry/car.jpg|PAGE:1|SOURCE:Cherry
-
----
-Sources: Cherry
-
-REMEMBER: Source citations are REQUIRED for EVERY response, no matter what
+Always end with: ---\nSources: [document names]
 EOT
 
-            guardrail_configuration {
-              guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
-              guardrail_version    = aws_bedrock_guardrail_version.rag_guardrail_v1.version
-            }
+            # Guardrails disabled for faster response times
+            # guardrail_configuration {
+            #   guardrail_identifier = aws_bedrock_guardrail.rag_guardrail.guardrail_id
+            #   guardrail_version    = aws_bedrock_guardrail_version.rag_guardrail_v1.version
+            # }
 
             tags = {
               Name = "${var.project_name}-rag-agent"
-            }
-
-            lifecycle {
-              ignore_changes = [guardrail_configuration]
             }
           }
 
@@ -156,7 +99,7 @@ EOT
                 paths = {
                   "/search" = {
                     post = {
-                      description = "Search and analyze documents in the knowledge base"
+                      description = "Search the document knowledge base. This is the ONLY way to answer questions - you have no other knowledge or information available. You cannot answer any question without calling this function first."
                       operationId = "search_documents"
                       requestBody = {
                         required = true

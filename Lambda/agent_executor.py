@@ -299,8 +299,9 @@ def cors_response(body=None, status=200):
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
+            "Content-Type": "application/json; charset=utf-8",
         },
-        "body": json.dumps(body or {}),
+        "body": json.dumps(body or {}, ensure_ascii=False),
     }
 
 
@@ -635,8 +636,10 @@ def handle_get_upload_url_api(event):
         if not file_name.lower().endswith(allowed_extensions):
             return cors_response({"error": "Only PDF, PPTX, DOCX, XLSX, JPG, JPEG, PNG, and TIFF files are allowed"}, 400)
         
-        base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
+        # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
+        base_name = '.'.join(file_name.split('.')[:-1]) if '.' in file_name else file_name
         
+        # Ensure filename is properly UTF-8 encoded for S3
         key = f"uploads/{file_name}"
         s3_client = get_s3_client()
         
@@ -652,7 +655,8 @@ def handle_get_upload_url_api(event):
             '.tiff': 'image/tiff'
         }
         
-        file_ext = os.path.splitext(file_name)[1].lower()
+        # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
+        file_ext = ('.' + file_name.split('.')[-1]).lower() if '.' in file_name else ''
         content_type = content_type_map.get(file_ext, 'application/octet-stream')
         
         signed_url = s3_client.generate_presigned_url(
@@ -674,8 +678,9 @@ def handle_list_files_api(event):
         filenames = []
         for obj in objects:
             if obj["Key"].endswith(".json"):
-                filename = os.path.basename(obj["Key"])
-                # Decode HTML entities and URL encoding
+                # Use string split instead of os.path.basename to preserve Unicode
+                filename = obj["Key"].split("/")[-1]
+                # Decode HTML entities
                 filename = html.unescape(filename)
                 filenames.append(filename)
         return cors_response({"filenames": filenames})
@@ -744,7 +749,8 @@ def rebuild_master_index():
                 metadata = json.loads(response['Body'].read().decode('utf-8'))
                 
                 source_file = metadata.get('source_file', '')
-                base_name = os.path.basename(source_file).replace('.pdf', '')
+                # Use string split instead of os.path.basename to preserve Hebrew/Unicode
+                base_name = source_file.split('/')[-1].replace('.pdf', '')
                 
                 # Get rich document context
                 context_prefix = get_document_context(metadata, base_name)
@@ -767,24 +773,45 @@ def rebuild_master_index():
                         )
                         all_docs.append(doc)
                 
-                # Add image documents
+                # Add image documents with surrounding text context
                 images = metadata.get('images', [])
                 for idx, img_meta in enumerate(images, 1):
                     img_desc = img_meta.get('description', 'Image')
                     s3_key = img_meta.get('s3_key', '')
+                    page = img_meta.get('page')
                     
-                    page_content = f"Document: {base_name}\nImage #{idx} (Image number {idx}) from page {img_meta['page']}: {img_desc}\nIMAGE_URL:{s3_key}|PAGE:{img_meta['page']}|SOURCE:{base_name}"
+                    # Extract text context around the image (few lines before/after)
+                    text_context = img_meta.get('text_context', '')
+                    if not text_context and full_text and page:
+                        # Fallback: extract text near the page number
+                        lines = full_text.split('\n')
+                        context_lines = []
+                        for i, line in enumerate(lines):
+                            if f'page {page}' in line.lower() or f'עמוד {page}' in line:
+                                # Get 3 lines before and after
+                                start = max(0, i-3)
+                                end = min(len(lines), i+4)
+                                context_lines = lines[start:end]
+                                break
+                        text_context = ' '.join(context_lines).strip()[:300]
+                    
+                    # Build page content with context
+                    if page is not None:
+                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\nPage {page}: {img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|PAGE:{page}|SOURCE:{base_name}"
+                    else:
+                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\n{img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|SOURCE:{base_name}"
                     
                     img_doc = Document(
                         page_content=page_content,
                         metadata={
                             "source": base_name,
                             "type": "image",
-                            "page": img_meta['page'],
+                            "page": page,
                             "image_number": idx,
                             "image_url": img_meta.get('url', ''),
                             "s3_key": s3_key,
-                            "context_summary": context_prefix
+                            "context_summary": context_prefix,
+                            "text_context": text_context
                         }
                     )
                     all_docs.append(img_doc)
@@ -843,27 +870,37 @@ def handle_delete_file_api(event):
             return cors_response({"error": f"Invalid fileName: {str(e)}"}, 400)
         
         logger.info(f"Deleting file: {sanitize_for_logging(display_name)}")
+        # Use manual split to preserve Hebrew/Unicode
         base_name = display_name.replace('.json', '') if display_name.endswith('.json') else display_name
         
-        # Collect all keys to delete
+        # Remove timestamp prefix if present (format: 1234567890_filename)
+        if '_' in base_name:
+            parts = base_name.split('_', 1)
+            if parts[0].isdigit():
+                base_name = parts[1]
+                logger.info(f"Stripped timestamp prefix, using base_name: {sanitize_for_logging(base_name)}")
+        
+        # Collect all keys to delete (need to handle both with and without timestamp prefix)
         keys_to_delete = [
-            f"processed/{base_name}.json",
-            f"progress/{base_name}.json"
+            f"processed/{display_name}",  # Original name with timestamp
+            f"processed/{base_name}.json",  # Without timestamp
+            f"progress/{display_name.replace('.json', '.json')}",  # With timestamp
+            f"progress/{base_name}.json"  # Without timestamp
         ]
         
-        # Collect PDFs
+        # Collect uploaded files (original documents)
         try:
-            pdf_objects = list_all_s3_objects(BUCKET, f"uploads/{base_name}")
-            for obj in pdf_objects:
-                if obj['Key'].startswith(f"uploads/{base_name}."):
-                    keys_to_delete.append(obj['Key'])
+            upload_objects = list_all_s3_objects(BUCKET, f"uploads/{base_name}")
+            keys_to_delete.extend([obj['Key'] for obj in upload_objects])
+            logger.info(f"Found {len(upload_objects)} upload files to delete")
         except Exception as e:
-            logger.error(f"Failed to list PDFs: {e}")
+            logger.error(f"Failed to list uploads: {e}")
         
         # Collect images
         try:
             image_objects = list_all_s3_objects(BUCKET, f"images/{base_name}/")
             keys_to_delete.extend([obj['Key'] for obj in image_objects])
+            logger.info(f"Found {len(image_objects)} image files to delete")
         except Exception as e:
             logger.error(f"Failed to list images: {e}")
         
@@ -875,12 +912,18 @@ def handle_delete_file_api(event):
             logger.error(f"Batch delete failed: {e}")
             return cors_response({"error": f"Delete failed: {str(e)}"}, 500)
         
-        # Rebuild master index
+        # Wait a moment for S3 to propagate deletions
+        time.sleep(0.5)
+        
+        # Rebuild master vector store (removes deleted document from index)
         try:
+            logger.info("Rebuilding master index...")
             rebuild_master_index()
             logger.info("Master index rebuilt after deletion")
         except Exception as e:
             logger.error(f"Failed to rebuild master index: {e}")
+            # Don't fail the delete operation if index rebuild fails
+            logger.warning("Delete succeeded but index rebuild failed - index will be stale")
         
         return cors_response({"success": True, "message": f"{base_name} deleted successfully"})
     except Exception as e:
@@ -899,7 +942,8 @@ def handle_cancel_upload_api(event):
             return cors_response({"error": "Invalid fileName"}, 400)
         
         logger.info(f" Cancelling upload: {sanitize_for_logging(file_name)}")
-        base_name = os.path.splitext(file_name)[0] if '.' in file_name else file_name
+        # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
+        base_name = '.'.join(file_name.split('.')[:-1]) if '.' in file_name else file_name
         
         # Create cancellation marker FIRST to stop Lambda processing
         try:
@@ -1096,11 +1140,17 @@ def handle_search_action(event):
         
         # Extract document name early to use in search
         doc_name_in_query = None
-        patterns = [r'(?:in|from)\s+(?:document|the document)?[:\s]+(.+?)(?:\s*$)', r'(?:in|from)\s+(.+?)(?:\s*$)']
+        # Match "in the document: NAME" or "from document NAME" patterns
+        patterns = [
+            r'(?:in|from)\s+(?:the\s+)?document[:\s]+(.+?)(?:\s*$)',
+            r'(?:in|from)\s+(.+?)(?:\s*$)'
+        ]
         for pattern in patterns:
             match = re.search(pattern, original_input, re.IGNORECASE)
             if match:
                 doc_name_in_query = match.group(1).strip()
+                # Remove trailing punctuation
+                doc_name_in_query = doc_name_in_query.rstrip('.,;:!?')
                 break
         
         # If document name specified, search by document name instead of query
@@ -1122,30 +1172,33 @@ def handle_search_action(event):
         else:
             logger.info("⚠️ No document name extracted from query")
         
-        # Match document name
+        # Match document name - be more flexible with matching
         if doc_name_in_query:
-            # Exact match
+            # Try exact match first
             if doc_name_in_query in unique_sources:
                 doc_filter = doc_name_in_query
                 logger.info(f"🎯 ✅ Exact match: '{doc_filter}'")
             else:
-                # Substring match
+                # Try substring match in both directions
                 for source in unique_sources:
                     if doc_name_in_query in source or source in doc_name_in_query:
                         doc_filter = source
-                        logger.info(f"🎯 ✅ Substring match: '{doc_filter}'")
+                        logger.info(f"🎯 ✅ Substring match: query='{doc_name_in_query}' matched source='{doc_filter}'")
                         break
+                
+                # If still no match, don't filter - let all results through
                 if not doc_filter:
-                    logger.warning(f"⚠️ Document '{doc_name_in_query}' not found in vector results")
+                    logger.warning(f"⚠️ Document '{doc_name_in_query}' not found, searching all documents")
             
-            # Filter results
+            # Filter results only if we found a matching document
             if doc_filter:
                 filtered = [(doc, score) for doc, score in raw_results if doc.metadata.get('source', '') == doc_filter]
                 if filtered:
                     raw_results = filtered
                     logger.info(f"🎯 Filtered to {len(raw_results)} results from '{doc_filter}'")
                 else:
-                    logger.warning(f"⚠️ No vector results for '{doc_filter}'")
+                    logger.warning(f"⚠️ No results after filtering for '{doc_filter}', using all results")
+                    doc_filter = None  # Reset filter to use all results
         
         # Apply fuzzy matching to boost relevant results
         from difflib import SequenceMatcher
@@ -1199,11 +1252,18 @@ def handle_search_action(event):
         fuzzy_results.sort(key=lambda x: x[1])
         raw_results = [(doc, adj_score) for doc, adj_score, _ in fuzzy_results]
         
-        # 3. Separate Candidates
+        # 3. Separate Candidates and filter out logos (small images)
         text_candidates = []
         image_candidates = []
         for doc, score in raw_results:
             if doc.metadata.get('type') == 'image':
+                # Filter out logos - check if description mentions "logo" or if it's a small image
+                desc = doc.page_content.lower()
+                # Expanded logo detection keywords
+                logo_keywords = ['logo', 'icon', 'brand mark', 'company logo', 'brand logo', 'trademark']
+                if any(keyword in desc for keyword in logo_keywords):
+                    logger.info(f"Skipping logo/icon image: {doc.metadata.get('source', '')}")
+                    continue
                 image_candidates.append((doc, score))
             else:
                 text_candidates.append((doc, score))
@@ -1254,6 +1314,10 @@ def handle_search_action(event):
         elif wants_images and not wants_text:
             # PURE IMAGE QUERY
             
+            # Check if user is asking for diagrams specifically
+            diagram_keywords = ['diagram', 'architecture', 'תרשים', 'ארכיטקטורה', 'דיאגרמה', 'chart', 'flowchart', 'schematic']
+            wants_diagrams = any(keyword in original_lower for keyword in diagram_keywords)
+            
             # Apply attribute filtering for images (colors, sizes, etc.)
             color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink', 'gold', 'beige', 'tan']
             size_words = ['large', 'small', 'big', 'tiny', 'huge', 'medium']
@@ -1266,7 +1330,15 @@ def handle_search_action(event):
             scored_images = []
             for doc, semantic_score in image_candidates:
                 content_lower = doc.page_content.lower()
+                text_context = doc.metadata.get('text_context', '').lower()
                 match_score = 0
+                
+                # STRONG BOOST: If user wants diagrams, prioritize images with diagram keywords
+                if wants_diagrams:
+                    diagram_types = ['architecture diagram', 'system diagram', 'network diagram', 'flowchart', 'technical diagram']
+                    if any(dtype in content_lower for dtype in diagram_types):
+                        match_score += 50  # Very strong boost for actual diagrams
+                        logger.info(f"📊 Diagram detected in image description")
                 
                 # Boost images that match requested attributes
                 if query_attributes:
@@ -1276,7 +1348,14 @@ def handle_search_action(event):
                     else:
                         match_score -= 20  # Penalize if no attributes match
                 
-                # Boost images that match subject words
+                # CONTEXT MATCHING: Boost images where surrounding text matches query
+                if query_words and text_context:
+                    context_matches = sum(1 for word in query_words if word in text_context)
+                    if context_matches > 0:
+                        match_score += context_matches * 20  # Strong boost for context match
+                        logger.info(f"🎯 Context match: {context_matches} words in surrounding text")
+                
+                # Boost images that match subject words in description
                 if query_words:
                     word_matches = sum(1 for word in query_words if word in content_lower)
                     match_score += word_matches * 10
@@ -1288,9 +1367,9 @@ def handle_search_action(event):
             final_results.extend(scored_images[:10])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - return more text results for comprehensive coverage
-            final_results.extend(text_candidates[:30])
-            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:30])} text chunks, skipped {len(image_candidates)} images")
+            # PURE TEXT QUERY - optimized for speed (20 chunks = ~29KB)
+            final_results.extend(text_candidates[:20])
+            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:20])} text chunks, skipped {len(image_candidates)} images")
             
         else:
             # HYBRID QUERY - balanced mix
@@ -1305,13 +1384,19 @@ def handle_search_action(event):
             page = doc.metadata.get('page', '')
             img_num = doc.metadata.get('image_number', '')
             
+            # DO NOT strip image URLs. Pass the raw content to the agent.
+            raw_content = doc.page_content
+            
+            if not raw_content:
+                continue
+            
             # Add image number and page to source for images
             if doc.metadata.get('type') == 'image' and img_num:
                 source_label = f"{source} (Image #{img_num}, Page {page})"
             else:
                 source_label = source
             
-            all_results.append((doc.page_content, source_label))
+            all_results.append((raw_content, source_label))
         logger.info(f"⏱️ SEARCH: Format results took {time.time() - format_start:.3f}s")
         logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={final_results[0][1] if final_results else 'N/A'}")
         logger.info(f"Intent: wants_images={wants_images}, wants_text={wants_text} | Candidates: text={len(text_candidates)}, images={len(image_candidates)} | Final: {len(final_results)}")
@@ -1550,6 +1635,7 @@ def handle_agent_query(event):
                     enableTrace=True  # Enable trace to see if search is called
                 )
                 logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
+                logger.info(f"✅ Agent response object received, processing stream...")
             finally:
                 signal.alarm(0)  # Cancel the alarm
                 
@@ -1586,7 +1672,8 @@ def handle_agent_query(event):
             logger.info(f"⏱️ TIMING: Stream processing took {time.time() - stream_start:.3f}s ({chunk_count} chunks, {len(answer)} bytes)")
         except Exception as e:
             full_error = str(e)
-            logger.error(f"Failed to process response stream: {full_error}")
+            logger.error(f"❌ Failed to process response stream: {full_error}")
+            logger.error(f"❌ Answer collected so far (length={len(answer)}): {answer[:200]}")
             return cors_response({"error": "Failed to process agent response"}, 500)
         
         # Extract IMAGE_URL: markers and generate presigned URLs
@@ -1595,15 +1682,37 @@ def handle_agent_query(event):
         import re
         import html
         
-        # Extract IMAGE_URL lines (format: IMAGE_URL:path|PAGE:n|SOURCE:name)
-        # Use a more flexible pattern that handles Hebrew filenames and HTML entities
-        image_url_pattern = r'IMAGE_URL:([^|\n]+)\|'
+        # DEBUG: Log what agent actually returned
+        logger.info(f"📝 AGENT RESPONSE (length={len(answer)}): {answer[:500] if len(answer) > 0 else '[EMPTY]'}")
+        
+        # Extract image paths - handle multiple formats:
+        # Format 1: IMAGE_URL:path|PAGE:n|SOURCE:name (with metadata)
+        # Format 2: IMAGE_URL:path (simple format)  
+        # Format 3: images/path/file.jpg|SOURCE:name (plain path with metadata)
+        # Format 4: images/path/file.jpg (plain S3 path)
+        matches = []
+        
+        # Try IMAGE_URL: prefix format first
+        image_url_pattern = r'IMAGE_URL:([^\n|]+)'
         matches = re.findall(image_url_pattern, answer)
+        
+        # If no IMAGE_URL: prefix, look for plain S3 paths with |SOURCE: metadata
+        if not matches:
+            plain_with_source = r'(images/[^|\n]+\.(?:jpg|jpeg|png|gif))\|SOURCE:'
+            matches = re.findall(plain_with_source, answer)
+        
+        # If still no matches, look for any S3 image paths
+        if not matches:
+            plain_path_pattern = r'(images/[^\s\n|]+\.(?:jpg|jpeg|png|gif))'
+            matches = re.findall(plain_path_pattern, answer)
+        
+        logger.info(f"🔍 Found {len(matches)} image paths in response")
         
         if matches:
             logger.info(f"Found {len(matches)} IMAGE_URL markers in agent response")
             s3_client = get_s3_client()
             unique_keys = set()
+            failed_images = []
             
             for s3_key in matches:
                 # Decode HTML entities (e.g., &quot; -> ")
@@ -1611,6 +1720,68 @@ def handle_agent_query(event):
                 # Verify it's a valid image key and not a duplicate
                 if s3_key and s3_key not in unique_keys and s3_key.startswith('images/'):
                     unique_keys.add(s3_key)
+                    # First verify the image exists in S3
+                    try:
+                        s3_client.head_object(Bucket=BUCKET, Key=s3_key)
+                        logger.info(f"✅ Image exists in S3: {s3_key}")
+                    except Exception as head_error:
+                        if 'NoSuchKey' in str(type(head_error)) or '404' in str(head_error):
+                            logger.error(f"❌ Image NOT found in S3 with key: {s3_key}")
+                            # Fallback logic: Search for the image by filename across all 'images/'
+                            
+                            img_filename = s3_key.split('/')[-1] # Get the filename, e.g., "doc_img15.jpg"
+                            
+                            if not img_filename:
+                                logger.error("❌ Could not extract filename from key. Aborting search.")
+                                continue
+
+                            logger.info(f"🔍 FALLBACK: Searching for filename '{img_filename}' in 'images/' prefix...")
+                            
+                            try:
+                                # Use the robust paginated list function
+                                all_image_objects = list_all_s3_objects(BUCKET, prefix="images/", max_keys=5000)
+                                
+                                # Log first 5 filenames for debugging
+                                logger.info(f"🔍 First 5 S3 files:")
+                                for i, obj in enumerate(all_image_objects[:5]):
+                                    logger.info(f"  {i+1}. {obj['Key']}")
+                                
+                                found = False
+                                # Try exact match first
+                                for obj in all_image_objects:
+                                    obj_key = obj['Key']
+                                    if obj_key.endswith(img_filename):
+                                        logger.info(f"🎯 FALLBACK SUCCESS (exact): {obj_key}")
+                                        s3_key = obj_key
+                                        found = True
+                                        break
+                                
+                                # If not found, try matching just the image number (e.g., _img15.jpg)
+                                if not found and '_img' in img_filename:
+                                    img_num_part = img_filename.split('_img')[-1]  # e.g., "15.jpg"
+                                    for obj in all_image_objects:
+                                        obj_key = obj['Key']
+                                        if f'_img{img_num_part}' in obj_key:
+                                            logger.info(f"🎯 FALLBACK SUCCESS (partial): {obj_key}")
+                                            s3_key = obj_key
+                                            found = True
+                                            break
+                                
+                                if not found:
+                                    logger.error(f"❌ FALLBACK FAILED: No match for '{img_filename}' in {len(all_image_objects)} objects")
+                                    failed_images.append(img_filename)
+                                    continue
+
+                            except Exception as search_e:
+                                logger.error(f"❌ FALLBACK FAILED: Error during s3 list: {search_e}")
+                                failed_images.append(img_filename)
+                                continue # Skip this image
+                        else:
+                            logger.error(f"Failed to verify image: {head_error}")
+                            failed_images.append(s3_key.split('/')[-1] if '/' in s3_key else s3_key)
+                            continue
+                    
+                    # Generate presigned URL
                     try:
                         url = s3_client.generate_presigned_url(
                             'get_object',
@@ -1623,8 +1794,8 @@ def handle_agent_query(event):
                         logger.error(f"Failed to generate URL for {s3_key}: {e}")
             
             # Extract source info from IMAGE_URL lines before removing them
+            source_info = []
             if images:
-                source_info = []
                 for match in re.finditer(r'IMAGE_URL:([^|]+)\|PAGE:(\d+)\|SOURCE:([^\n]+)', answer):
                     s3_key, page, source = match.groups()
                     # Extract image number from s3_key if present
@@ -1634,13 +1805,19 @@ def handle_agent_query(event):
                         source_info.append(f"Image #{img_num} from {source} (Page {page})")
                     else:
                         source_info.append(f"Image from {source} (Page {page})")
-                
-                # Remove IMAGE_URL lines
+            
+            # If no images were successfully generated, show error
+            if not images and failed_images:
+                answer = f"I found {len(failed_images)} image(s) but couldn't load them from storage. This may be due to file path encoding issues. Please contact support.\n\nFailed images: {', '.join(failed_images[:3])}"
+            else:
+                # ALWAYS remove the markers from the text response
                 answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer)
+                answer = re.sub(r'images/[^\n]+\.(?:jpg|jpeg|png|gif)[^\n]*\n?', '', answer)
                 
                 # Remove filler phrases
                 filler_phrases = [
                     r'Here are the relevant diagrams from the search results:',
+                    r'Here are the relevant diagrams for the [^:]+:',
                     r'Here are the images you asked for:',
                     r'The search results contain the following images:',
                 ]
@@ -1745,6 +1922,9 @@ def handle_processing_status(event):
             })
         except s3_client.exceptions.NoSuchKey:
             pass
+        except s3_client.exceptions.ClientError as e:
+            if e.response.get('Error', {}).get('Code') != '404':
+                logger.error(f"Error checking cancellation: {type(e).__name__}")
         except Exception as e:
             logger.error(f"Error checking cancellation: {type(e).__name__}")
         
@@ -1882,8 +2062,11 @@ def lambda_handler(event, context):
             return handle_get_upload_url_api(event)
         elif path == "/list-files" and method == "GET":
             return handle_list_files_api(event)
-        elif path == "/delete-file" and method in ["DELETE", "GET"]:
+        elif path == "/delete-file" and method == "DELETE":
             return handle_delete_file_api(event)
+        elif path.startswith("/delete-file/") and method == "DELETE":
+            filename = unquote_plus(path.split("/delete-file/")[1])
+            return handle_delete_file(filename)
         elif path == "/batch-delete" and method == "POST":
             return handle_batch_delete_api(event)
         elif path == "/cancel-upload" and method == "DELETE":
