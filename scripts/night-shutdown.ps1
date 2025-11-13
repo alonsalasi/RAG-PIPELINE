@@ -11,9 +11,14 @@ $errorDetails = @()
 # Get VPC ID dynamically
 Write-Host "Getting VPC ID..." -ForegroundColor Yellow
 $vpcId = terraform output -raw vpc_id 2>$null
-if (-not $vpcId) {
+# Strip ANSI color codes and whitespace
+if ($vpcId) {
+  $vpcId = $vpcId -replace '\x1b\[[0-9;]*m', '' -replace '[^a-zA-Z0-9-]', ''
+}
+if (-not $vpcId -or $vpcId.Length -lt 10) {
   Write-Host "  Warning: Could not get VPC ID from Terraform, searching..." -ForegroundColor Yellow
   $vpcId = aws ec2 describe-vpcs --filters "Name=tag:Name,Values=pdfquery-vpc" --query 'Vpcs[0].VpcId' --output text --profile default
+  $vpcId = $vpcId.Trim()
 }
 Write-Host "  VPC ID: $vpcId" -ForegroundColor Gray
 
