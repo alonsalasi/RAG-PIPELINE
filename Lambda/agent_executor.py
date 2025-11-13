@@ -163,7 +163,7 @@ def preload_master_index(force_reload=False):
     cache_dir = "/tmp/master_index"
     s3_client = get_s3_client()
     
-    # Check if S3 index was updated (new upload)
+    # FORCE RELOAD: Always check S3 for updates
     try:
         s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
         s3_last_modified = s3_obj['LastModified'].timestamp()
@@ -173,12 +173,22 @@ def preload_master_index(force_reload=False):
             if s3_last_modified > _index_s3_timestamp:
                 logger.info(f"S3 index updated (cached: {datetime.fromtimestamp(_index_s3_timestamp)}, S3: {datetime.fromtimestamp(s3_last_modified)}), reloading...")
                 del _faiss_cache[cache_key]
+                # Also clear disk cache
+                if os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir)
             else:
                 logger.info("Master index cached and up-to-date")
                 return
         elif cache_key in _faiss_cache:
-            logger.info("Master index already cached")
-            return
+            logger.info("Master index already cached, checking S3...")
+            # Still check if we should reload
+            if s3_last_modified > _index_s3_timestamp:
+                logger.info("S3 has newer version, reloading...")
+                del _faiss_cache[cache_key]
+                if os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir)
+            else:
+                return
             
     except s3_client.exceptions.ClientError as e:
         if e.response.get('Error', {}).get('Code') == '404':
@@ -186,17 +196,11 @@ def preload_master_index(force_reload=False):
             return
         logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
     
-    # Timestamp check is now done inside preload_master_index
-    try:
-        s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
     except s3_client.exceptions.ClientError as e:
         if e.response.get('Error', {}).get('Code') == '404':
-            logger.info("No master index to preload")
-        else:
-            logger.warning(f"Error checking master index: {type(e).__name__}")
-        return
-    except Exception as e:
-        logger.error(f"Unexpected error: {type(e).__name__}")
+            logger.info("No master index exists yet")
+            return
+        logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
         return
     
     if os.path.exists(cache_dir):
@@ -1136,7 +1140,7 @@ def handle_search_action(event):
         doc_filter = None
         
         # For specific image number requests with document name, search by document name
-        search_k = 200 if requested_image_num else 100
+        search_k = 50 if requested_image_num else 30
         
         # Extract document name early to use in search
         doc_name_in_query = None
@@ -1252,18 +1256,31 @@ def handle_search_action(event):
         fuzzy_results.sort(key=lambda x: x[1])
         raw_results = [(doc, adj_score) for doc, adj_score, _ in fuzzy_results]
         
-        # 3. Separate Candidates and filter out logos (small images)
+        # 3. Separate Candidates and filter out unwanted images
         text_candidates = []
         image_candidates = []
         for doc, score in raw_results:
             if doc.metadata.get('type') == 'image':
-                # Filter out logos - check if description mentions "logo" or if it's a small image
                 desc = doc.page_content.lower()
-                # Expanded logo detection keywords
-                logo_keywords = ['logo', 'icon', 'brand mark', 'company logo', 'brand logo', 'trademark']
-                if any(keyword in desc for keyword in logo_keywords):
-                    logger.info(f"Skipping logo/icon image: {doc.metadata.get('source', '')}")
+                
+                # Filter out ONLY obvious non-technical images (be conservative)
+                exclude_patterns = [
+                    ('qr code', 'qr-code', 'barcode'),
+                    ('certification badge', 'certificate badge', 'professional badge'),
+                    ('company logo', 'brand logo'),
+                    ('profile picture', 'avatar', 'headshot')
+                ]
+                
+                should_exclude = False
+                for pattern_group in exclude_patterns:
+                    if any(pattern in desc for pattern in pattern_group):
+                        logger.info(f"Filtering out: {doc.metadata.get('source', '')} - matched: {pattern_group}")
+                        should_exclude = True
+                        break
+                
+                if should_exclude:
                     continue
+                    
                 image_candidates.append((doc, score))
             else:
                 text_candidates.append((doc, score))
@@ -1315,8 +1332,28 @@ def handle_search_action(event):
             # PURE IMAGE QUERY
             
             # Check if user is asking for diagrams specifically
-            diagram_keywords = ['diagram', 'architecture', 'תרשים', 'ארכיטקטורה', 'דיאגרמה', 'chart', 'flowchart', 'schematic']
+            diagram_keywords = ['diagram', 'architecture', 'תרשים', 'ארכיטקטורה', 'דיאגרמה', 'chart', 'flowchart', 'schematic', 'landing zone', 'infrastructure']
             wants_diagrams = any(keyword in original_lower for keyword in diagram_keywords)
+            
+            # DEBUG: Log metadata for ALL images
+            logger.info(f"🔍 DEBUG: Checking {len(image_candidates)} images for diagram_type metadata:")
+            for i, (doc, score) in enumerate(image_candidates[:5]):
+                img_num = doc.metadata.get('image_number', '?')
+                diagram_type = doc.metadata.get('diagram_type')
+                logger.info(f"  Image #{img_num}: diagram_type={diagram_type}")
+            
+            # If user wants diagrams, filter strictly to ONLY diagrams (if any detected)
+            if wants_diagrams:
+                diagram_candidates = [(doc, score) for doc, score in image_candidates if doc.metadata.get('diagram_type')]
+                
+                if diagram_candidates:
+                    # Found diagrams - ONLY return diagrams, exclude badges/logos
+                    logger.info(f"📊 Diagram filter: {len(image_candidates)} images → {len(diagram_candidates)} diagrams (strict)")
+                    image_candidates = diagram_candidates
+                else:
+                    # No diagrams detected - keep all images (detection may have failed)
+                    logger.warning(f"⚠️ No diagrams detected in {len(image_candidates)} images - keeping all (detection may have failed)")
+                    # Keep original image_candidates unchanged
             
             # Apply attribute filtering for images (colors, sizes, etc.)
             color_words = ['red', 'blue', 'black', 'white', 'gray', 'grey', 'green', 'yellow', 'orange', 'silver', 'brown', 'purple', 'pink', 'gold', 'beige', 'tan']
@@ -1333,12 +1370,59 @@ def handle_search_action(event):
                 text_context = doc.metadata.get('text_context', '').lower()
                 match_score = 0
                 
-                # STRONG BOOST: If user wants diagrams, prioritize images with diagram keywords
+                # CRITICAL: Penalize logos/banners
+                is_logo = doc.metadata.get('is_logo_or_banner', False)
+                if is_logo:
+                    match_score -= 1000
+                    logger.info(f"🚫 Logo/banner - penalizing")
+                
+                # CRITICAL: Prioritize images with diagram_type metadata (from ingestion detection)
+                diagram_type = doc.metadata.get('diagram_type', '')
+                if diagram_type:
+                    match_score += 5000  # MASSIVE boost for detected diagrams (increased from 500)
+                    logger.info(f"📊 DIAGRAM DETECTED: {diagram_type}")
+                
+                # CRITICAL: Match OCR keywords from image (cloud services, technical terms)
+                ocr_keywords = doc.metadata.get('ocr_keywords', [])
+                img_num = doc.metadata.get('image_number', '?')
+                logger.info(f"🔍 Image #{img_num}: ocr_keywords={ocr_keywords}, query_words={query_words}")
+                if ocr_keywords and query_words:
+                    # Direct keyword matching
+                    keyword_matches = sum(1 for kw in ocr_keywords if any(qw in kw.lower() or kw.lower() in qw for qw in query_words))
+                    
+                    # Semantic matching for AWS-specific terms
+                    aws_terms = ['landing', 'zone', 'control', 'tower', 'organization', 'account', 'governance']
+                    if any(term in query_lower for term in aws_terms) and 'aws' in [k.lower() for k in ocr_keywords]:
+                        keyword_matches += 2
+                        logger.info(f"🎯 AWS semantic match: query has AWS terms, image has 'aws' keyword")
+                    
+                    # Landing zone = VPC/networking architecture
+                    if 'landing' in query_lower and 'zone' in query_lower:
+                        vpc_keywords = ['vpc', 'subnet', 'network', 'fargate', 'ecs', 'iam']
+                        vpc_matches = sum(1 for kw in ocr_keywords if kw.lower() in vpc_keywords)
+                        if vpc_matches > 0:
+                            keyword_matches += vpc_matches * 2
+                            logger.info(f"🎯 Landing zone match: {vpc_matches} VPC/networking keywords found")
+                    
+                    if keyword_matches > 0:
+                        match_score += keyword_matches * 200  # HUGE boost for OCR keyword matches
+                        logger.info(f"🔑 OCR keyword matches: {keyword_matches} keywords matched query")
+                    else:
+                        logger.info(f"❌ No OCR keyword matches for image #{img_num}")
+                else:
+                    logger.info(f"⚠️ Image #{img_num}: ocr_keywords empty or no query_words")
+                
+                # STRONG BOOST: If user wants diagrams, prioritize architecture/system diagrams
                 if wants_diagrams:
-                    diagram_types = ['architecture diagram', 'system diagram', 'network diagram', 'flowchart', 'technical diagram']
-                    if any(dtype in content_lower for dtype in diagram_types):
-                        match_score += 50  # Very strong boost for actual diagrams
-                        logger.info(f"📊 Diagram detected in image description")
+                    if 'architecture diagram' in content_lower or 'system diagram' in content_lower:
+                        match_score += 100
+                        logger.info(f"📊 Architecture/System diagram detected")
+                    elif 'network diagram' in content_lower or 'technical diagram' in content_lower:
+                        match_score += 50
+                        logger.info(f"📊 Network/Technical diagram detected")
+                    elif 'flowchart' in content_lower:
+                        match_score += 10
+                        logger.info(f"📊 Flowchart detected (lower priority)")
                 
                 # Boost images that match requested attributes
                 if query_attributes:
@@ -1360,21 +1444,53 @@ def handle_search_action(event):
                     word_matches = sum(1 for word in query_words if word in content_lower)
                     match_score += word_matches * 10
                 
-                combined_score = semantic_score - (match_score * 0.1)
+                # CRITICAL: Use aggressive multiplier to ensure OCR keyword matches dominate ranking
+                # Lower combined_score = better ranking (FAISS distance metric)
+                combined_score = semantic_score - (match_score * 1.0)  # Increased from 0.1 to 1.0
                 scored_images.append((doc, combined_score))
             
             scored_images.sort(key=lambda x: x[1])
-            final_results.extend(scored_images[:10])
+            
+            # Dynamic image count based on user request
+            num_images = 1  # Default: return best match
+            
+            # Check if user explicitly asks for multiple images
+            if 'all' in original_lower and any(word in original_lower for word in ['image', 'diagram', 'picture', 'photo']):
+                num_images = min(len(scored_images), 20)  # Return all, max 20
+                logger.info(f"User requested ALL images, returning {num_images}")
+            else:
+                # Check for explicit number request (e.g., "5 diagrams", "show 3 images")
+                import re
+                num_match = re.search(r'\b(\d+)\s*(?:image|diagram|picture|photo)', original_lower)
+                if num_match:
+                    num_images = min(int(num_match.group(1)), 20)  # Max 20
+                    logger.info(f"User requested {num_images} images")
+                else:
+                    # Confidence-based: if top result has low confidence, return more options
+                    if scored_images:
+                        best_score = scored_images[0][1]
+                        # If best score is high (weak match), return more options
+                        if best_score > 0.8:  # Weak confidence
+                            num_images = 9
+                            logger.info(f"Low confidence (score={best_score:.2f}), returning {num_images} options")
+                        elif best_score > 0.5:  # Medium confidence
+                            num_images = 5
+                            logger.info(f"Medium confidence (score={best_score:.2f}), returning {num_images} options")
+                        else:  # High confidence
+                            num_images = 1
+                            logger.info(f"High confidence (score={best_score:.2f}), returning {num_images} image")
+            
+            final_results.extend(scored_images[:num_images])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - optimized for speed (20 chunks = ~29KB)
-            final_results.extend(text_candidates[:20])
-            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:20])} text chunks, skipped {len(image_candidates)} images")
+            # PURE TEXT QUERY - optimized for speed and cost (15 chunks = ~15KB)
+            final_results.extend(text_candidates[:15])
+            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:15])} text chunks, skipped {len(image_candidates)} images")
             
         else:
             # HYBRID QUERY - balanced mix
-            final_results.extend(text_candidates[:12])
-            final_results.extend(image_candidates[:8])
+            final_results.extend(text_candidates[:10])
+            final_results.extend(image_candidates[:5])
             final_results.sort(key=lambda x: x[1])
         
         format_start = time.time()
@@ -1430,9 +1546,24 @@ def handle_search_action(event):
                 
             result = "\n\n".join(result_parts) if result_parts else "No relevant information found."
         
+        # Calculate approximate token usage
+        approx_tokens = len(result) // 4  # Rough estimate: 4 chars per token
+        approx_cost = (approx_tokens / 1_000_000) * 0.80  # $0.80 per 1M tokens for Haiku
+        
         logger.info(f"⏱️ SEARCH: Search returned {len(all_results)} results, result length: {len(result)}")
+        logger.info(f"💰 TOKEN USAGE: ~{approx_tokens:,} tokens (~${approx_cost:.4f} cost)")
         logger.info(f"⏱️ SEARCH: TOTAL handle_search_action took {time.time() - search_start:.3f}s")
         logger.info(f"✅ SEARCH COMPLETE - Returning {len(all_results)} results to agent")
+        
+        # CRITICAL: Bedrock Agent has a response size limit (~25KB)
+        # If response is too large, truncate it
+        MAX_RESPONSE_SIZE = 20000  # 20KB to be safe
+        if len(result) > MAX_RESPONSE_SIZE:
+            logger.warning(f"⚠️ Response too large ({len(result)} bytes), truncating to {MAX_RESPONSE_SIZE} bytes")
+            result = result[:MAX_RESPONSE_SIZE] + "\n\n[Response truncated due to size limit]"
+        
+        response_body = json.dumps({"result": result})
+        logger.info(f"📦 Response body size: {len(response_body)} bytes")
         
         return {
             "messageVersion": "1.0",
@@ -1443,7 +1574,7 @@ def handle_search_action(event):
                 "httpStatusCode": 200,
                 "responseBody": {
                     "application/json": {
-                        "body": json.dumps({"result": result})
+                        "body": response_body
                     }
                 }
             }
@@ -1826,15 +1957,24 @@ def handle_agent_query(event):
                 
                 answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
                 
-                # Add source information
-                if source_info:
-                    if answer:
-                        answer += "\n\nSource: " + ", ".join(source_info)
-                    else:
-                        answer = "Source: " + ", ".join(source_info)
+                # CRITICAL: Bedrock Agent requires non-empty response
+                # Use a single space if answer is empty but we have images
+                if not answer and images:
+                    answer = " "
+                
+                # Add source information only if there's actual text content
+                if source_info and answer and answer != " ":
+                    answer += "\n\nSource: " + ", ".join(source_info)
             
         logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
         
+        # Calculate total token usage (input + output)
+        input_tokens = len(query) // 4
+        output_tokens = len(answer) // 4
+        total_tokens = input_tokens + output_tokens
+        total_cost = (input_tokens / 1_000_000) * 0.80 + (output_tokens / 1_000_000) * 4.00
+        
+        logger.info(f"💰 AGENT TOKEN USAGE: Input: ~{input_tokens:,} | Output: ~{output_tokens:,} | Total: ~{total_tokens:,} tokens (~${total_cost:.4f})")
         logger.info(f"⏱️ TIMING: TOTAL agent query took {time.time() - total_start:.3f}s")
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     

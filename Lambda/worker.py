@@ -431,10 +431,18 @@ def process_message(record):
                 for img_info in extracted_images:
                     img_name = f"{base_name}_slide{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                     img_key = f"images/{base_name}/{img_name}"
+                    diagram_type = None
+                    is_logo = False
+                    ocr_kw = []
                     
                     try:
                         analysis = analyze_image(img_info['data'])
+                        diagram_type = analysis.get('diagram_type')
+                        is_logo = analysis.get('is_logo_or_banner', False)
+                        ocr_kw = analysis.get('ocr_keywords', [])
                         desc_parts = [f"Slide {img_info['page']}"]
+                        if diagram_type:
+                            desc_parts.append(f"Type: {diagram_type}")
                         if analysis['objects']:
                             desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
                         if analysis['colors']:
@@ -455,7 +463,10 @@ def process_message(record):
                         'image_name': img_name,
                         's3_key': img_key,
                         'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                        'description': description
+                        'description': description,
+                        'diagram_type': diagram_type,
+                        'is_logo_or_banner': is_logo,
+                        'ocr_keywords': ocr_kw
                     })
                 
                 logger.info(f"PPTX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
@@ -470,15 +481,29 @@ def process_message(record):
                     img_name = f"{base_name}_img{img_idx-1}.{img_info['ext']}"
                     img_key = f"images/{base_name}/{img_name}"
                     
+                    print(f"[WORKER] Processing DOCX image #{img_idx}, size={len(img_info['data'])} bytes")
+                    logger.info(f"Processing DOCX image #{img_idx}")
+                    diagram_type = None
+                    is_logo = False
+                    ocr_kw = []
                     try:
                         analysis = analyze_image(img_info['data'])
+                        print(f"[WORKER] analyze_image returned: {analysis}")
+                        diagram_type = analysis.get('diagram_type')
+                        is_logo = analysis.get('is_logo_or_banner', False)
+                        ocr_kw = analysis.get('ocr_keywords', [])
                         desc_parts = ["Document image"]
+                        if diagram_type:
+                            desc_parts.append(f"Type: {diagram_type}")
                         if analysis['objects']:
                             desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
                         if analysis['colors']:
                             desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
                         description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                    except:
+                        logger.info(f"Analyzed DOCX image #{img_idx}: diagram_type={diagram_type}, ocr_keywords={ocr_kw}")
+                    except Exception as e:
+                        print(f"[WORKER] analyze_image FAILED: {e}")
+                        logger.error(f"analyze_image failed: {e}")
                         description = f"Image from {base_name}"
                     
                     s3_client.put_object(
@@ -493,7 +518,10 @@ def process_message(record):
                         'image_name': img_name,
                         's3_key': img_key,
                         'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                        'description': description
+                        'description': description,
+                        'diagram_type': diagram_type,
+                        'is_logo_or_banner': is_logo,
+                        'ocr_keywords': ocr_kw
                     })
                 
                 logger.info(f"DOCX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
@@ -584,9 +612,17 @@ def process_message(record):
                         for img_info in embedded_images:
                             img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                             img_key = f"images/{base_name}/{img_name}"
+                            diagram_type = None
+                            is_logo = False
+                            ocr_kw = []
                             try:
                                 analysis = analyze_image(img_info['data'])
+                                diagram_type = analysis.get('diagram_type')
+                                is_logo = analysis.get('is_logo_or_banner', False)
+                                ocr_kw = analysis.get('ocr_keywords', [])
                                 desc_parts = [f"Page {img_info['page']}"]
+                                if diagram_type:
+                                    desc_parts.append(f"Type: {diagram_type}")
                                 if analysis['objects']:
                                     desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
                                 if analysis['colors']:
@@ -603,6 +639,7 @@ def process_message(record):
                                     pass
                                 
                                 description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                                logger.info(f"Analyzed image page {img_info['page']}: diagram_type={diagram_type}")
                             except:
                                 description = f"Image from {base_name}, page {img_info['page']}"
                             
@@ -612,7 +649,10 @@ def process_message(record):
                                 'image_name': img_name,
                                 's3_key': img_key,
                                 'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': description
+                                'description': description,
+                                'diagram_type': diagram_type,
+                                'is_logo_or_banner': is_logo,
+                                'ocr_keywords': ocr_kw
                             })
                     else:
                         # Original processing for smaller PDFs
@@ -626,12 +666,18 @@ def process_message(record):
                         for img_info in embedded_images:
                             img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                             img_key = f"images/{base_name}/{img_name}"
+                            diagram_type = None
+                            is_logo = False
                             
                             # Analyze image with color and object detection
                             try:
                                 analysis = analyze_image(img_info['data'])
+                                diagram_type = analysis.get('diagram_type')
+                                is_logo = analysis.get('is_logo_or_banner', False)
                                 
                                 desc_parts = [f"Page {img_info['page']}"]
+                                if diagram_type:
+                                    desc_parts.append(f"Type: {diagram_type}")
                                 if analysis['objects']:
                                     desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
                                 if analysis['colors']:
@@ -648,7 +694,7 @@ def process_message(record):
                                     pass
                                 
                                 description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                                logger.info(f"Image analysis: {description[:100]}...")
+                                logger.info(f"Analyzed image page {img_info['page']}: diagram_type={diagram_type}")
                             except Exception as e:
                                 logger.warning(f"Image analysis failed: {e}")
                                 description = f"Image from {base_name}, page {img_info['page']}"
@@ -667,7 +713,10 @@ def process_message(record):
                                 'image_name': img_name,
                                 's3_key': img_key,
                                 'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': description
+                                'description': description,
+                                'diagram_type': diagram_type,
+                                'is_logo_or_banner': is_logo,
+                                'ocr_keywords': analysis.get('ocr_keywords', [])
                             })
                             logger.info(f"Saved image from page {img_info['page']}: {description[:80]}...")
                         
@@ -819,7 +868,10 @@ def process_message(record):
             
             # Add image descriptions as searchable documents
             if image_metadata:
+                logger.info(f"DEBUG: Creating FAISS documents for {len(image_metadata)} images")
                 for idx, img_meta in enumerate(image_metadata, 1):
+                    ocr_kw_debug = img_meta.get('ocr_keywords', [])
+                    logger.info(f"DEBUG: Image #{idx} ocr_keywords from image_metadata: {ocr_kw_debug}")
                     description = img_meta.get('description', 'Image content')
                     
                     color_keywords = []
@@ -846,7 +898,10 @@ def process_message(record):
                             "image_number": idx,
                             "image_url": img_meta['url'],
                             "s3_key": img_meta['s3_key'],
-                            "description": description
+                            "description": description,
+                            "diagram_type": img_meta.get('diagram_type'),
+                            "is_logo_or_banner": img_meta.get('is_logo_or_banner', False),
+                            "ocr_keywords": img_meta.get('ocr_keywords', [])
                         }
                     )
                     docs.append(img_doc)
