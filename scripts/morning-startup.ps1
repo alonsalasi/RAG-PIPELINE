@@ -33,6 +33,9 @@ terraform apply `
 
 if ($LASTEXITCODE -ne 0) {
   Write-Host "Startup failed" -ForegroundColor Red
+  $logFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "scheduler.log"
+  $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  Add-Content -Path $logFile -Value "[$timestamp] Morning startup FAILED - Terraform apply returned exit code $LASTEXITCODE"
   exit 1
 }
 
@@ -48,3 +51,8 @@ Write-Host "      SES email feature not available" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "System is now fully operational" -ForegroundColor Green
 Write-Host "Lambda functions can access AWS services" -ForegroundColor Green
+
+# Log successful run
+$logFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "scheduler.log"
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Add-Content -Path $logFile -Value "[$timestamp] Morning startup completed successfully"

@@ -5,6 +5,8 @@ Write-Host "Night Shutdown - Destroying expensive resources..." -ForegroundColor
 Write-Host ""
 
 $ErrorActionPreference = "Continue"
+$hasErrors = $false
+$errorDetails = @()
 
 # Get VPC ID dynamically
 Write-Host "Getting VPC ID..." -ForegroundColor Yellow
@@ -33,6 +35,8 @@ if ($vpcEndpoints -and $vpcEndpoints.Count -gt 0) {
     Write-Host "  Deleted $($vpcEndpoints.Count) VPC Endpoint(s)" -ForegroundColor Green
   } catch {
     Write-Host "  Failed to delete VPC Endpoints: $_" -ForegroundColor Red
+    $hasErrors = $true
+    $errorDetails += "VPC Endpoints deletion failed: $($_.Exception.Message)"
   }
 } else {
   Write-Host "  No VPC Endpoints found" -ForegroundColor Gray
@@ -74,4 +78,14 @@ if ($remainingEndpoints.VpcEndpoints.Count -eq 0) {
   Write-Host "  All VPC Endpoints destroyed" -ForegroundColor Green
 } else {
   Write-Host "  $($remainingEndpoints.VpcEndpoints.Count) VPC Endpoint(s) still exist" -ForegroundColor Yellow
+}
+
+# Log run result
+$logFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "scheduler.log"
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+if ($hasErrors) {
+  $errorSummary = $errorDetails -join "; "
+  Add-Content -Path $logFile -Value "[$timestamp] Night shutdown completed with ERRORS: $errorSummary"
+} else {
+  Add-Content -Path $logFile -Value "[$timestamp] Night shutdown completed successfully"
 }
