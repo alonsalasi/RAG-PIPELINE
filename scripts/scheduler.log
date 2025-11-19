@@ -1,3 +1,10 @@
 [2025-11-13 18:00:08] Night shutdown completed successfully
 [2025-11-13 19:42:34] Night shutdown completed successfully
 [2025-11-13 19:43:04] Night shutdown completed successfully
+[2025-11-16 08:00:01] Morning startup FAILED - Terraform apply returned exit code 1
+[2025-11-16 18:00:11] Night shutdown completed successfully
+[2025-11-17 08:00:02] Morning startup FAILED - Terraform apply returned exit code 1
+[2025-11-17 13:06:33] Morning startup completed successfully
+[2025-11-17 18:00:14] Night shutdown completed successfully
+[2025-11-18 08:01:22] Morning startup completed successfully
+[2025-11-18 18:00:15] Night shutdown completed successfully

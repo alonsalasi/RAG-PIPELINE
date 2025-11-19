@@ -9,6 +9,11 @@ Write-Host ""
 
 $ErrorActionPreference = "Stop"
 
+# CRITICAL: Change to Terraform directory
+$terraformDir = "D:\Projects\LEIDOS"
+Set-Location $terraformDir
+Write-Host "Working directory: $terraformDir" -ForegroundColor Gray
+
 # Recreate VPC Endpoints, GuardDuty, and AWS Config
 # NOTE: NAT Gateway is permanently disabled to save $64/month
 Write-Host "Creating VPC Endpoints, GuardDuty, and AWS Config..." -ForegroundColor Yellow

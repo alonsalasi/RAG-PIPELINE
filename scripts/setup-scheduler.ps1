@@ -26,7 +26,7 @@ if (-not (Test-Path $logFile)) {
 
 # Morning Task - 8 AM, Sun-Thu
 Write-Host "Creating morning startup task (8 AM, Sun-Thu)..." -ForegroundColor Yellow
-$morningAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$morningScript`" && echo `"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Morning startup completed`" >> `"$logFile`""
+$morningAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$morningScript`" && echo `"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Morning startup completed`" >> `"$logFile`"" -WorkingDirectory "D:\Projects\LEIDOS"
 $morningTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday,Monday,Tuesday,Wednesday,Thursday -At 8:00AM
 $morningSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 Register-ScheduledTask -TaskName "LEIDOS_Morning_Startup" -Action $morningAction -Trigger $morningTrigger -Settings $morningSettings -Description "Starts LEIDOS infrastructure at 8 AM (Sun-Thu)" -Force | Out-Null
