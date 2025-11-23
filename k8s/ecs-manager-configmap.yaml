@@ -1,0 +1,253 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecs-manager-code
+  namespace: ecs-platform
+data:
+  server.py: |
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import json
+    import os
+    import requests
+    
+    GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+    GITHUB_REPO = os.environ.get('GITHUB_REPO')
+    
+    class ECSManagerHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                with open('/app/index.html', 'rb') as f:
+                    self.wfile.write(f.read())
+            elif self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'healthy'}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+        
+        def do_POST(self):
+            if self.path == '/api/ecs/create':
+                content_length = int(self.headers['Content-Length'])
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode())
+                
+                # Trigger GitHub Actions
+                webhook_url = f'https://api.github.com/repos/{GITHUB_REPO}/dispatches'
+                payload = {
+                    'event_type': 'create-ecs-cluster',
+                    'client_payload': {
+                        'clusterName': data.get('clusterName'),
+                        'capacityProvider': data.get('capacityProvider', 'FARGATE'),
+                        'containerInsights': data.get('containerInsights', 'disabled'),
+                        'user': 'k8s-platform'
+                    }
+                }
+                
+                response = requests.post(
+                    webhook_url,
+                    headers={
+                        'Authorization': f'token {GITHUB_TOKEN}',
+                        'Accept': 'application/vnd.github.v3+json'
+                    },
+                    json=payload
+                )
+                
+                if response.status_code == 204:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'message': 'GitHub Actions triggered',
+                        'status': 'pending'
+                    }).encode())
+                else:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'error': 'Failed to trigger GitHub Actions'
+                    }).encode())
+            
+            elif self.path == '/api/ecs/delete':
+                content_length = int(self.headers['Content-Length'])
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode())
+                
+                # Trigger GitHub Actions
+                webhook_url = f'https://api.github.com/repos/{GITHUB_REPO}/dispatches'
+                payload = {
+                    'event_type': 'delete-ecs-cluster',
+                    'client_payload': {
+                        'clusterName': data.get('clusterName'),
+                        'user': 'k8s-platform'
+                    }
+                }
+                
+                response = requests.post(
+                    webhook_url,
+                    headers={
+                        'Authorization': f'token {GITHUB_TOKEN}',
+                        'Accept': 'application/vnd.github.v3+json'
+                    },
+                    json=payload
+                )
+                
+                if response.status_code == 204:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'message': 'GitHub Actions triggered',
+                        'status': 'pending'
+                    }).encode())
+                else:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'error': 'Failed to trigger GitHub Actions'
+                    }).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    if __name__ == '__main__':
+        # Install requests if not available
+        import subprocess
+        subprocess.run(['pip', 'install', 'requests'], check=False)
+        
+        server = HTTPServer(('0.0.0.0', 8080), ECSManagerHandler)
+        print('ECS Manager running on port 8080...')
+        server.serve_forever()
+  
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>ECS Manager - K8s Platform</title>
+        <style>
+            body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }
+            h1 { color: #333; }
+            .form-group { margin: 15px 0; }
+            label { display: block; margin-bottom: 5px; font-weight: bold; }
+            input, select { width: 100%; padding: 8px; font-size: 14px; }
+            button { background: #007bff; color: white; padding: 10px 20px; border: none; cursor: pointer; font-size: 16px; margin-top: 10px; }
+            button:hover { background: #0056b3; }
+            .alert { padding: 15px; margin: 15px 0; border-radius: 4px; }
+            .alert-success { background: #d4edda; color: #155724; }
+            .alert-error { background: #f8d7da; color: #721c24; }
+            .badge { background: #28a745; color: white; padding: 5px 10px; border-radius: 3px; font-size: 12px; }
+        </style>
+    </head>
+    <body>
+        <h1>🚀 ECS Manager <span class="badge">Running on K8s</span></h1>
+        <p>Platform Engineering Practice - Local Kubernetes IDP</p>
+        
+        <div id="alerts"></div>
+        
+        <h2>Create ECS Cluster</h2>
+        <div class="form-group">
+            <label>Cluster Name:</label>
+            <input type="text" id="clusterName" placeholder="my-cluster">
+        </div>
+        <div class="form-group">
+            <label>Capacity Provider:</label>
+            <select id="capacityProvider">
+                <option value="FARGATE">Fargate</option>
+                <option value="FARGATE_SPOT">Fargate Spot</option>
+                <option value="EC2">EC2</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Container Insights:</label>
+            <select id="containerInsights">
+                <option value="disabled">Disabled</option>
+                <option value="enabled">Enabled</option>
+            </select>
+        </div>
+        <button onclick="createCluster()">Create Cluster (via GitOps)</button>
+        
+        <h2>Delete ECS Cluster</h2>
+        <div class="form-group">
+            <label>Cluster Name:</label>
+            <input type="text" id="deleteClusterName" placeholder="my-cluster">
+        </div>
+        <button onclick="deleteCluster()" style="background: #dc3545;">Delete Cluster (via GitOps)</button>
+        
+        <script>
+            function showAlert(message, type) {
+                const alerts = document.getElementById('alerts');
+                const alert = document.createElement('div');
+                alert.className = `alert alert-${type}`;
+                alert.textContent = message;
+                alerts.appendChild(alert);
+                setTimeout(() => alert.remove(), 5000);
+            }
+            
+            async function createCluster() {
+                const clusterName = document.getElementById('clusterName').value;
+                const capacityProvider = document.getElementById('capacityProvider').value;
+                const containerInsights = document.getElementById('containerInsights').value;
+                
+                if (!clusterName) {
+                    showAlert('Please enter cluster name', 'error');
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/ecs/create', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({clusterName, capacityProvider, containerInsights})
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        showAlert('GitHub Actions triggered! Check GitHub for progress (2-5 min)', 'success');
+                        document.getElementById('clusterName').value = '';
+                    } else {
+                        showAlert('Error: ' + data.error, 'error');
+                    }
+                } catch (error) {
+                    showAlert('Error: ' + error.message, 'error');
+                }
+            }
+            
+            async function deleteCluster() {
+                const clusterName = document.getElementById('deleteClusterName').value;
+                
+                if (!clusterName) {
+                    showAlert('Please enter cluster name', 'error');
+                    return;
+                }
+                
+                if (!confirm(`Delete cluster "${clusterName}"?`)) return;
+                
+                try {
+                    const response = await fetch('/api/ecs/delete', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({clusterName})
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        showAlert('GitHub Actions triggered! Check GitHub for progress (2-5 min)', 'success');
+                        document.getElementById('deleteClusterName').value = '';
+                    } else {
+                        showAlert('Error: ' + data.error, 'error');
+                    }
+                } catch (error) {
+                    showAlert('Error: ' + error.message, 'error');
+                }
+            }
+        </script>
+    </body>
+    </html>

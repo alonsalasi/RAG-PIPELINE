@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecs-manager
+  namespace: ecs-platform
+  labels:
+    app: ecs-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ecs-manager
+  template:
+    metadata:
+      labels:
+        app: ecs-manager
+    spec:
+      containers:
+      - name: ecs-manager
+        image: python:3.11-slim
+        command: ["python", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        env:
+        - name: GITHUB_REPO
+          value: "YOUR_USERNAME/LEIDOS"  # CHANGE THIS
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-token
+              key: GITHUB_TOKEN
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: aws-credentials
+              key: AWS_DEFAULT_REGION
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: app-code
+        configMap:
+          name: ecs-manager-code
