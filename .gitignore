@@ -16,3 +16,4 @@ terraform.tfvars
 # Terraform directory
 .terraform/
 .terraform.lock.hcl
+scripts/scheduler.log
