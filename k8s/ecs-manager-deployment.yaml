@@ -18,12 +18,16 @@ spec:
       containers:
       - name: ecs-manager
         image: python:3.11-slim
-        command: ["python", "/app/server.py"]
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install requests
+            python /app/server.py
         ports:
         - containerPort: 8080
         env:
         - name: GITHUB_REPO
-          value: "YOUR_USERNAME/LEIDOS"  # CHANGE THIS
+          value: "alonsalasi/LEIDOS"
         - name: GITHUB_TOKEN
           valueFrom:
             secretKeyRef:

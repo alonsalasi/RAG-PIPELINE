@@ -66,11 +66,12 @@ data:
                         'status': 'pending'
                     }).encode())
                 else:
+                    print(f'GitHub API Error: {response.status_code} - {response.text}')
                     self.send_response(500)
                     self.send_header('Content-type', 'application/json')
                     self.end_headers()
                     self.wfile.write(json.dumps({
-                        'error': 'Failed to trigger GitHub Actions'
+                        'error': f'GitHub API {response.status_code}: {response.text}'
                     }).encode())
             
             elif self.path == '/api/ecs/delete':
@@ -117,10 +118,6 @@ data:
                 self.end_headers()
     
     if __name__ == '__main__':
-        # Install requests if not available
-        import subprocess
-        subprocess.run(['pip', 'install', 'requests'], check=False)
-        
         server = HTTPServer(('0.0.0.0', 8080), ECSManagerHandler)
         print('ECS Manager running on port 8080...')
         server.serve_forever()
@@ -129,6 +126,7 @@ data:
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="UTF-8">
         <title>ECS Manager - K8s Platform</title>
         <style>
             body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }

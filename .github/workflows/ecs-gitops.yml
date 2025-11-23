@@ -67,6 +67,8 @@ jobs:
           sed -i "/resource \"aws_ecs_cluster\" \"cluster_${SAFE_NAME}\"/,/^}/d" ecs-clusters.tf
       
       - name: Commit Changes
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git config user.name "K8s Platform Bot"
           git config user.email "platform@k8s.local"
@@ -78,7 +80,7 @@ jobs:
             git commit -m "K8s Platform: Delete ECS cluster ${{ github.event.client_payload.clusterName }}"
           fi
           
-          git push
+          git push https://$GH_TOKEN@github.com/${{ github.repository }}.git
   
   # STAGE 3: Plan Infrastructure
   plan:
