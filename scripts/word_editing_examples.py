@@ -159,52 +159,71 @@ def example_4_meeting_notes():
     
     meeting_date = datetime.now().strftime("%Y-%m-%d")
     
+    # Create base document
+    output_path = f'/tmp/meeting_notes_{meeting_date}.docx'
     content = {
         'title': 'Team Meeting Notes',
         'paragraphs': [
             f'Date: {meeting_date}',
             'Attendees: Alice, Bob, Carol, David',
             'Duration: 1 hour'
-        ],
-        'headings': [
-            {'text': 'Agenda Items', 'level': 1},
-            {'text': '1. Project Status Update', 'level': 2}
-        ],
-        'paragraphs': [
-            'The project is on track for Q1 delivery.',
-            'All milestones have been met.',
-        ],
-        'headings': [
-            {'text': '2. Action Items', 'level': 2}
-        ],
-        'tables': [
-            {
-                'rows': 4,
-                'cols': 3,
-                'data': [
-                    ['Task', 'Owner', 'Due Date'],
-                    ['Update documentation', 'Alice', '2025-12-20'],
-                    ['Code review', 'Bob', '2025-12-18'],
-                    ['Testing plan', 'Carol', '2025-12-22']
-                ]
-            }
-        ],
-        'headings': [
-            {'text': '3. Next Meeting', 'level': 2}
-        ],
-        'paragraphs': [
-            'Scheduled for next week, same time.',
-            'Focus will be on deployment planning.'
         ]
     }
     
-    output_path = f'/tmp/meeting_notes_{meeting_date}.docx'
-    if create_docx(output_path, content):
-        print(f"✓ Meeting notes created: {output_path}")
-        return output_path
-    else:
+    if not create_docx(output_path, content):
         print("✗ Failed to create meeting notes")
         return None
+    
+    # Add agenda items section
+    modifications_1 = {
+        'add_heading': [
+            {'text': 'Agenda Items', 'level': 1},
+            {'text': '1. Project Status Update', 'level': 2}
+        ],
+        'add_paragraph': [
+            {'text': 'The project is on track for Q1 delivery.'},
+            {'text': 'All milestones have been met.'}
+        ]
+    }
+    
+    if not edit_docx(output_path, modifications=modifications_1):
+        print("✗ Failed to add agenda items")
+        return None
+    
+    # Add action items section with table
+    modifications_2 = {
+        'add_heading': {'text': '2. Action Items', 'level': 2},
+        'add_table': {
+            'rows': 4,
+            'cols': 3,
+            'data': [
+                ['Task', 'Owner', 'Due Date'],
+                ['Update documentation', 'Alice', '2025-12-20'],
+                ['Code review', 'Bob', '2025-12-18'],
+                ['Testing plan', 'Carol', '2025-12-22']
+            ]
+        }
+    }
+    
+    if not edit_docx(output_path, modifications=modifications_2):
+        print("✗ Failed to add action items")
+        return None
+    
+    # Add next meeting section
+    modifications_3 = {
+        'add_heading': {'text': '3. Next Meeting', 'level': 2},
+        'add_paragraph': [
+            {'text': 'Scheduled for next week, same time.'},
+            {'text': 'Focus will be on deployment planning.'}
+        ]
+    }
+    
+    if not edit_docx(output_path, modifications=modifications_3):
+        print("✗ Failed to add next meeting section")
+        return None
+    
+    print(f"✓ Meeting notes created: {output_path}")
+    return output_path
 
 def example_5_batch_updates():
     """Example: Batch update multiple documents."""
