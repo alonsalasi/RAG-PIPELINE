@@ -7,6 +7,7 @@ import logging
 from PIL import Image
 from pptx import Presentation
 from docx import Document as DocxDocument
+from docx.shared import Pt
 from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
@@ -321,7 +322,6 @@ def edit_docx(file_path, output_path=None, modifications=None):
         # Modify styles
         if 'modify_styles' in modifications:
             style_data = modifications['modify_styles']
-            from docx.shared import Pt
             
             if 'paragraph_font' in style_data or 'paragraph_size' in style_data:
                 for para in doc.paragraphs:

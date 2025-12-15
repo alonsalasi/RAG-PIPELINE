@@ -6,7 +6,7 @@ This shows how to use the Word editing functionality in real-world scenarios.
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Add Lambda directory to path for imports
 lambda_dir = Path(__file__).parent.parent / 'Lambda'
@@ -198,9 +198,9 @@ def example_4_meeting_notes():
             'cols': 3,
             'data': [
                 ['Task', 'Owner', 'Due Date'],
-                ['Update documentation', 'Alice', '2025-12-20'],
-                ['Code review', 'Bob', '2025-12-18'],
-                ['Testing plan', 'Carol', '2025-12-22']
+                ['Update documentation', 'Alice', (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d')],
+                ['Code review', 'Bob', (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')],
+                ['Testing plan', 'Carol', (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')]
             ]
         }
     }
