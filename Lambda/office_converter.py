@@ -222,3 +222,189 @@ def extract_xlsx(file_path):
     except Exception as e:
         logger.error(f"XLSX extraction failed: {e}")
         return "", []
+
+def edit_docx(file_path, output_path=None, modifications=None):
+    """
+    Edit a Word document with various modifications.
+    
+    Args:
+        file_path: Path to the input DOCX file
+        output_path: Path to save the modified document (defaults to file_path if None)
+        modifications: Dict containing modification instructions:
+            - 'add_paragraph': {'text': str, 'style': str (optional)}
+            - 'add_heading': {'text': str, 'level': int (1-9)}
+            - 'replace_text': {'old': str, 'new': str}
+            - 'add_table': {'rows': int, 'cols': int, 'data': list of lists (optional)}
+            - 'modify_styles': {'paragraph_font': str, 'paragraph_size': int}
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        doc = DocxDocument(file_path)
+        
+        if modifications is None:
+            modifications = {}
+        
+        # Add new paragraphs
+        if 'add_paragraph' in modifications:
+            para_data = modifications['add_paragraph']
+            if isinstance(para_data, list):
+                for item in para_data:
+                    p = doc.add_paragraph(item.get('text', ''))
+                    if 'style' in item:
+                        p.style = item['style']
+            else:
+                p = doc.add_paragraph(para_data.get('text', ''))
+                if 'style' in para_data:
+                    p.style = para_data['style']
+        
+        # Add headings
+        if 'add_heading' in modifications:
+            heading_data = modifications['add_heading']
+            if isinstance(heading_data, list):
+                for item in heading_data:
+                    doc.add_heading(item.get('text', ''), level=item.get('level', 1))
+            else:
+                doc.add_heading(heading_data.get('text', ''), level=heading_data.get('level', 1))
+        
+        # Replace text
+        if 'replace_text' in modifications:
+            replace_data = modifications['replace_text']
+            if isinstance(replace_data, list):
+                replacements = replace_data
+            else:
+                replacements = [replace_data]
+            
+            for replacement in replacements:
+                old_text = replacement.get('old', '')
+                new_text = replacement.get('new', '')
+                
+                # Replace in paragraphs
+                for para in doc.paragraphs:
+                    if old_text in para.text:
+                        for run in para.runs:
+                            if old_text in run.text:
+                                run.text = run.text.replace(old_text, new_text)
+                
+                # Replace in tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for para in cell.paragraphs:
+                                if old_text in para.text:
+                                    for run in para.runs:
+                                        if old_text in run.text:
+                                            run.text = run.text.replace(old_text, new_text)
+        
+        # Add tables
+        if 'add_table' in modifications:
+            table_data = modifications['add_table']
+            if isinstance(table_data, list):
+                tables = table_data
+            else:
+                tables = [table_data]
+            
+            for table_info in tables:
+                rows = table_info.get('rows', 2)
+                cols = table_info.get('cols', 2)
+                table = doc.add_table(rows=rows, cols=cols)
+                table.style = 'Table Grid'
+                
+                # Populate table if data provided
+                if 'data' in table_info:
+                    data = table_info['data']
+                    for i, row_data in enumerate(data[:rows]):
+                        for j, cell_data in enumerate(row_data[:cols]):
+                            table.rows[i].cells[j].text = str(cell_data)
+        
+        # Modify styles
+        if 'modify_styles' in modifications:
+            style_data = modifications['modify_styles']
+            from docx.shared import Pt
+            
+            if 'paragraph_font' in style_data or 'paragraph_size' in style_data:
+                for para in doc.paragraphs:
+                    for run in para.runs:
+                        if 'paragraph_font' in style_data:
+                            run.font.name = style_data['paragraph_font']
+                        if 'paragraph_size' in style_data:
+                            run.font.size = Pt(style_data['paragraph_size'])
+        
+        # Save the document
+        if output_path is None:
+            output_path = file_path
+        
+        doc.save(output_path)
+        logger.info(f"DOCX edited successfully: {output_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"DOCX editing failed: {e}")
+        return False
+
+def create_docx(output_path, content=None):
+    """
+    Create a new Word document from scratch.
+    
+    Args:
+        output_path: Path to save the new document
+        content: Dict containing content to add:
+            - 'title': str - Document title (Heading 1)
+            - 'paragraphs': list of str or dict - Text paragraphs to add
+            - 'tables': list of dict - Tables to add
+            - 'headings': list of dict - Headings to add
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        doc = DocxDocument()
+        
+        if content is None:
+            content = {}
+        
+        # Add title
+        if 'title' in content:
+            doc.add_heading(content['title'], level=0)
+        
+        # Add headings
+        if 'headings' in content:
+            for heading in content['headings']:
+                if isinstance(heading, dict):
+                    doc.add_heading(heading.get('text', ''), level=heading.get('level', 1))
+                else:
+                    doc.add_heading(str(heading), level=1)
+        
+        # Add paragraphs
+        if 'paragraphs' in content:
+            for para in content['paragraphs']:
+                if isinstance(para, dict):
+                    p = doc.add_paragraph(para.get('text', ''))
+                    if 'style' in para:
+                        p.style = para['style']
+                else:
+                    doc.add_paragraph(str(para))
+        
+        # Add tables
+        if 'tables' in content:
+            for table_info in content['tables']:
+                rows = table_info.get('rows', 2)
+                cols = table_info.get('cols', 2)
+                table = doc.add_table(rows=rows, cols=cols)
+                table.style = 'Table Grid'
+                
+                # Populate table if data provided
+                if 'data' in table_info:
+                    data = table_info['data']
+                    for i, row_data in enumerate(data[:rows]):
+                        for j, cell_data in enumerate(row_data[:cols]):
+                            table.rows[i].cells[j].text = str(cell_data)
+        
+        doc.save(output_path)
+        logger.info(f"DOCX created successfully: {output_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"DOCX creation failed: {e}")
+        return False
