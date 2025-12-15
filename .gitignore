@@ -17,3 +17,10 @@ terraform.tfvars
 .terraform/
 .terraform.lock.hcl
 scripts/scheduler.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
