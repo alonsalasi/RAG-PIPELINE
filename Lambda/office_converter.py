@@ -263,13 +263,12 @@ def create_docx(output_path, content=None):
         raise
 
 
-def edit_docx(file_path, output_path=None):
+def edit_docx(file_path):
     """
     Open an existing Word document for editing.
     
     Args:
         file_path: Path to the Word document to edit
-        output_path: Optional path to save the edited document (defaults to file_path)
     
     Returns:
         Document object for editing
@@ -437,7 +436,7 @@ def add_table_to_docx(doc, data, style='Light Grid Accent 1'):
         save_docx(doc, "output.docx")
     """
     try:
-        if not data or len(data) == 0:
+        if not data:
             raise ValueError("Table data cannot be empty")
         
         rows = len(data)
