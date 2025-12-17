@@ -28,6 +28,7 @@ resource "aws_apigatewayv2_integration" "rag_api_integration" {
   integration_type   = "AWS_PROXY"
   integration_uri    = aws_lambda_function.agent_executor.invoke_arn
   payload_format_version = "1.0"
+  timeout_milliseconds = 30000
 }
 
 # ❗️FIX 3: Deleted the old 'ANY' route and created three specific routes

@@ -108,6 +108,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         ],
         Resource = "*",
         Condition = {
+
           StringEquals = {
             "aws:RequestedRegion" = data.aws_region.current.name
           }

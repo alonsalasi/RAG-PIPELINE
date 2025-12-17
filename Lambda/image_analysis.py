@@ -105,32 +105,48 @@ def detect_diagram_type(image_bytes, ocr_keywords=None):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         width, height = img.size
+        file_size = len(image_bytes)
         img_array = np.array(img.convert('RGB'))
-        print(f"[DIAGRAM] Analyzing image: {width}x{height}px")
-        logger.info(f"Analyzing image: {width}x{height}px")
+        print(f"[DIAGRAM] Analyzing image: {width}x{height}px, {file_size} bytes")
+        logger.info(f"Analyzing image: {width}x{height}px, {file_size} bytes")
         
-        # RULE 1: Filter out small images (likely logos/icons)
+        # RULE 1: Filter out tiny images (logos/icons) - STRICT
         min_dimension = min(width, height)
-        if min_dimension < 200:
-            print(f"[DIAGRAM] Too small ({min_dimension}px) - REJECTED (likely logo/icon)")
+        if min_dimension < 300:
+            print(f"[DIAGRAM] Too small ({min_dimension}px) - REJECTED (logo/icon)")
             return None
         
-        # RULE 2: Filter out very wide banners (aspect ratio > 4:1)
-        aspect_ratio = width / height
-        if aspect_ratio > 4.0 or aspect_ratio < 0.25:
-            print(f"[DIAGRAM] Aspect ratio: {aspect_ratio:.2f} - REJECTED (banner/logo)")
+        # RULE 1B: Filter out small file sizes (compressed logos/icons)
+        if file_size < 50000:  # 50KB minimum for diagrams
+            print(f"[DIAGRAM] File too small ({file_size} bytes) - REJECTED (logo/icon)")
             return None
-        print(f"[DIAGRAM] Aspect ratio: {aspect_ratio:.2f} - PASSED")
+        
+        # RULE 2: Filter out banners and letterheads (extreme aspect ratios)
+        aspect_ratio = width / height
+        if aspect_ratio > 3.5 or aspect_ratio < 0.3:
+            print(f"[DIAGRAM] Aspect ratio: {aspect_ratio:.2f} - REJECTED (banner/letterhead)")
+            return None
+        
+        # RULE 3: Filter out square logos (typical logo size)
+        if 0.9 < aspect_ratio < 1.1 and min_dimension < 500:
+            print(f"[DIAGRAM] Square and small ({width}x{height}) - REJECTED (logo)")
+            return None
+        
+        print(f"[DIAGRAM] Size checks PASSED: {width}x{height}px, {file_size} bytes, ratio={aspect_ratio:.2f}")
         
         # OPENCV: Edge and shape analysis
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         edges = cv2.Canny(gray, 50, 150)
         edge_density = np.count_nonzero(edges) / edges.size
         
-        # RULE 3: QR codes have very high edge density OR many small rectangles
+        # RULE 3: QR codes have very high edge density
         if edge_density > 0.20:
             print(f"[DIAGRAM] Edge density: {edge_density:.3f} - REJECTED (QR code)")
             return None
+        
+        # OPENCV: Count shapes (must be done before using contours)
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        rectangles = sum(1 for cnt in contours if len(cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)) == 4)
         
         # Count small rectangles (QR codes have many tiny squares)
         small_rectangles = sum(1 for cnt in contours if len(cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)) == 4 and cv2.contourArea(cnt) < 500)
@@ -139,10 +155,6 @@ def detect_diagram_type(image_bytes, ocr_keywords=None):
             return None
         
         print(f"[DIAGRAM] Edge density: {edge_density:.3f} - PASSED")
-        
-        # OPENCV: Count shapes
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        rectangles = sum(1 for cnt in contours if len(cv2.approxPolyDP(cnt, 0.04 * cv2.arcLength(cnt, True), True)) == 4)
         
         lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
         line_count = len(lines) if lines is not None else 0

@@ -779,7 +779,23 @@ def rebuild_master_index():
                 
                 # Add image documents with surrounding text context
                 images = metadata.get('images', [])
-                for idx, img_meta in enumerate(images, 1):
+                # Filter out small images BEFORE numbering
+                filtered_images = []
+                for img_meta in images:
+                    s3_key = img_meta.get('s3_key', '')
+                    # Skip tiny images (same logic as search)
+                    if s3_key:
+                        try:
+                            s3_obj = s3_client.head_object(Bucket=BUCKET, Key=s3_key)
+                            file_size = s3_obj.get('ContentLength', 0)
+                            if file_size < 10000:  # 10KB minimum
+                                continue
+                        except:
+                            pass
+                    filtered_images.append(img_meta)
+                
+                # Now number the filtered images
+                for idx, img_meta in enumerate(filtered_images, 1):
                     img_desc = img_meta.get('description', 'Image')
                     s3_key = img_meta.get('s3_key', '')
                     page = img_meta.get('page')
@@ -1139,8 +1155,8 @@ def handle_search_action(event):
         # Extract document name - try to match against actual document names in index
         doc_filter = None
         
-        # For specific image number requests with document name, search by document name
-        search_k = 50 if requested_image_num else 30
+        # For specific image number requests, search MORE results to ensure we find it
+        search_k = 100 if requested_image_num else 30
         
         # Extract document name early to use in search
         doc_name_in_query = None
@@ -1178,16 +1194,21 @@ def handle_search_action(event):
         
         # Match document name - be more flexible with matching
         if doc_name_in_query:
+            # Normalize for comparison (handle HTML entities, case, spaces)
+            import html
+            normalized_query = html.unescape(doc_name_in_query).strip().upper()
+            
             # Try exact match first
             if doc_name_in_query in unique_sources:
                 doc_filter = doc_name_in_query
                 logger.info(f"🎯 ✅ Exact match: '{doc_filter}'")
             else:
-                # Try substring match in both directions
+                # Try normalized matching
                 for source in unique_sources:
-                    if doc_name_in_query in source or source in doc_name_in_query:
+                    normalized_source = html.unescape(source).strip().upper()
+                    if normalized_query == normalized_source or normalized_query in normalized_source or normalized_source in normalized_query:
                         doc_filter = source
-                        logger.info(f"🎯 ✅ Substring match: query='{doc_name_in_query}' matched source='{doc_filter}'")
+                        logger.info(f"🎯 ✅ Normalized match: query='{doc_name_in_query}' matched source='{doc_filter}'")
                         break
                 
                 # If still no match, don't filter - let all results through
@@ -1262,24 +1283,38 @@ def handle_search_action(event):
         for doc, score in raw_results:
             if doc.metadata.get('type') == 'image':
                 desc = doc.page_content.lower()
+                s3_key = doc.metadata.get('s3_key', '')
                 
-                # Filter out ONLY obvious non-technical images (be conservative)
-                exclude_patterns = [
-                    ('qr code', 'qr-code', 'barcode'),
-                    ('certification badge', 'certificate badge', 'professional badge'),
-                    ('company logo', 'brand logo'),
-                    ('profile picture', 'avatar', 'headshot')
-                ]
-                
-                should_exclude = False
-                for pattern_group in exclude_patterns:
-                    if any(pattern in desc for pattern in pattern_group):
-                        logger.info(f"Filtering out: {doc.metadata.get('source', '')} - matched: {pattern_group}")
-                        should_exclude = True
-                        break
-                
-                if should_exclude:
-                    continue
+                # SKIP filtering if user requested a specific image number
+                if not requested_image_num:
+                    # Filter out tiny images (logos, icons < 10KB)
+                    if s3_key:
+                        try:
+                            s3_obj = get_s3_client().head_object(Bucket=BUCKET, Key=s3_key)
+                            file_size = s3_obj.get('ContentLength', 0)
+                            if file_size < 10000:  # 10KB minimum
+                                logger.info(f"Filtering out tiny image ({file_size} bytes): {s3_key}")
+                                continue
+                        except:
+                            pass
+                    
+                    # Filter out ONLY obvious non-technical images (be conservative)
+                    exclude_patterns = [
+                        ('qr code', 'qr-code', 'barcode'),
+                        ('certification badge', 'certificate badge', 'professional badge'),
+                        ('company logo', 'brand logo'),
+                        ('profile picture', 'avatar', 'headshot')
+                    ]
+                    
+                    should_exclude = False
+                    for pattern_group in exclude_patterns:
+                        if any(pattern in desc for pattern in pattern_group):
+                            logger.info(f"Filtering out: {doc.metadata.get('source', '')} - matched: {pattern_group}")
+                            should_exclude = True
+                            break
+                    
+                    if should_exclude:
+                        continue
                     
                 image_candidates.append((doc, score))
             else:
@@ -1289,23 +1324,33 @@ def handle_search_action(event):
         final_results = []
         
         # If specific image number requested, filter to that image only
-        if requested_image_num and image_candidates:
-            logger.info(f"🔢 Filtering for image #{requested_image_num}")
+        if requested_image_num:
+            logger.info(f"🔢 Filtering for image #{requested_image_num}, doc_filter='{doc_filter}'")
+            
+            # Search ALL results (not just image_candidates) for the specific image number
             numbered_images = []
-            for doc, score in image_candidates:
+            for doc, score in raw_results:
+                if doc.metadata.get('type') != 'image':
+                    continue
+                    
                 img_num = doc.metadata.get('image_number', 0)
                 source = doc.metadata.get('source', '')
                 
                 if doc_filter:
-                    if img_num == requested_image_num and source == doc_filter:
+                    # Normalize both for comparison
+                    import html
+                    normalized_source = html.unescape(source).strip().upper()
+                    normalized_filter = html.unescape(doc_filter).strip().upper()
+                    
+                    if img_num == requested_image_num and normalized_source == normalized_filter:
                         numbered_images.append((doc, score))
                         logger.info(f"✅ MATCH: Image #{img_num} from {source}")
                     elif img_num == requested_image_num:
-                        logger.info(f"❌ SKIP: Image #{img_num} from {source} (wrong document)")
+                        logger.info(f"❌ SKIP: Image #{img_num} from {source} (doc mismatch: '{normalized_source}' != '{normalized_filter}')")
                 else:
                     if img_num == requested_image_num:
                         numbered_images.append((doc, score))
-                        logger.info(f"✅ MATCH: Image #{img_num} from {source} (no filter)")
+                        logger.info(f"✅ MATCH: Image #{img_num} from {source}")
             
             if numbered_images:
                 final_results.extend(numbered_images[:1])
@@ -1313,11 +1358,14 @@ def handle_search_action(event):
                 wants_text = False
                 logger.info(f"🎯 Returning image #{requested_image_num}")
             else:
+                # Log all image numbers found for debugging
+                all_img_nums = [doc.metadata.get('image_number') for doc, _ in raw_results if doc.metadata.get('type') == 'image']
+                logger.warning(f"⚠️ Image #{requested_image_num} not found. Available images: {sorted(set(all_img_nums))}")
+                
                 if doc_filter:
-                    result = f"Image #{requested_image_num} not found in document '{doc_filter}'. The document may not be indexed or the image number may be incorrect."
+                    result = f"Image #{requested_image_num} not found in document '{doc_filter}'. Available images: {sorted(set(all_img_nums))}"
                 else:
-                    result = f"Image #{requested_image_num} not found."
-                logger.warning(f"⚠️ {result}")
+                    result = f"Image #{requested_image_num} not found. Available images: {sorted(set(all_img_nums))}"
                 return {
                     "messageVersion": "1.0",
                     "response": {
@@ -1719,6 +1767,8 @@ def handle_agent_query(event):
         
         query = body.get("query", "")
         session_id = body.get("sessionId", f"session-{int(time.time())}")
+        query_id = body.get("queryId")  # For polling
+        is_async = body.get("async", False)  # Internal flag for async processing
         logger.info(f"⏱️ TIMING: Parse body took {time.time() - parse_start:.3f}s")
         
         # Validate inputs
@@ -1727,6 +1777,28 @@ def handle_agent_query(event):
         
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
+        
+        # If query is long (>100 chars), start async immediately to avoid timeout
+        if not query_id and not is_async and len(query) > 100:
+            query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+            logger.info(f"Long query detected, starting async processing: {query_id}")
+            
+            # Invoke self async
+            lambda_client = boto3.client('lambda')
+            lambda_client.invoke(
+                FunctionName=os.getenv('AWS_LAMBDA_FUNCTION_NAME'),
+                InvocationType='Event',
+                Payload=json.dumps({
+                    "body": json.dumps({
+                        "query": query,
+                        "sessionId": session_id,
+                        "queryId": query_id,
+                        "async": True
+                    })
+                })
+            )
+            
+            return cors_response({"status": "processing", "queryId": query_id})
         
         config_start = time.time()
         agent_id = os.getenv("BEDROCK_AGENT_ID")
@@ -1743,36 +1815,45 @@ def handle_agent_query(event):
             logger.error(f"Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
         
-        try:
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Agent invocation timed out")
-            
-            # Set 60 second timeout for agent invocation
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(60)
-            
-            invoke_start = time.time()
-            logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
-            logger.info(f"🤖 AGENT QUERY: {sanitize_for_logging(query)}")
-            logger.info(f"📋 Agent ID: {agent_id[:20]}... | Alias: {alias_id[:20]}...")
+        # If this is a poll request, check S3 for result
+        if query_id:
             try:
-                response = bedrock_agent_runtime.invoke_agent(
-                    agentId=agent_id,
-                    agentAliasId=alias_id,
-                    sessionId=session_id,
-                    inputText=query,
-                    enableTrace=True  # Enable trace to see if search is called
-                )
-                logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
-                logger.info(f"✅ Agent response object received, processing stream...")
-            finally:
-                signal.alarm(0)  # Cancel the alarm
+                s3_client = get_s3_client()
+                result_key = f"async-queries/{query_id}.json"
+                result_obj = s3_client.get_object(Bucket=BUCKET, Key=result_key)
+                result_data = json.loads(result_obj['Body'].read().decode('utf-8'))
                 
-        except TimeoutError as e:
-            logger.error(f"Agent invocation timeout after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
-            return cors_response({"error": "Request timed out. Please try a simpler query."}, 504)
+                if result_data.get('status') == 'completed':
+                    # Delete the result file
+                    s3_client.delete_object(Bucket=BUCKET, Key=result_key)
+                    return cors_response({
+                        "response": result_data.get('response', ''),
+                        "sessionId": session_id,
+                        "images": result_data.get('images', []),
+                        "status": "completed"
+                    })
+                else:
+                    return cors_response({"status": "processing", "queryId": query_id})
+            except s3_client.exceptions.NoSuchKey:
+                return cors_response({"status": "processing", "queryId": query_id})
+            except Exception as e:
+                logger.error(f"Poll error: {e}")
+                return cors_response({"error": "Failed to check query status"}, 500)
+        
+        invoke_start = time.time()
+        logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
+        logger.info(f"🤖 AGENT QUERY: {sanitize_for_logging(query)}")
+        logger.info(f"📋 Agent ID: {agent_id[:20]}... | Alias: {alias_id[:20]}...")
+        try:
+            response = bedrock_agent_runtime.invoke_agent(
+                agentId=agent_id,
+                agentAliasId=alias_id,
+                sessionId=session_id,
+                inputText=query,
+                enableTrace=True
+            )
+            logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
+            logger.info(f"✅ Agent response object received, processing stream...")
         except Exception as e:
             logger.error(f"Agent invocation failed after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to invoke agent"}, 500)
@@ -1816,34 +1897,49 @@ def handle_agent_query(event):
         # DEBUG: Log what agent actually returned
         logger.info(f"📝 AGENT RESPONSE (length={len(answer)}): {answer[:500] if len(answer) > 0 else '[EMPTY]'}")
         
-        # Extract image paths - handle multiple formats:
-        # Format 1: IMAGE_URL:path|PAGE:n|SOURCE:name (with metadata)
-        # Format 2: IMAGE_URL:path (simple format)  
-        # Format 3: images/path/file.jpg|SOURCE:name (plain path with metadata)
-        # Format 4: images/path/file.jpg (plain S3 path)
-        matches = []
+        # Check if user explicitly requested images
+        query_lower = query.lower()
+        visual_keywords = ['show me', 'display', 'picture', 'photo', 'image', 'diagram', 'תראה', 'הצג', 'תמונה', 'דיאגרמה']
+        user_wants_images = any(keyword in query_lower for keyword in visual_keywords)
         
-        # Try IMAGE_URL: prefix format first
-        image_url_pattern = r'IMAGE_URL:([^\n|]+)'
-        matches = re.findall(image_url_pattern, answer)
+        if not user_wants_images:
+            logger.info("🚫 User did not request images, skipping image extraction")
+            # Strip IMAGE_URL markers from text response
+            answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer)
+            answer = re.sub(r'images/[^\n]+\.(?:jpg|jpeg|png|gif)[^\n]*\n?', '', answer)
+            answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
+        else:
+            logger.info("✅ User requested images, extracting IMAGE_URLs")
         
-        # If no IMAGE_URL: prefix, look for plain S3 paths with |SOURCE: metadata
-        if not matches:
-            plain_with_source = r'(images/[^|\n]+\.(?:jpg|jpeg|png|gif))\|SOURCE:'
-            matches = re.findall(plain_with_source, answer)
-        
-        # If still no matches, look for any S3 image paths
-        if not matches:
-            plain_path_pattern = r'(images/[^\s\n|]+\.(?:jpg|jpeg|png|gif))'
-            matches = re.findall(plain_path_pattern, answer)
-        
-        logger.info(f"🔍 Found {len(matches)} image paths in response")
-        
-        if matches:
-            logger.info(f"Found {len(matches)} IMAGE_URL markers in agent response")
-            s3_client = get_s3_client()
-            unique_keys = set()
-            failed_images = []
+        if user_wants_images:
+            # Extract image paths - handle multiple formats:
+            # Format 1: IMAGE_URL:path|PAGE:n|SOURCE:name (with metadata)
+            # Format 2: IMAGE_URL:path (simple format)  
+            # Format 3: images/path/file.jpg|SOURCE:name (plain path with metadata)
+            # Format 4: images/path/file.jpg (plain S3 path)
+            matches = []
+            
+            # Try IMAGE_URL: prefix format first
+            image_url_pattern = r'IMAGE_URL:([^\n|]+)'
+            matches = re.findall(image_url_pattern, answer)
+            
+            # If no IMAGE_URL: prefix, look for plain S3 paths with |SOURCE: metadata
+            if not matches:
+                plain_with_source = r'(images/[^|\n]+\.(?:jpg|jpeg|png|gif))\|SOURCE:'
+                matches = re.findall(plain_with_source, answer)
+            
+            # If still no matches, look for any S3 image paths
+            if not matches:
+                plain_path_pattern = r'(images/[^\s\n|]+\.(?:jpg|jpeg|png|gif))'
+                matches = re.findall(plain_path_pattern, answer)
+            
+            logger.info(f"🔍 Found {len(matches)} image paths in response")
+            
+            if matches:
+                logger.info(f"Found {len(matches)} IMAGE_URL markers in agent response")
+                s3_client = get_s3_client()
+                unique_keys = set()
+                failed_images = []
             
             for s3_key in matches:
                 # Decode HTML entities (e.g., &quot; -> ")
@@ -1976,6 +2072,25 @@ def handle_agent_query(event):
         
         logger.info(f"💰 AGENT TOKEN USAGE: Input: ~{input_tokens:,} | Output: ~{output_tokens:,} | Total: ~{total_tokens:,} tokens (~${total_cost:.4f})")
         logger.info(f"⏱️ TIMING: TOTAL agent query took {time.time() - total_start:.3f}s")
+        
+        # If this was an async invocation, save result to S3
+        if is_async:
+            s3_client = get_s3_client()
+            result_key = f"async-queries/{query_id}.json"
+            s3_client.put_object(
+                Bucket=BUCKET,
+                Key=result_key,
+                Body=json.dumps({
+                    "status": "completed",
+                    "response": answer,
+                    "sessionId": session_id,
+                    "images": images,
+                    "timestamp": int(time.time())
+                }),
+                ContentType='application/json'
+            )
+            return {"statusCode": 200}  # Async invocation, no response needed
+        
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     
     except json.JSONDecodeError as e:

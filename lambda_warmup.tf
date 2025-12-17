@@ -2,8 +2,8 @@
 
 resource "aws_cloudwatch_event_rule" "lambda_warmup" {
   name                = "${var.project_name}-lambda-warmup"
-  description         = "Trigger Lambda every 10 minutes to keep it warm"
-  schedule_expression = "rate(5 minutes)"
+  description         = "Trigger Lambda every 2 minutes to keep it warm"
+  schedule_expression = "rate(2 minutes)"
 }
 
 resource "aws_cloudwatch_event_target" "lambda_warmup_target" {

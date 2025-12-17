@@ -427,7 +427,7 @@ def process_message(record):
                 update_progress(base_name, 20, "Extracting PowerPoint content...")
                 full_text, extracted_images = extract_pptx(local_path)
                 
-                # Save extracted images
+                # Save extracted images - NO FILTERING, keep all images with sequential numbering
                 for img_info in extracted_images:
                     img_name = f"{base_name}_slide{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                     img_key = f"images/{base_name}/{img_name}"

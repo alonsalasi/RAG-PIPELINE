@@ -14,6 +14,18 @@ $terraformDir = "D:\Projects\LEIDOS"
 Set-Location $terraformDir
 Write-Host "Working directory: $terraformDir" -ForegroundColor Gray
 
+# Initialize Terraform backend
+Write-Host "Initializing Terraform..." -ForegroundColor Yellow
+terraform init -reconfigure
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Terraform init failed" -ForegroundColor Red
+  $logFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "scheduler.log"
+  $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  Add-Content -Path $logFile -Value "[$timestamp] Morning startup FAILED - Terraform init returned exit code $LASTEXITCODE"
+  exit 1
+}
+
 # Recreate VPC Endpoints, GuardDuty, and AWS Config
 # NOTE: NAT Gateway is permanently disabled to save $64/month
 Write-Host "Creating VPC Endpoints, GuardDuty, and AWS Config..." -ForegroundColor Yellow
