@@ -1778,10 +1778,10 @@ def handle_agent_query(event):
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
         
-        # If query is long (>100 chars), start async immediately to avoid timeout
-        if not query_id and not is_async and len(query) > 100:
+        # Always use async to avoid API Gateway 30s timeout
+        if not query_id and not is_async:
             query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-            logger.info(f"Long query detected, starting async processing: {query_id}")
+            logger.info(f"Starting async processing to avoid timeout: {query_id}")
             
             # Invoke self async
             lambda_client = boto3.client('lambda')
