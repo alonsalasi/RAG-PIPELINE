@@ -110,12 +110,6 @@ resource "aws_sns_topic" "config_alerts" {
   kms_master_key_id = aws_kms_key.agent_encryption.arn
 }
 
-resource "aws_sns_topic_subscription" "config_alerts_email" {
-  topic_arn = aws_sns_topic.config_alerts.arn
-  protocol  = "email"
-  endpoint  = "alon.salasi@leidos.com"
-}
-
 # Rule: S3 bucket encryption must be enabled
 resource "aws_config_config_rule" "s3_bucket_encryption" {
   name = "${var.project_name}-s3-encryption-required"

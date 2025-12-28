@@ -4,7 +4,7 @@ resource "aws_s3_object" "frontend" {
   bucket       = aws_s3_bucket.frontend.id
   key          = "index.html"
   source       = "${path.module}/index.html"
-  content_type = "text/html"
+  content_type = "text/html; charset=utf-8"
   etag         = filemd5("${path.module}/index.html")
 
   lifecycle {
@@ -34,7 +34,7 @@ resource "null_resource" "update_frontend_config" {
         $content = $content -replace 'COGNITO_DOMAIN_PLACEHOLDER', '${aws_cognito_user_pool_domain.agent_domain.domain}'
         $content = $content -replace 'API_GATEWAY_URL_PLACEHOLDER', '${aws_apigatewayv2_stage.rag_api_stage.invoke_url}'
         $content | Out-File -FilePath $tempFile -Encoding UTF8 -ErrorAction Stop
-        aws s3 cp $tempFile s3://${aws_s3_bucket.frontend.id}/index.html --content-type text/html --profile ${var.aws_profile}
+        aws s3 cp $tempFile s3://${aws_s3_bucket.frontend.id}/index.html --content-type "text/html; charset=utf-8" --profile ${var.aws_profile}
         Remove-Item $tempFile
         if ($LASTEXITCODE -ne 0) {
           Write-Error "S3 upload failed with exit code $LASTEXITCODE"
