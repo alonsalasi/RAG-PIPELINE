@@ -4,5 +4,4 @@ docker build --platform linux/amd64 --provenance=false -t pdfquery-agent-lambda-
 
 docker tag pdfquery-agent-lambda-production:latest 656008069461.dkr.ecr.us-east-1.amazonaws.com/pdfquery-agent-lambda-production:latest
 
-docker push 656008069461.dkr.ecr.us-east-1.
-amazonaws.com/pdfquery-agent-lambda-production:latest
+docker push 656008069461.dkr.ecr.us-east-1.amazonaws.com/pdfquery-agent-lambda-production:latest

@@ -115,14 +115,15 @@ def get_bedrock_client():
         region = os.getenv("AWS_REGION")
         if not region:
             raise ValueError("AWS_REGION must be configured")
+        
         _bedrock_client = boto3.client(
             "bedrock-agent-runtime",
             region_name=region,
             config=Config(
-                connect_timeout=2, 
-                read_timeout=30,
+                connect_timeout=10, 
+                read_timeout=120,
                 max_pool_connections=20,
-                retries={'max_attempts': 1}
+                retries={'max_attempts': 2}
             )
         )
         _bedrock_client_created_at = current_time
@@ -1767,8 +1768,6 @@ def handle_agent_query(event):
         
         query = body.get("query", "")
         session_id = body.get("sessionId", f"session-{int(time.time())}")
-        query_id = body.get("queryId")  # For polling
-        is_async = body.get("async", False)  # Internal flag for async processing
         logger.info(f"⏱️ TIMING: Parse body took {time.time() - parse_start:.3f}s")
         
         # Validate inputs
@@ -1777,28 +1776,6 @@ def handle_agent_query(event):
         
         if len(query) > 10000:
             return cors_response({"error": "Query too long (max 10000 characters)"}, 400)
-        
-        # Always use async to avoid API Gateway 30s timeout
-        if not query_id and not is_async:
-            query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-            logger.info(f"Starting async processing to avoid timeout: {query_id}")
-            
-            # Invoke self async
-            lambda_client = boto3.client('lambda')
-            lambda_client.invoke(
-                FunctionName=os.getenv('AWS_LAMBDA_FUNCTION_NAME'),
-                InvocationType='Event',
-                Payload=json.dumps({
-                    "body": json.dumps({
-                        "query": query,
-                        "sessionId": session_id,
-                        "queryId": query_id,
-                        "async": True
-                    })
-                })
-            )
-            
-            return cors_response({"status": "processing", "queryId": query_id})
         
         config_start = time.time()
         agent_id = os.getenv("BEDROCK_AGENT_ID")
@@ -1814,31 +1791,6 @@ def handle_agent_query(event):
         except Exception as e:
             logger.error(f"Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
-        
-        # If this is a poll request, check S3 for result
-        if query_id:
-            try:
-                s3_client = get_s3_client()
-                result_key = f"async-queries/{query_id}.json"
-                result_obj = s3_client.get_object(Bucket=BUCKET, Key=result_key)
-                result_data = json.loads(result_obj['Body'].read().decode('utf-8'))
-                
-                if result_data.get('status') == 'completed':
-                    # Delete the result file
-                    s3_client.delete_object(Bucket=BUCKET, Key=result_key)
-                    return cors_response({
-                        "response": result_data.get('response', ''),
-                        "sessionId": session_id,
-                        "images": result_data.get('images', []),
-                        "status": "completed"
-                    })
-                else:
-                    return cors_response({"status": "processing", "queryId": query_id})
-            except s3_client.exceptions.NoSuchKey:
-                return cors_response({"status": "processing", "queryId": query_id})
-            except Exception as e:
-                logger.error(f"Poll error: {e}")
-                return cors_response({"error": "Failed to check query status"}, 500)
         
         invoke_start = time.time()
         logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
@@ -2073,24 +2025,6 @@ def handle_agent_query(event):
         logger.info(f"💰 AGENT TOKEN USAGE: Input: ~{input_tokens:,} | Output: ~{output_tokens:,} | Total: ~{total_tokens:,} tokens (~${total_cost:.4f})")
         logger.info(f"⏱️ TIMING: TOTAL agent query took {time.time() - total_start:.3f}s")
         
-        # If this was an async invocation, save result to S3
-        if is_async:
-            s3_client = get_s3_client()
-            result_key = f"async-queries/{query_id}.json"
-            s3_client.put_object(
-                Bucket=BUCKET,
-                Key=result_key,
-                Body=json.dumps({
-                    "status": "completed",
-                    "response": answer,
-                    "sessionId": session_id,
-                    "images": images,
-                    "timestamp": int(time.time())
-                }),
-                ContentType='application/json'
-            )
-            return {"statusCode": 200}  # Async invocation, no response needed
-        
         return cors_response({"response": answer, "sessionId": session_id, "images": images})
     
     except json.JSONDecodeError as e:
@@ -2242,6 +2176,177 @@ def handle_processing_status(event):
 
 
 # -----------------------------------------------------------
+# WebSocket Support
+# -----------------------------------------------------------
+def send_websocket_message(connection_url, connection_id, message):
+    """Send message to WebSocket connection."""
+    try:
+        logger.info(f"WS SEND: Creating client for {connection_url}")
+        client = boto3.client('apigatewaymanagementapi', endpoint_url=connection_url)
+        logger.info(f"WS SEND: Posting to connection {connection_id[:10]}...")
+        client.post_to_connection(
+            ConnectionId=connection_id,
+            Data=json.dumps(message).encode('utf-8')
+        )
+        logger.info(f"WS SEND: Message sent successfully")
+        return True
+    except Exception as e:
+        logger.error(f"WS SEND FAILED: {type(e).__name__}: {str(e)}")
+        import traceback
+        logger.error(f"WS SEND TRACE: {traceback.format_exc()}")
+        return False
+
+def handle_websocket_agent_query(event):
+    """Handle agent query via WebSocket with streaming support."""
+    connection_id = event.get('connectionId')
+    connection_url = event.get('connectionUrl')
+    body_str = event.get('body', '{}')
+    
+    try:
+        logger.info(f"WS: connectionId={connection_id}, url={connection_url}")
+        
+        # Handle both string and dict body
+        if isinstance(body_str, str):
+            body = json.loads(body_str)
+        else:
+            body = body_str
+        
+        query = body.get('query', '')
+        session_id = body.get('sessionId', f"session-{int(time.time())}")
+        
+        logger.info("WS: Parsed query: {sanitize_for_logging(query)}")
+        
+        if not query:
+            logger.error("WS: No query provided")
+            send_websocket_message(connection_url, connection_id, {
+                'type': 'error',
+                'message': 'Query is required'
+            })
+            return
+        
+        logger.info("WS: Sending status update...")
+        send_websocket_message(connection_url, connection_id, {
+            'type': 'status',
+            'message': 'Thinking and searching documents...'
+        })
+        
+        # Get agent configuration
+        agent_id = os.getenv("BEDROCK_AGENT_ID")
+        agent_alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
+        
+        logger.info(f"WS: Agent config: {agent_id[:10]}... / {agent_alias_id[:10]}...")
+        
+        if not agent_id or not agent_alias_id:
+            logger.error("WS: Agent config missing")
+            send_websocket_message(connection_url, connection_id, {
+                'type': 'error',
+                'message': 'Agent configuration not found'
+            })
+            return
+        
+        logger.info("WS: Getting Bedrock client...")
+        bedrock_client = get_bedrock_client()
+        
+        logger.info("WS: Invoking agent with streaming...")
+        response = bedrock_client.invoke_agent(
+            agentId=agent_id,
+            agentAliasId=agent_alias_id,
+            sessionId=session_id,
+            inputText=query,
+            enableTrace=False  # Disable trace for faster streaming
+        )
+        
+        logger.info("WS: Processing stream in real-time...")
+        answer = ""
+        chunk_count = 0
+        last_send_time = time.time()
+        buffer = ""
+        
+        for event_item in response.get('completion', []):
+            if 'chunk' in event_item and 'bytes' in event_item['chunk']:
+                chunk_text = event_item['chunk']['bytes'].decode('utf-8')
+                answer += chunk_text
+                buffer += chunk_text
+                chunk_count += 1
+                
+                # Send immediately when buffer has complete sentences or every 0.1s
+                current_time = time.time()
+                has_sentence_end = any(char in buffer for char in ['.', '!', '?', '\n'])
+                time_elapsed = current_time - last_send_time
+                
+                if has_sentence_end or time_elapsed > 0.1 or len(buffer) > 100:
+                    if buffer.strip():
+                        success = send_websocket_message(connection_url, connection_id, {
+                            'type': 'chunk',
+                            'data': buffer
+                        })
+                        if not success:
+                            logger.warning(f"Failed to send chunk {chunk_count}")
+                            break
+                        buffer = ""
+                        last_send_time = current_time
+        
+        # Send any remaining buffer
+        if buffer.strip():
+            send_websocket_message(connection_url, connection_id, {
+                'type': 'chunk',
+                'data': buffer
+            })
+        
+        logger.info(f"WS: Streamed {chunk_count} chunks, total {len(answer)} bytes")
+        
+        # Extract images
+        images = []
+        query_lower = query.lower()
+        visual_keywords = ['show me', 'display', 'picture', 'photo', 'image', 'diagram', 'תראה', 'הצג', 'תמונה', 'דיאגרמה']
+        user_wants_images = any(keyword in query_lower for keyword in visual_keywords)
+        
+        if user_wants_images:
+            import re
+            import html
+            image_url_pattern = r'IMAGE_URL:([^\n|]+)'
+            matches = re.findall(image_url_pattern, answer)
+            
+            if matches:
+                s3_client = get_s3_client()
+                for s3_key in matches:
+                    s3_key = html.unescape(s3_key.strip())
+                    if s3_key and s3_key.startswith('images/'):
+                        try:
+                            url = s3_client.generate_presigned_url(
+                                'get_object',
+                                Params={'Bucket': BUCKET, 'Key': s3_key},
+                                ExpiresIn=3600
+                            )
+                            images.append(url)
+                        except Exception as e:
+                            logger.error(f"Failed to generate URL: {e}")
+            
+            answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer)
+            answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
+        
+        logger.info("WS: Sending completion...")
+        send_websocket_message(connection_url, connection_id, {
+            'type': 'complete',
+            'response': answer,
+            'images': images,
+            'sessionId': session_id
+        })
+        logger.info("WS: Query complete")
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"WS: Query failed: {e}")
+        logger.error(f"WS: Traceback: {traceback.format_exc()}")
+        try:
+            send_websocket_message(connection_url, connection_id, {
+                'type': 'error',
+                'message': str(e)
+            })
+        except Exception as send_err:
+            logger.error(f"WS: Failed to send error: {send_err}")
+
+# -----------------------------------------------------------
 # Lambda Entrypoint
 # -----------------------------------------------------------
 def lambda_handler(event, context):
@@ -2251,6 +2356,44 @@ def lambda_handler(event, context):
     correlation_id_var.set(request_id)
     
     logger.info(f"Lambda triggered | RequestId: {request_id} | Event: {json.dumps(event)[:500]}")
+    
+    # Handle WebSocket invocation (detect by requestContext.routeKey)
+    request_context = event.get('requestContext', {})
+    route_key = request_context.get('routeKey')
+    
+    if route_key in ['$connect', '$disconnect', 'query']:
+        logger.info(f"WebSocket route detected: {route_key}")
+        if route_key == '$connect':
+            return {'statusCode': 200}
+        elif route_key == '$disconnect':
+            return {'statusCode': 200}
+        elif route_key == 'query':
+            try:
+                connection_id = request_context.get('connectionId')
+                domain_name = request_context.get('domainName')
+                stage = request_context.get('stage')
+                connection_url = f"https://{domain_name}/{stage}"
+                
+                logger.info(f"WS HANDLER: Starting query handler")
+                logger.info(f"WS HANDLER: connId={connection_id[:10]}...")
+                logger.info(f"WS HANDLER: url={connection_url}")
+                
+                # Pass body directly (already a string from API Gateway)
+                ws_event = {
+                    'websocket': True,
+                    'connectionId': connection_id,
+                    'connectionUrl': connection_url,
+                    'body': event.get('body', '{}')
+                }
+                logger.info("WS HANDLER: Calling handle_websocket_agent_query...")
+                handle_websocket_agent_query(ws_event)
+                logger.info("WS HANDLER: Returned from handle_websocket_agent_query")
+                return {'statusCode': 200}
+            except Exception as e:
+                logger.error(f"WS HANDLER ERROR: {e}")
+                import traceback
+                logger.error(f"WS HANDLER TRACE: {traceback.format_exc()}")
+                return {'statusCode': 500}
     
     # Handle async index rebuild
     if event.get("action") == "rebuild_index":

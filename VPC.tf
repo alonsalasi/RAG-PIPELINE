@@ -52,30 +52,27 @@ resource "aws_subnet" "private" {
   }
 }
 
-# NAT Gateway - COMMENTED OUT to save $64/month
-# Only needed for SES email service (not currently used)
-# Uncomment if you need to add email functionality later
+# NAT Gateway - Required for WebSocket API responses (only 1 needed)
+resource "aws_eip" "nat" {
+  count  = var.enable_lambda_vpc ? 1 : 0
+  domain = "vpc"
 
-# resource "aws_eip" "nat" {
-#   count  = var.enable_lambda_vpc ? 2 : 0
-#   domain = "vpc"
-#
-#   tags = {
-#     Name = "${var.project_name}-nat-eip-${count.index + 1}"
-#   }
-# }
-#
-# resource "aws_nat_gateway" "main" {
-#   count         = var.enable_lambda_vpc ? 2 : 0
-#   allocation_id = aws_eip.nat[count.index].id
-#   subnet_id     = aws_subnet.public[count.index].id
-#
-#   tags = {
-#     Name = "${var.project_name}-nat-gw-${count.index + 1}"
-#   }
-#
-#   depends_on = [aws_internet_gateway.gw]
-# }
+  tags = {
+    Name = "${var.project_name}-nat-eip"
+  }
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = var.enable_lambda_vpc ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = {
+    Name = "${var.project_name}-nat-gw"
+  }
+
+  depends_on = [aws_internet_gateway.gw]
+}
 
 # Public Route Table
 resource "aws_route_table" "public" {
@@ -97,14 +94,15 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public[0].id
 }
 
-# Private Route Table - No internet route (VPC endpoints handle all AWS traffic)
+# Private Route Table - Routes internet traffic through NAT Gateway
 resource "aws_route_table" "private" {
   count  = var.enable_lambda_vpc ? 2 : 0
   vpc_id = aws_vpc.main[0].id
 
-  # No explicit routes defined - only implicit local route and S3 Gateway Endpoint route
-  # VPC endpoints provide direct private access to AWS services
-  # NAT Gateway permanently disabled to save $64/month
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[0].id
+  }
 
   tags = {
     Name = "${var.project_name}-private-rt-${count.index + 1}"

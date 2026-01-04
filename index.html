@@ -6,6 +6,7 @@
   <title>AI Document Assistant - Secure</title>
   <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" crossorigin="anonymous"></script>
   <style>
     :root { --primary-color: #007bff; --secondary-color: #6c757d; --bg-light: #f8f9fa; --bg-white: #ffffff; --border-color: #dee2e6; --text-dark: #343a40; --text-light: #6c757d; --error-color: #dc3545; }
     * { box-sizing: border-box; margin:0; padding:0; }
@@ -27,7 +28,7 @@
     .upload-box button.cancel:hover { background:#c82333;}
     #upload-status { font-size:.8em; color:#333; margin-top:10px; font-weight:500;}
     .progress-item { margin:8px 0; padding:8px; background:#f8f9fa; border-radius:6px; position:relative; }
-    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:auto;}
+    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .progress-bar-bg { height:6px; background:#e9ecef; border-radius:3px; overflow:hidden;}
     .progress-bar-fill { height:100%; background:linear-gradient(90deg, #667eea, #764ba2); transition:width .3s; border-radius:3px;}
     .progress-status { font-size:.75em; color:#6c757d; margin-top:4px;}
@@ -48,13 +49,23 @@
     .logout-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em;}
     .logout-btn:hover { background:rgba(255,255,255,0.3);}
     .chat-log { flex:1; min-height:0; padding:20px; overflow-y:auto; background-color:#fdfdfd; height:0; }
-    .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5; direction:auto; unicode-bidi:plaintext;}
+    .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5; }
     .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
     .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px;}
+    .assistant-message h1 { font-size:1.5em; margin:10px 0; border-bottom:2px solid #eee; padding-bottom:5px; }
+    .assistant-message h2 { font-size:1.3em; margin:10px 0; border-bottom:1px solid #eee; padding-bottom:5px; }
+    .assistant-message h3 { font-size:1.1em; margin:8px 0; font-weight:600; }
+    .assistant-message pre { background:#f5f5f5; padding:10px; border-radius:4px; overflow-x:auto; margin:10px 0; }
+    .assistant-message code { background:#f5f5f5; padding:2px 6px; border-radius:3px; font-family:monospace; font-size:0.9em; }
+    .assistant-message pre code { background:none; padding:0; }
+    .assistant-message ul, .assistant-message ol { margin:10px 0; padding-left:25px; }
+    .assistant-message li { margin:5px 0; }
+    .assistant-message strong { font-weight:600; }
+    .assistant-message em { font-style:italic; }
     .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
     .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
     .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
-    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none; direction:auto; unicode-bidi:plaintext;}
+    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none; }
     .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em; transition:transform 0.1s, opacity 0.1s;}
     .btn:active { transform:scale(0.95); opacity:0.8; }
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
@@ -188,6 +199,7 @@
   const COGNITO_CLIENT_ID = '6v0ae4nidnu8ija0gjlv85slck';
   const COGNITO_REGION = 'us-east-1';
   const API_GATEWAY_URL = 'https://rm8vvz79d0.execute-api.us-east-1.amazonaws.com/production';
+  const WEBSOCKET_URL = 'wss://uoytqx91i5.execute-api.us-east-1.amazonaws.com/production';
 
   const poolData = { UserPoolId: COGNITO_USER_POOL_ID, ClientId: COGNITO_CLIENT_ID };
   const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
@@ -472,6 +484,20 @@
   const CHAT_LOG = document.getElementById('chat-log');
   const UPLOAD_STATUS = document.getElementById('upload-status');
   const USER_INPUT = document.getElementById('user-input');
+  
+  // Auto-detect input direction
+  USER_INPUT.addEventListener('input', () => {
+    const text = USER_INPUT.value;
+    const hasHebrew = /[\u0590-\u05FF]/.test(text);
+    const hasArabic = /[\u0600-\u06FF]/.test(text);
+    if (hasHebrew || hasArabic) {
+      USER_INPUT.style.direction = 'rtl';
+      USER_INPUT.style.textAlign = 'right';
+    } else {
+      USER_INPUT.style.direction = 'ltr';
+      USER_INPUT.style.textAlign = 'left';
+    }
+  });
   const FILE_LIST_UL = document.getElementById('file-list');
   const FILE_LIST_STATUS = document.getElementById('file-list-status');
   const SEND_BUTTON = document.getElementById('send-button');
@@ -513,7 +539,23 @@
     const div=document.createElement('div');
     div.classList.add('message', `${role}-message`);
     if(isError) div.classList.add('error');
-    div.innerHTML = content.replace(/\n/g,'<br>');
+    
+    // Detect text direction
+    const hasHebrew = /[\u0590-\u05FF]/.test(content);
+    const hasArabic = /[\u0600-\u06FF]/.test(content);
+    if (hasHebrew || hasArabic) {
+      div.style.direction = 'rtl';
+      div.style.textAlign = 'right';
+    } else {
+      div.style.direction = 'ltr';
+      div.style.textAlign = 'left';
+    }
+    
+    // Use textContent for plain text, then replace newlines with <br>
+    const textNode = document.createTextNode(content);
+    const tempDiv = document.createElement('div');
+    tempDiv.appendChild(textNode);
+    div.innerHTML = tempDiv.innerHTML.replace(/\n/g,'<br>');
     
     if(images && images.length){
       const imgContainer = document.createElement('div');
@@ -640,122 +682,128 @@
     USER_INPUT.value='';
     const responseDiv = document.createElement('div');
     responseDiv.className='message assistant-message';
-    responseDiv.innerHTML = '<span class="spinner"></span> Processing your query...';
+    responseDiv.innerHTML = '<span class="spinner"></span> Connecting...';
     CHAT_LOG.appendChild(responseDiv);
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
     
     try{
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const ws = new WebSocket(WEBSOCKET_URL);
+      let fullResponse = '';
+      let images = [];
+      let startTime = Date.now();
+      let timerInterval = null;
       
-      const res = await fetch(`${API_GATEWAY_URL}/agent-query`, {
-        method:'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({query, sessionId}),
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if(handleAuthError(res)) return;
-      
-      if(!res.ok) {
-        if (res.status === 504) {
-          // Gateway timeout - query is still processing
-          responseDiv.innerHTML = '<span class="spinner"></span> Query is taking longer than expected, still processing...';
-          // Poll for result
-          let pollAttempts = 0;
-          const pollInterval = setInterval(async () => {
-            pollAttempts++;
-            if (pollAttempts > 20) { // Max 2 minutes total
-              clearInterval(pollInterval);
-              CHAT_LOG.removeChild(responseDiv);
-              appendMessage('assistant', 'Query timed out. Please try a simpler question or break it into parts.', null, true);
-              return;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({action: 'query', query, sessionId}));
+        startTime = Date.now();
+        timerInterval = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          if(responseDiv.innerHTML.includes('Thinking') || responseDiv.innerHTML.includes('Connecting') || responseDiv.innerHTML.includes('Generating')){
+            let baseMsg = responseDiv.innerHTML.split('(')[0].replace('<span class="spinner"></span> ', '').trim();
+            if(elapsed >= 30 && baseMsg.includes('Thinking')){
+              baseMsg = 'Generating response...';
             }
-            // For now, just show timeout message since we don't have async endpoint yet
-            clearInterval(pollInterval);
-            CHAT_LOG.removeChild(responseDiv);
-            appendMessage('assistant', 'Query timed out after 30 seconds. Please try:\n\n1. Ask a simpler question\n2. Break your question into smaller parts\n3. Be more specific about what you need', null, true);
-          }, 5000);
-          return;
-        }
-        CHAT_LOG.removeChild(responseDiv);
-        appendMessage('assistant', 'Error: Failed to process query', null, true);
-        return;
-      }
+            responseDiv.innerHTML = `<span class="spinner"></span> ${baseMsg} (${elapsed}s)`;
+          }
+        }, 1000);
+      };
       
-      const data = await res.json();
-      
-      // Check if query is still processing (async)
-      if (data.status === 'processing' && data.queryId) {
-        responseDiv.innerHTML = '<span class="spinner"></span> Query is taking longer, processing in background...';
-        
-        // Poll for result
-        let pollCount = 0;
-        const pollForResult = async () => {
-          if (pollCount++ > 40) { // Max 2 minutes
-            CHAT_LOG.removeChild(responseDiv);
-            appendMessage('assistant', 'Query timed out. Please try a simpler question.', null, true);
-            return;
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if(data.type === 'status') {
+          responseDiv.innerHTML = '<span class="spinner"></span> ' + data.message;
+        } else if(data.type === 'chunk') {
+          if(timerInterval){ clearInterval(timerInterval); timerInterval = null; }
+          fullResponse += data.data;
+          // Render markdown incrementally for proper formatting
+          responseDiv.innerHTML = marked.parse(fullResponse);
+          // Detect and apply RTL for Hebrew/Arabic
+          const hasHebrew = /[\u0590-\u05FF]/.test(fullResponse);
+          const hasArabic = /[\u0600-\u06FF]/.test(fullResponse);
+          if (hasHebrew || hasArabic) {
+            responseDiv.style.direction = 'rtl';
+            responseDiv.style.textAlign = 'right';
+          }
+          // Only auto-scroll if user is near bottom (within 100px)
+          const isNearBottom = CHAT_LOG.scrollHeight - CHAT_LOG.scrollTop - CHAT_LOG.clientHeight < 100;
+          if (isNearBottom) {
+            CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+          }
+        } else if(data.type === 'complete') {
+          fullResponse = data.response || fullResponse;
+          images = data.images || [];
+          ws.close();
+          CHAT_LOG.removeChild(responseDiv);
+          
+          // Create final message with markdown rendering
+          const finalDiv = document.createElement('div');
+          finalDiv.className = 'message assistant-message';
+          finalDiv.innerHTML = marked.parse(fullResponse);
+          
+          // Detect and apply RTL for Hebrew/Arabic
+          const hasHebrew = /[\u0590-\u05FF]/.test(fullResponse);
+          const hasArabic = /[\u0600-\u06FF]/.test(fullResponse);
+          if (hasHebrew || hasArabic) {
+            finalDiv.style.direction = 'rtl';
+            finalDiv.style.textAlign = 'right';
           }
           
-          try {
-            const pollRes = await fetch(`${API_GATEWAY_URL}/agent-query`, {
-              method: 'POST',
-              headers: getAuthHeaders(),
-              body: JSON.stringify({ queryId: data.queryId, sessionId })
+          // Add images if present
+          if(images && images.length > 0) {
+            const finalImages = images.map(url => {
+              const textarea = document.createElement('textarea');
+              textarea.innerHTML = url;
+              return textarea.value;
             });
             
-            const pollData = await pollRes.json();
+            const imgContainer = document.createElement('div');
+            imgContainer.style.marginTop = '15px';
+            imgContainer.style.display = 'grid';
+            imgContainer.style.gridTemplateColumns = 'repeat(auto-fit, minmax(280px, 1fr))';
+            imgContainer.style.gap = '20px';
             
-            if (pollData.status === 'completed') {
-              CHAT_LOG.removeChild(responseDiv);
-              const rawImages = pollData.images || [];
-              const finalImages = rawImages.map(url => {
-                const textarea = document.createElement('textarea');
-                textarea.innerHTML = url;
-                return textarea.value;
-              });
-              appendMessage('assistant', pollData.response || '', null, false, finalImages.length > 0 ? finalImages : null);
-            } else {
-              setTimeout(pollForResult, 3000); // Poll every 3s
-            }
-          } catch (e) {
-            setTimeout(pollForResult, 3000);
+            finalImages.forEach((imgUrl, index) => {
+              const imgWrapper = document.createElement('div');
+              imgWrapper.style.cssText = 'position:relative;border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fafafa;box-shadow:0 4px 12px rgba(0,0,0,0.1);cursor:pointer;';
+              
+              const img = document.createElement('img');
+              img.src = imgUrl;
+              img.style.cssText = 'width:100%;height:auto;display:block;max-height:300px;object-fit:contain;background:#fff;';
+              img.onclick = () => window.open(imgUrl, '_blank');
+              
+              imgWrapper.appendChild(img);
+              imgContainer.appendChild(imgWrapper);
+            });
+            finalDiv.appendChild(imgContainer);
           }
-        };
-        
-        setTimeout(pollForResult, 3000);
-        return;
-      }
+          
+          CHAT_LOG.appendChild(finalDiv);
+          CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+        } else if(data.type === 'error') {
+          ws.close();
+          CHAT_LOG.removeChild(responseDiv);
+          appendMessage('assistant', 'Error: ' + data.message, null, true);
+        }
+      };
       
-      const fullResponse = data.response || '';
+      ws.onerror = () => {
+        if(timerInterval) clearInterval(timerInterval);
+        ws.close();
+        if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+        appendMessage('assistant', 'Error: WebSocket connection failed', null, true);
+      };
       
-      CHAT_LOG.removeChild(responseDiv);
-      if(fullResponse) {
-        // Images are already presigned URLs from backend
-        let responseText = fullResponse;
-        // Decode HTML entities in image URLs
-        const rawImages = data.images || [];
-        const finalImages = rawImages.map(url => {
-          const textarea = document.createElement('textarea');
-          textarea.innerHTML = url;
-          return textarea.value;
-        });
-        const showImages = finalImages.length > 0;
-        
-        appendMessage('assistant', responseText, null, false, showImages ? finalImages : null);
-      } else {
-        appendMessage('assistant', 'No response received', null, true);
-      }
+      ws.onclose = (event) => {
+        if(timerInterval) clearInterval(timerInterval);
+        if(!event.wasClean && responseDiv.parentNode) {
+          CHAT_LOG.removeChild(responseDiv);
+          appendMessage('assistant', 'Error: Connection closed unexpectedly', null, true);
+        }
+      };
+      
     }catch(e){
       if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
-      if (e.name === 'AbortError') {
-        appendMessage('assistant', 'Request timed out. The query is taking too long - please try a simpler question or break it into smaller parts.', null, true);
-      } else {
-        appendMessage('assistant', 'Error: Could not connect to the API. Please check your connection and try again.', null, true);
-      }
+      appendMessage('assistant', 'Error: ' + e.message, null, true);
     }
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
   }
@@ -876,7 +924,7 @@
           
           const span = document.createElement('span');
           span.textContent = clean;
-          span.style.cssText = 'font-size:0.9em; color:#6c757d; word-wrap:break-word; overflow-wrap:break-word; flex:1; direction:auto;';
+          span.style.cssText = 'font-size:0.9em; color:#6c757d; word-wrap:break-word; overflow-wrap:break-word; flex:1;';
           
           leftDiv.appendChild(checkbox);
           leftDiv.appendChild(span);

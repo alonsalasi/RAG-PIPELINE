@@ -26,10 +26,11 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
-# Recreate VPC Endpoints, GuardDuty, and AWS Config
-# NOTE: NAT Gateway is permanently disabled to save $64/month
-Write-Host "Creating VPC Endpoints, GuardDuty, and AWS Config..." -ForegroundColor Yellow
+# Recreate NAT Gateway, VPC Endpoints, GuardDuty, and AWS Config
+Write-Host "Creating NAT Gateway, VPC Endpoints, GuardDuty, and AWS Config..." -ForegroundColor Yellow
 terraform apply `
+  -target='aws_eip.nat[0]' `
+  -target='aws_nat_gateway.main[0]' `
   -target='aws_route_table.private[0]' `
   -target='aws_route_table.private[1]' `
   -target='aws_route_table_association.private[0]' `
@@ -58,16 +59,15 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Startup complete! Resources recreated:" -ForegroundColor Green
+Write-Host "  - 1x NAT Gateway ($32/month)" -ForegroundColor Gray
+Write-Host "  - 1x Elastic IP" -ForegroundColor Gray
 Write-Host "  - 2x Private Route Tables" -ForegroundColor Gray
 Write-Host "  - 8x VPC Endpoints (7 interface + 1 gateway)" -ForegroundColor Gray
 Write-Host "  - GuardDuty" -ForegroundColor Gray
 Write-Host "  - AWS Config" -ForegroundColor Gray
 Write-Host "" -ForegroundColor Gray
-Write-Host "NOTE: NAT Gateway permanently disabled (saves $64/month)" -ForegroundColor Yellow
-Write-Host "      SES email feature not available" -ForegroundColor Yellow
-Write-Host ""
 Write-Host "System is now fully operational" -ForegroundColor Green
-Write-Host "Lambda functions can access AWS services" -ForegroundColor Green
+Write-Host "WebSocket and Lambda functions have full internet access" -ForegroundColor Green
 
 # Log successful run
 $logFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "scheduler.log"
