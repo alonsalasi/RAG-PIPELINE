@@ -46,9 +46,9 @@ if ($natGateways -and $natGateways.Count -gt 0) {
   Write-Host "  Waiting 30s for NAT Gateways to delete..." -ForegroundColor Gray
   Start-Sleep -Seconds 30
   
-  # Release Elastic IPs
+  # Release ALL Elastic IPs in VPC (not just tagged ones)
   $eipsJson = aws ec2 describe-addresses --filters "Name=domain,Values=vpc" --output json --profile default | ConvertFrom-Json
-  $eips = $eipsJson.Addresses | Where-Object { $_.Tags.Name -like "*nat-eip*" }
+  $eips = $eipsJson.Addresses | Where-Object { $_.AssociationId -eq $null -or $_.AssociationId -eq "" }
   if ($eips) {
     foreach ($eip in $eips) {
       try {
@@ -117,12 +117,13 @@ if ($remainingNats.NatGateways.Count -eq 0) {
   Write-Host "  $($remainingNats.NatGateways.Count) NAT Gateway(s) still exist" -ForegroundColor Yellow
 }
 
-# Check VPC Endpoints
+# Check VPC Endpoints (exclude deleting state)
 $remainingEndpoints = aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpcId" --output json --profile default | ConvertFrom-Json
-if ($remainingEndpoints.VpcEndpoints.Count -eq 0) {
-  Write-Host "  All VPC Endpoints destroyed" -ForegroundColor Green
+$activeEndpoints = $remainingEndpoints.VpcEndpoints | Where-Object { $_.State -ne 'deleting' -and $_.State -ne 'deleted' }
+if ($activeEndpoints.Count -eq 0) {
+  Write-Host "  All VPC Endpoints destroyed or deleting" -ForegroundColor Green
 } else {
-  Write-Host "  $($remainingEndpoints.VpcEndpoints.Count) VPC Endpoint(s) still exist" -ForegroundColor Yellow
+  Write-Host "  $($activeEndpoints.Count) VPC Endpoint(s) still active" -ForegroundColor Yellow
 }
 
 # Log run result
