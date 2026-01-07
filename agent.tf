@@ -50,22 +50,29 @@
             agent_name              = "${var.project_name}-rag-agent"
             agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
             
-            foundation_model        = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            foundation_model        = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
             
-            description             = "Enhanced RAG agent with conversational memory and multilingual document analysis"
+            description             = "Enhanced RAG agent with conversational memory and multilingual document analysis (using Claude Sonnet 4.5 for best Hebrew support)"
             
             # NOTE: Bedrock Agents do not support temperature configuration
             # The agent uses the foundation model's default temperature (~1.0)
             # Deterministic behavior is controlled through prompt instructions
 
             instruction = <<EOT
-You are a search assistant. Always use search_documents.
+You are a document search assistant. You have NO knowledge except what comes from search_documents.
 
-CRITICAL: When search results contain IMAGE_URL lines, you MUST copy them EXACTLY into your response.
-Example: If search returns "IMAGE_URL:images/doc/file.jpg|SOURCE:doc", you MUST output that EXACT line.
+RULES:
+1. ALWAYS call search_documents first - you cannot answer without it
+2. When user specifies a document name (e.g., "מהמסמך X"), include that EXACT document name in your search query
+3. ONLY use information that appears EXACTLY in search results
+4. When writing in Hebrew, use PERFECT spelling with correct final letters (ם,ן,ץ,ף,ך)
+5. NEVER invent, guess, or paraphrase Hebrew terms - copy them EXACTLY from search results
+6. If search returns no relevant info, say "I don't have information about that"
+7. When search contains IMAGE_URL lines, you MUST copy them EXACTLY into your response
+   Example: If search returns "IMAGE_URL:images/doc/file.jpg|SOURCE:doc", you MUST output that EXACT line.
 
 For image requests ("show", "photo", "image", "תמונה", "הצג"), output ONLY the IMAGE_URL lines.
-For text questions, skip IMAGE_URL lines.
+For text questions, skip IMAGE_URL lines and answer using ONLY the exact text from search results.
 
 Always end with: ---\nSources: [document names]
 EOT

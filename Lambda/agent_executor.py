@@ -461,10 +461,22 @@ def optimized_search(query, top_k=30):
         # Minimal result formatting for speed
         formatted_results = []
         for doc, semantic_score in results:
+            # Extract file information from metadata
+            source = doc.metadata.get('source', 'Unknown')
+            source_file = doc.metadata.get('source_file', source)
+            s3_key = doc.metadata.get('s3_key', '')
+            uploaded_name = doc.metadata.get('uploaded_name', source)
+            
+            # Use the most informative file name available
+            file_path = uploaded_name if uploaded_name else (source_file if source_file else source)
+            
             formatted_results.append({
                 'content': doc.page_content,
                 'metadata': doc.metadata,
-                'semantic_score': float(semantic_score)
+                'semantic_score': float(semantic_score),
+                'source_file': file_path,  # Add explicit file path
+                's3_key': s3_key,  # Include S3 key if available
+                'document_name': source  # Include base document name
             })
         
         logger.info(f"Semantic search: {len(results)} results in {search_time:.3f}s")
@@ -773,6 +785,8 @@ def rebuild_master_index():
                             page_content=f"Document: {base_name}\n{chunk}",
                             metadata={
                                 "source": base_name,
+                                "source_file": source_file,  # Full S3 path
+                                "s3_key": source_file,  # Include S3 key
                                 "chunk_id": i
                             }
                         )
@@ -826,11 +840,13 @@ def rebuild_master_index():
                         page_content=page_content,
                         metadata={
                             "source": base_name,
+                            "source_file": source_file,  # Full S3 path
+                            "s3_key": s3_key,
+                            "uploaded_name": source_file.split('/')[-1] if source_file else '',
                             "type": "image",
                             "page": page,
                             "image_number": idx,
                             "image_url": img_meta.get('url', ''),
-                            "s3_key": s3_key,
                             "context_summary": context_prefix,
                             "text_context": text_context
                         }
@@ -1157,35 +1173,72 @@ def handle_search_action(event):
         doc_filter = None
         
         # For specific image number requests, search MORE results to ensure we find it
-        search_k = 100 if requested_image_num else 30
+        search_k = 100 if requested_image_num else 50
         
         # Extract document name early to use in search
         doc_name_in_query = None
-        # Match "in the document: NAME" or "from document NAME" patterns
+        # Decode HTML entities FIRST (e.g., &quot; -> ")
+        import html
+        decoded_input = html.unescape(original_input)
+        
+        # Extended patterns to match various document reference formats
+        # Including Hebrew: "מהמסמך" = "from document", 'הצעת מחיר - חברת ליידוס' etc
         patterns = [
-            r'(?:in|from)\s+(?:the\s+)?document[:\s]+(.+?)(?:\s*$)',
-            r'(?:in|from)\s+(.+?)(?:\s*$)'
+            # Quoted filenames (highest priority - exact text in quotes)
+            r'[""]([^""]+)["""]',  # Smart quotes
+            r'["\'"]([^"\']+)["\']',  # Regular quotes (must be non-greedy and capture full content)
+            # Hebrew: "מהמסמך NAME" - capturing until punctuation
+            r'מהמסמך\s+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
+            # Hebrew: "ממסמך NAME"
+            r'מ(?:ה)?מסמך\s+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
+            # English: "from/in document"
+            r'(?:from|in)\s+(?:the\s+)?document[:\s]+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
         ]
-        for pattern in patterns:
-            match = re.search(pattern, original_input, re.IGNORECASE)
+        
+        for i, pattern in enumerate(patterns):
+            match = re.search(pattern, decoded_input, re.IGNORECASE | re.UNICODE)
             if match:
+                # For quoted patterns, group 1 is the content; for others, may be group 1 or 2
                 doc_name_in_query = match.group(1).strip()
-                # Remove trailing punctuation
-                doc_name_in_query = doc_name_in_query.rstrip('.,;:!?')
+                logger.info(f"🔍 Pattern {i} matched: '{doc_name_in_query}'")
+                # Remove trailing punctuation and file extensions
+                doc_name_in_query = doc_name_in_query.rstrip('.,;:!? \t')
+                if doc_name_in_query.endswith('.pdf'):
+                    doc_name_in_query = doc_name_in_query[:-4]
+                logger.info(f"🔍 Extracted doc name: '{doc_name_in_query}'")
                 break
         
         # If document name specified, search by document name instead of query
-        if doc_name_in_query and requested_image_num:
+        # This helps narrow down results to the specific document the user is asking about
+        if doc_name_in_query:
             search_query = doc_name_in_query
             logger.info(f"🔍 Searching by document name: '{search_query}'")
         else:
             search_query = query
+            logger.info(f"🔍 No document name found, searching by query: '{search_query}'")
         
         raw_results = master_index.similarity_search_with_score(search_query, k=search_k)
         logger.info(f"⏱️ SEARCH: Vector search (k={search_k}) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
         
-        # Get all unique document names from results
-        unique_sources = set(doc.metadata.get('source', '') for doc, _ in raw_results)
+        # Get all unique document names from results (try both source and source_file)
+        unique_sources = set()
+        for doc, _ in raw_results:
+            # Add source (base name)
+            source = doc.metadata.get('source', '')
+            if source:
+                unique_sources.add(source)
+            # Also add source_file (full path) if available  
+            source_file = doc.metadata.get('source_file', '')
+            if source_file:
+                unique_sources.add(source_file)
+            # Also add S3 key if available
+            s3_key = doc.metadata.get('s3_key', '')
+            if s3_key:
+                # Extract just the filename from S3 key
+                s3_filename = s3_key.split('/')[-1].replace('.pdf', '')
+                if s3_filename:
+                    unique_sources.add(s3_filename)
+        
         logger.info(f"📁 ALL available documents: {sorted(list(unique_sources))}")
         
         if doc_name_in_query:
@@ -1195,30 +1248,88 @@ def handle_search_action(event):
         
         # Match document name - be more flexible with matching
         if doc_name_in_query:
-            # Normalize for comparison (handle HTML entities, case, spaces)
+            # Normalize for comparison (handle HTML entities, case, spaces, Hebrew)
             import html
-            normalized_query = html.unescape(doc_name_in_query).strip().upper()
+            normalized_query = html.unescape(doc_name_in_query).strip()
+            normalized_query_upper = normalized_query.upper()
             
-            # Try exact match first
-            if doc_name_in_query in unique_sources:
-                doc_filter = doc_name_in_query
+            # Try exact match first (case-insensitive)
+            exact_match = None
+            for source in unique_sources:
+                if normalized_query_upper == html.unescape(source).strip().upper():
+                    exact_match = source
+                    break
+            
+            if exact_match:
+                doc_filter = exact_match
                 logger.info(f"🎯 ✅ Exact match: '{doc_filter}'")
             else:
-                # Try normalized matching
+                # Try substring matching (document name is contained in source)
+                # This handles cases where stored name might have prefixes/suffixes
                 for source in unique_sources:
                     normalized_source = html.unescape(source).strip().upper()
-                    if normalized_query == normalized_source or normalized_query in normalized_source or normalized_source in normalized_query:
+                    # Remove timestamp prefix if present for comparison
+                    if '_' in normalized_source:
+                        parts = normalized_source.split('_', 1)
+                        if parts[0].isdigit() and len(parts[0]) == 10:  # Unix timestamp
+                            normalized_source = parts[1]
+                    
+                    # Check if query is a substring of source (handles partial names)
+                    # Also check reversed to catch cases where source might be part of query
+                    if (normalized_query_upper in normalized_source or normalized_source in normalized_query_upper):
                         doc_filter = source
-                        logger.info(f"🎯 ✅ Normalized match: query='{doc_name_in_query}' matched source='{doc_filter}'")
+                        logger.info(f"🎯 ✅ Substring match: query='{doc_name_in_query}' matched source='{doc_filter}'")
                         break
                 
-                # If still no match, don't filter - let all results through
+                # If still no match, try fuzzy matching for typos and partial names
                 if not doc_filter:
-                    logger.warning(f"⚠️ Document '{doc_name_in_query}' not found, searching all documents")
+                    from difflib import SequenceMatcher
+                    best_match = None
+                    best_ratio = 0
+                    for source in unique_sources:
+                        # For partial matching, also try removing prefixes
+                        source_normalized = html.unescape(source).strip().upper()
+                        # Remove timestamp prefix if present (format: 1234567890_filename)
+                        if '_' in source_normalized:
+                            parts = source_normalized.split('_', 1)
+                            if parts[0].isdigit() and len(parts[0]) == 10:  # Unix timestamp
+                                source_normalized = parts[1]
+                        
+                        ratio = SequenceMatcher(None, normalized_query_upper, source_normalized).ratio()
+                        if ratio > 0.75 and ratio > best_ratio:  # 75% similarity threshold for better matches
+                            best_match = source
+                            best_ratio = ratio
+                            logger.info(f"🔍 Fuzzy candidate: '{source}' ratio={ratio:.2f}")
+                    
+                    if best_match:
+                        doc_filter = best_match
+                        logger.info(f"🎯 ✅ Fuzzy match (ratio={best_ratio:.2f}): query='{doc_name_in_query}' matched source='{doc_filter}'")
+                    else:
+                        logger.warning(f"⚠️ Document '{doc_name_in_query}' not found in available sources: {sorted(list(unique_sources))}")
             
             # Filter results only if we found a matching document
             if doc_filter:
-                filtered = [(doc, score) for doc, score in raw_results if doc.metadata.get('source', '') == doc_filter]
+                # Filter by multiple metadata fields for robustness
+                # BACKWARD COMPATIBLE: Falls back to 'source' if new fields don't exist
+                filtered = []
+                for doc, score in raw_results:
+                    source = doc.metadata.get('source', '')
+                    source_file = doc.metadata.get('source_file', source)  # Fallback to source
+                    s3_key = doc.metadata.get('s3_key', source)  # Fallback to source
+                    uploaded_name = doc.metadata.get('uploaded_name', '')
+                    
+                    # If uploaded_name is empty, try to extract from source
+                    if not uploaded_name and source:
+                        # Extract filename from path like "1767520048_filename.json"
+                        uploaded_name = source.split('/')[-1].replace('.json', '').split('_', 1)[-1] if '_' in source else source
+                    
+                    # Check if any field matches doc_filter
+                    if (source == doc_filter or 
+                        source_file == doc_filter or 
+                        s3_key.split('/')[-1].replace('.pdf', '') == doc_filter if s3_key else False or
+                        uploaded_name == doc_filter):
+                        filtered.append((doc, score))
+                
                 if filtered:
                     raw_results = filtered
                     logger.info(f"🎯 Filtered to {len(raw_results)} results from '{doc_filter}'")
@@ -1532,14 +1643,14 @@ def handle_search_action(event):
             final_results.extend(scored_images[:num_images])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - optimized for speed and cost (15 chunks = ~15KB)
-            final_results.extend(text_candidates[:15])
-            logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:15])} text chunks, skipped {len(image_candidates)} images")
+            # PURE TEXT QUERY - return top 5 most relevant chunks with FULL context
+            final_results.extend(text_candidates[:5])
+            logger.info(f"📄 TEXT ONLY: Selected top {len(text_candidates[:5])} text chunks (full context), skipped {len(image_candidates)} images")
             
         else:
-            # HYBRID QUERY - balanced mix
-            final_results.extend(text_candidates[:10])
-            final_results.extend(image_candidates[:5])
+            # HYBRID QUERY - balanced mix with full context
+            final_results.extend(text_candidates[:3])
+            final_results.extend(image_candidates[:2])
             final_results.sort(key=lambda x: x[1])
         
         format_start = time.time()
@@ -1582,7 +1693,7 @@ def handle_search_action(event):
             # else:
             #    ... returned text ...
             
-            # Return results based on intent
+            # Return results based on intent - NO TRUNCATION, full context
             result_parts = []
             for content, source in all_results:
                 clean_content = content.strip()
@@ -1604,9 +1715,9 @@ def handle_search_action(event):
         logger.info(f"⏱️ SEARCH: TOTAL handle_search_action took {time.time() - search_start:.3f}s")
         logger.info(f"✅ SEARCH COMPLETE - Returning {len(all_results)} results to agent")
         
-        # CRITICAL: Bedrock Agent has a response size limit (~25KB)
+        # CRITICAL: Bedrock Agent has a response size limit (~10KB for input)
         # If response is too large, truncate it
-        MAX_RESPONSE_SIZE = 20000  # 20KB to be safe
+        MAX_RESPONSE_SIZE = 8000  # 8KB to be safe
         if len(result) > MAX_RESPONSE_SIZE:
             logger.warning(f"⚠️ Response too large ({len(result)} bytes), truncating to {MAX_RESPONSE_SIZE} bytes")
             result = result[:MAX_RESPONSE_SIZE] + "\n\n[Response truncated due to size limit]"
@@ -2101,6 +2212,20 @@ def handle_processing_status(event):
         
         s3_client = get_s3_client()
         
+        # Check for errors FIRST
+        try:
+            error_obj = s3_client.get_object(Bucket=BUCKET, Key=f"errors/{base_name}.txt")
+            error_msg = error_obj['Body'].read().decode('utf-8')
+            return cors_response({
+                "status": "failed",
+                "progress": 0,
+                "message": f"Processing failed: {error_msg}"
+            })
+        except s3_client.exceptions.NoSuchKey:
+            pass
+        except Exception as e:
+            logger.error(f"Error checking error marker: {type(e).__name__}")
+        
         # Check if cancelled
         try:
             s3_client.head_object(Bucket=BUCKET, Key=f"cancelled/{base_name}.txt")
@@ -2136,7 +2261,16 @@ def handle_processing_status(event):
         try:
             logger.info(f"Checking: s3://{BUCKET}/processed/{base_name}.json")
             processed_obj = s3_client.get_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
-            processed_data = json.loads(processed_obj['Body'].read().decode('utf-8'))
+            try:
+                processed_data = json.loads(processed_obj['Body'].read().decode('utf-8'))
+            except (json.JSONDecodeError, KeyError, TypeError) as json_err:
+                logger.error(f"Failed to parse processed marker: {json_err}")
+                # File exists but is corrupted - treat as completed anyway
+                return cors_response({
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Processing complete"
+                })
             logger.info(f"Found completion marker: {base_name}")
             return cors_response({
                 "status": "completed",

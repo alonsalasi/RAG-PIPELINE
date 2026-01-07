@@ -46,7 +46,6 @@ resource "aws_lambda_function" "agent_executor" {
     variables = {
       S3_BUCKET                = "pdfquery-rag-documents-production"
       VECTOR_STORE_PATH        = "vector_store/default"
-      SECRETS_ARN              = aws_secretsmanager_secret.bedrock_config.arn
       BEDROCK_AGENT_ID         = aws_bedrockagent_agent.rag_agent.agent_id
       BEDROCK_AGENT_ALIAS_ID   = var.bedrock_agent_alias_id
       SES_SENDER_EMAIL         = var.ses_sender_email

@@ -40,7 +40,6 @@ terraform apply `
   -target='aws_vpc_endpoint.bedrock_agent_runtime[0]' `
   -target='aws_vpc_endpoint.sqs[0]' `
   -target='aws_vpc_endpoint.sns[0]' `
-  -target='aws_vpc_endpoint.secretsmanager[0]' `
   -target='aws_vpc_endpoint.kms[0]' `
   -target='aws_vpc_endpoint.logs[0]' `
   -target='aws_guardduty_detector.main' `
@@ -62,7 +61,7 @@ Write-Host "Startup complete! Resources recreated:" -ForegroundColor Green
 Write-Host "  - 1x NAT Gateway ($32/month)" -ForegroundColor Gray
 Write-Host "  - 1x Elastic IP" -ForegroundColor Gray
 Write-Host "  - 2x Private Route Tables" -ForegroundColor Gray
-Write-Host "  - 8x VPC Endpoints (7 interface + 1 gateway)" -ForegroundColor Gray
+Write-Host "  - 7x VPC Endpoints (6 interface + 1 gateway)" -ForegroundColor Gray
 Write-Host "  - GuardDuty" -ForegroundColor Gray
 Write-Host "  - AWS Config" -ForegroundColor Gray
 Write-Host "" -ForegroundColor Gray

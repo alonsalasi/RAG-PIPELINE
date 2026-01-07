@@ -131,13 +131,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
           "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:key/*"
         ]
       },
-      {
-        Effect = "Allow",
-        Action = ["secretsmanager:GetSecretValue"],
-        Resource = [
-          aws_secretsmanager_secret.bedrock_config.arn
-        ]
-      },
+
       {
         Effect = "Allow",
         Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
@@ -247,12 +241,7 @@ resource "aws_iam_policy" "lambda_agent_policy" {
         Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
         Resource = "*"
       },
-      # Secrets Manager
-      {
-        Effect = "Allow",
-        Action = ["secretsmanager:GetSecretValue"],
-        Resource = "*"
-      },
+
       # X-Ray tracing
       {
         Effect = "Allow",

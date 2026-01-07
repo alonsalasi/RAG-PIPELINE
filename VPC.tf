@@ -193,20 +193,6 @@ resource "aws_vpc_endpoint" "sns" {
   }
 }
 
-resource "aws_vpc_endpoint" "secretsmanager" {
-  count               = var.enable_lambda_vpc ? 1 : 0
-  vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.lambda_sg[0].id]
-  private_dns_enabled = true
-
-  tags = {
-    Name = "${var.project_name}-secretsmanager-endpoint"
-  }
-}
-
 resource "aws_vpc_endpoint" "kms" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id

@@ -44,7 +44,6 @@ resource "aws_lambda_function" "ingestion_worker" {
       S3_BUCKET        = aws_s3_bucket.rag_documents.bucket
       MAX_PARALLEL_OCR = 4
       DPI              = 150
-      SECRETS_ARN      = aws_secretsmanager_secret.bedrock_config.arn
       PROJECT_NAME     = var.project_name
     }
   }

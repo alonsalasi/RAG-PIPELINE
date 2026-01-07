@@ -97,10 +97,10 @@ Write-Host ""
 Write-Host "Shutdown complete! Resources destroyed:" -ForegroundColor Green
 Write-Host "  - 1x NAT Gateway (~$32/month saved overnight)" -ForegroundColor Gray
 Write-Host "  - 1x Elastic IP" -ForegroundColor Gray
-Write-Host "  - 7x VPC Endpoints (~$49/month saved overnight)" -ForegroundColor Gray
+Write-Host "  - 6x VPC Endpoints (~$42/month saved overnight)" -ForegroundColor Gray
 Write-Host "  - GuardDuty (~$4-6/month saved overnight)" -ForegroundColor Gray
 Write-Host "  - AWS Config (~$2/month saved overnight)" -ForegroundColor Gray
-Write-Host "  - Total overnight savings: ~$87-89/month" -ForegroundColor Gray
+Write-Host "  - Total overnight savings: ~$80-82/month" -ForegroundColor Gray
 Write-Host "" -ForegroundColor Gray
 Write-Host "Note: Lambda and WebSocket will not work until morning startup" -ForegroundColor Yellow
 Write-Host "Run morning-startup.ps1 to restore functionality" -ForegroundColor Yellow

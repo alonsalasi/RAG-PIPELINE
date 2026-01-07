@@ -349,9 +349,10 @@ class SemanticChunker:
                 if hebrew in content:
                     content += f"\n{english}: [Hebrew: {hebrew}]"
             
-            # Rich metadata
+            # Rich metadata with S3 key for better file identification
             metadata = {
                 "source": doc_name,
+                "source_file": doc_name,  # Add full source file name for better matching
                 "chunk_id": i,
                 "total_chunks": len(final_blocks),
                 "content_type": block['type'],

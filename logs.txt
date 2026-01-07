@@ -1,0 +1,4 @@
+
+'charmap' codec can't encode character '\U0001f680' in position 89: character maps to <undefined>
+2026-01-05T06:20:08 INIT_REPORT Init Duration: 10006.26 ms	Phase: init	Status: timeout
+2026-01-05T06:20:19 START RequestId: ab5f47d2-5d08-4680-8785-c5d731aee767 Version: $LATEST

@@ -443,9 +443,9 @@ def process_message(record):
                         desc_parts = [f"Slide {img_info['page']}"]
                         if diagram_type:
                             desc_parts.append(f"Type: {diagram_type}")
-                        if analysis['objects']:
+                        if analysis.get('objects'):
                             desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                        if analysis['colors']:
+                        if analysis.get('colors'):
                             desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
                         description = f"Image from {base_name}. {'. '.join(desc_parts)}"
                     except:
@@ -495,9 +495,9 @@ def process_message(record):
                         desc_parts = ["Document image"]
                         if diagram_type:
                             desc_parts.append(f"Type: {diagram_type}")
-                        if analysis['objects']:
+                        if analysis.get('objects'):
                             desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                        if analysis['colors']:
+                        if analysis.get('colors'):
                             desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
                         description = f"Image from {base_name}. {'. '.join(desc_parts)}"
                         logger.info(f"Analyzed DOCX image #{img_idx}: diagram_type={diagram_type}, ocr_keywords={ocr_kw}")
@@ -838,11 +838,15 @@ def process_message(record):
                 docs = create_semantic_chunks(full_text, doc_name, max_chunk_size=1500)
                 logger.info(f"Semantic chunking complete | Chunks: {len(docs)} | Time: {time.time() - chunk_start:.2f}s")
                 
-                # Add image metadata to all chunks
+                # Add image metadata and S3 key to all chunks
                 for doc in docs:
                     doc.metadata.update({
                         "has_images": len(image_metadata) > 0,
-                        "image_count": len(image_metadata)
+                        "image_count": len(image_metadata),
+                        "source_file": s3_key,  # Add full S3 key for file identification
+                        "s3_key": s3_key,  # Include S3 key explicitly
+                        "uploaded_name": filename  # Include original filename as uploaded
+
                     })
                     
             except Exception as e:
@@ -856,6 +860,9 @@ def process_message(record):
                         page_content=f"Document: {doc_name}\n{chunk}",
                         metadata={
                             "source": base_name,
+                            "source_file": s3_key,
+                            "s3_key": s3_key,
+                            "uploaded_name": filename,
                             "chunk_id": i,
                             "total_chunks": len(chunks),
                             "has_images": len(image_metadata) > 0,
@@ -893,6 +900,8 @@ def process_message(record):
                         page_content=searchable_content,
                         metadata={
                             "source": base_name,
+                            "source_file": s3_key,
+                            "uploaded_name": filename,
                             "type": "image",
                             "page": img_meta['page'],
                             "image_number": idx,
@@ -977,14 +986,21 @@ def process_message(record):
             embed_start = time.time()
             if master_exists:
                 logger.info("Loading existing master index")
-                master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
-                existing_count = master_store.index.ntotal
-                logger.info(f"Master index loaded | Existing vectors: {existing_count}")
+                try:
+                    master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
+                except Exception as load_err:
+                    logger.warning(f"Failed to load existing index: {load_err}, creating new one")
+                    master_store = FAISS.from_documents(docs, embed)
+                    master_exists = False
                 
-                # Add new documents to master index
-                master_store.add_documents(docs)
-                new_count = master_store.index.ntotal
-                logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
+                if master_exists:
+                    existing_count = master_store.index.ntotal
+                    logger.info(f"Master index loaded | Existing vectors: {existing_count}")
+                    
+                    # Add new documents to master index
+                    master_store.add_documents(docs)
+                    new_count = master_store.index.ntotal
+                    logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
             else:
                 logger.info(f"Creating new master index | Documents: {len(docs)}")
                 master_store = FAISS.from_documents(docs, embed)
@@ -1028,10 +1044,28 @@ def process_message(record):
             }
             
             s3_client = get_s3_client()
+            # Ensure all values are JSON serializable
+            try:
+                marker_json = json.dumps(marker_content, default=str)
+            except Exception as json_err:
+                logger.error(f"JSON serialization failed: {json_err}")
+                # Fallback: convert everything to strings
+                marker_content_safe = {
+                    "source_file": str(s3_key),
+                    "status": "processed",
+                    "images": [{k: str(v) if not isinstance(v, (list, dict)) else v for k, v in img.items()} for img in image_metadata],
+                    "text_chunks": len(docs) - len(image_metadata),
+                    "full_text": str(full_text) if full_text else "No text extracted",
+                    "text_preview": str(full_text[:1000]) if full_text else "No text extracted",
+                    "text_length": len(full_text) if full_text else 0,
+                    "completed_at": int(time.time())
+                }
+                marker_json = json.dumps(marker_content_safe)
+            
             s3_client.put_object(
                 Bucket=BUCKET,
                 Key=marker_key,
-                Body=json.dumps(marker_content),
+                Body=marker_json,
                 ContentType="application/json"
             )
             total_time = time.time() - start_time
@@ -1043,10 +1077,18 @@ def process_message(record):
         update_progress(base_name, 0, "Cancelled by user", "failed")
         return
     except (ValueError, IOError, OSError) as e:
-        logger.error(f"Processing failed | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:100]} | Time: {time.time() - start_time:.2f}s")
+        error_msg = f"{type(e).__name__}: {str(e)[:100]}"
+        logger.error(f"Processing failed | File: {base_name} | Error: {error_msg} | Time: {time.time() - start_time:.2f}s")
         update_progress(base_name, 0, f"Error: {type(e).__name__}", "failed")
+        try:
+            s3_client.put_object(Bucket=BUCKET, Key=f"errors/{base_name}.txt", Body=error_msg, ContentType="text/plain")
+        except: pass
         raise
     except Exception as e:
-        logger.error(f"Unexpected error | File: {base_name} | Error: {type(e).__name__} | Details: {str(e)[:200]} | Time: {time.time() - start_time:.2f}s")
+        error_msg = f"{type(e).__name__}: {str(e)[:200]}"
+        logger.error(f"Unexpected error | File: {base_name} | Error: {error_msg} | Time: {time.time() - start_time:.2f}s")
         update_progress(base_name, 0, f"Error: {type(e).__name__}", "failed")
+        try:
+            s3_client.put_object(Bucket=BUCKET, Key=f"errors/{base_name}.txt", Body=error_msg, ContentType="text/plain")
+        except: pass
         raise

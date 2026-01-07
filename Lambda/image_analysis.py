@@ -281,7 +281,7 @@ def analyze_image(image_bytes, model_path='/opt/models'):
                 description_parts.append(f"Objects: {', '.join(objects)}")
             if colors:
                 description_parts.append(f"Colors: {', '.join(colors)}")
-            return {
+            result = {
                 'colors': colors,
                 'objects': objects,
                 'diagram_type': None,
@@ -289,6 +289,7 @@ def analyze_image(image_bytes, model_path='/opt/models'):
                 'description': '. '.join(description_parts) if description_parts else 'Image content',
                 'is_logo_or_banner': True
             }
+            return dict(result)
     
     description_parts = []
     if diagram_type:
@@ -306,10 +307,11 @@ def analyze_image(image_bytes, model_path='/opt/models'):
     if colors:
         description_parts.append(f"Colors: {', '.join(colors)}")
     
-    return {
+    result = {
         'colors': colors,
         'objects': objects,
         'diagram_type': diagram_type,
         'ocr_keywords': ocr_keywords,
         'description': '. '.join(description_parts) if description_parts else 'Image content'
     }
+    return dict(result)
