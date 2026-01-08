@@ -2310,6 +2310,99 @@ def handle_processing_status(event):
 
 
 # -----------------------------------------------------------
+# WebSocket Authorizer
+# -----------------------------------------------------------
+def handle_websocket_authorizer(event):
+    """Validate Cognito JWT token for WebSocket connections."""
+    try:
+        import jwt
+        import requests
+        from jwt.algorithms import RSAAlgorithm
+        
+        # Extract token from query string
+        query_params = event.get('queryStringParameters', {})
+        token = query_params.get('token') if query_params else None
+        
+        if not token:
+            logger.warning("No token provided in WebSocket connection")
+            return generate_auth_policy('user', 'Deny', event['methodArn'])
+        
+        # Get Cognito configuration
+        region = os.getenv('AWS_REGION', 'us-east-1')
+        user_pool_id = os.getenv('USER_POOL_ID')
+        client_id = os.getenv('CLIENT_ID')
+        
+        if not user_pool_id or not client_id:
+            logger.error("Cognito configuration missing")
+            return generate_auth_policy('user', 'Deny', event['methodArn'])
+        
+        # Fetch JWKS keys
+        jwks_url = f'https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json'
+        jwks = requests.get(jwks_url, timeout=5).json()
+        
+        # Decode header to get kid
+        unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header['kid']
+        
+        # Find the key
+        key = None
+        for jwk_key in jwks['keys']:
+            if jwk_key['kid'] == kid:
+                key = RSAAlgorithm.from_jwk(json.dumps(jwk_key))
+                break
+        
+        if not key:
+            logger.warning("Key not found in JWKS")
+            return generate_auth_policy('user', 'Deny', event['methodArn'])
+        
+        # Verify token
+        decoded = jwt.decode(
+            token,
+            key,
+            algorithms=['RS256'],
+            audience=client_id,
+            options={'verify_exp': True}
+        )
+        
+        user_id = decoded.get('sub', 'unknown')
+        logger.info(f"Token verified for user: {user_id}")
+        
+        return generate_auth_policy(user_id, 'Allow', event['methodArn'], {
+            'userId': user_id,
+            'email': decoded.get('email', ''),
+            'username': decoded.get('cognito:username', '')
+        })
+        
+    except jwt.ExpiredSignatureError:
+        logger.warning("Token expired")
+        return generate_auth_policy('user', 'Deny', event['methodArn'])
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"Invalid token: {e}")
+        return generate_auth_policy('user', 'Deny', event['methodArn'])
+    except Exception as e:
+        logger.error(f"Authorization failed: {e}")
+        return generate_auth_policy('user', 'Deny', event['methodArn'])
+
+def generate_auth_policy(principal_id, effect, resource, context=None):
+    """Generate IAM policy for API Gateway."""
+    auth_response = {
+        'principalId': principal_id,
+        'policyDocument': {
+            'Version': '2012-10-17',
+            'Statement': [{
+                'Action': 'execute-api:Invoke',
+                'Effect': effect,
+                'Resource': resource
+            }]
+        }
+    }
+    
+    if context:
+        auth_response['context'] = context
+    
+    return auth_response
+
+# -----------------------------------------------------------
 # WebSocket Support
 # -----------------------------------------------------------
 def send_websocket_message(connection_url, connection_id, message):
@@ -2490,6 +2583,10 @@ def lambda_handler(event, context):
     correlation_id_var.set(request_id)
     
     logger.info(f"Lambda triggered | RequestId: {request_id} | Event: {json.dumps(event)[:500]}")
+    
+    # Handle WebSocket Authorizer (REQUEST type)
+    if event.get('type') == 'REQUEST' and event.get('methodArn'):
+        return handle_websocket_authorizer(event)
     
     # Handle WebSocket invocation (detect by requestContext.routeKey)
     request_context = event.get('requestContext', {})

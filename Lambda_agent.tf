@@ -51,6 +51,8 @@ resource "aws_lambda_function" "agent_executor" {
       SES_SENDER_EMAIL         = var.ses_sender_email
       EMBEDDINGS_MODEL_ID      = "cohere.embed-multilingual-v3"
       FORCE_UPDATE             = "2025-11-02-fix-env-vars-v2"
+      USER_POOL_ID             = aws_cognito_user_pool.agent_users.id
+      CLIENT_ID                = aws_cognito_user_pool_client.agent_client.id
     }
   }
 

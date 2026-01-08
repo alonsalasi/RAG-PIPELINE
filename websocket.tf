@@ -10,6 +10,24 @@ resource "aws_apigatewayv2_api" "websocket" {
   }
 }
 
+# REQUEST Authorizer for WebSocket (uses existing agent_executor Lambda)
+resource "aws_apigatewayv2_authorizer" "websocket_cognito" {
+  api_id           = aws_apigatewayv2_api.websocket.id
+  authorizer_type  = "REQUEST"
+  authorizer_uri   = aws_lambda_function.agent_executor.invoke_arn
+  identity_sources = ["route.request.querystring.token"]
+  name             = "cognito-authorizer"
+}
+
+# Lambda Permission for WebSocket Authorizer
+resource "aws_lambda_permission" "websocket_authorizer" {
+  statement_id  = "AllowAPIGatewayInvokeAuthorizer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.agent_executor.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.websocket.execution_arn}/authorizers/${aws_apigatewayv2_authorizer.websocket_cognito.id}"
+}
+
 # WebSocket Stage
 resource "aws_apigatewayv2_stage" "websocket" {
   api_id      = aws_apigatewayv2_api.websocket.id
@@ -24,9 +42,11 @@ resource "aws_apigatewayv2_stage" "websocket" {
 
 # WebSocket Routes - all point to existing agent_executor Lambda
 resource "aws_apigatewayv2_route" "connect" {
-  api_id    = aws_apigatewayv2_api.websocket.id
-  route_key = "$connect"
-  target    = "integrations/${aws_apigatewayv2_integration.websocket.id}"
+  api_id             = aws_apigatewayv2_api.websocket.id
+  route_key          = "$connect"
+  target             = "integrations/${aws_apigatewayv2_integration.websocket.id}"
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.websocket_cognito.id
 }
 
 resource "aws_apigatewayv2_route" "disconnect" {

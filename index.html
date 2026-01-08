@@ -687,7 +687,7 @@
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
     
     try{
-      const ws = new WebSocket(WEBSOCKET_URL);
+      const ws = new WebSocket(`${WEBSOCKET_URL}?token=${encodeURIComponent(idToken)}`);
       let fullResponse = '';
       let images = [];
       let startTime = Date.now();
