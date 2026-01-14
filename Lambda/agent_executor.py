@@ -653,12 +653,22 @@ def handle_get_upload_url_api(event):
         if not file_name.lower().endswith(allowed_extensions):
             return cors_response({"error": "Only PDF, PPTX, DOCX, XLSX, JPG, JPEG, PNG, and TIFF files are allowed"}, 400)
         
-        # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
-        base_name = '.'.join(file_name.split('.')[:-1]) if '.' in file_name else file_name
+        # Check if file already exists in uploads/
+        s3_client = get_s3_client()
+        base_name_no_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
+        try:
+            response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="uploads/")
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    existing_file = obj['Key'].replace('uploads/', '')
+                    existing_no_ext = existing_file.rsplit('.', 1)[0] if '.' in existing_file else existing_file
+                    if existing_no_ext == base_name_no_ext:
+                        return cors_response({"error": f"File '{file_name}' already exists. Please delete it first or rename your file."}, 409)
+        except Exception as e:
+            logger.error(f"Error checking duplicates: {type(e).__name__}")
         
         # Ensure filename is properly UTF-8 encoded for S3
         key = f"uploads/{file_name}"
-        s3_client = get_s3_client()
         
         # Determine content type based on file extension
         content_type_map = {
@@ -1716,11 +1726,23 @@ def handle_search_action(event):
         logger.info(f"✅ SEARCH COMPLETE - Returning {len(all_results)} results to agent")
         
         # CRITICAL: Bedrock Agent has a response size limit (~10KB for input)
-        # If response is too large, truncate it
-        MAX_RESPONSE_SIZE = 8000  # 8KB to be safe
+        # If response is too large, truncate it intelligently
+        MAX_RESPONSE_SIZE = 6000  # 6KB to be safe (reduced from 8KB)
         if len(result) > MAX_RESPONSE_SIZE:
             logger.warning(f"⚠️ Response too large ({len(result)} bytes), truncating to {MAX_RESPONSE_SIZE} bytes")
-            result = result[:MAX_RESPONSE_SIZE] + "\n\n[Response truncated due to size limit]"
+            # Truncate but keep complete results
+            truncated_parts = []
+            current_size = 0
+            for content, source in all_results:
+                clean_content = content.strip()
+                if wants_text and not wants_images and 'IMAGE_URL:' in clean_content:
+                    continue
+                result_text = f"[{source}] {clean_content}"
+                if current_size + len(result_text) > MAX_RESPONSE_SIZE:
+                    break
+                truncated_parts.append(result_text)
+                current_size += len(result_text) + 2
+            result = "\n\n".join(truncated_parts) + "\n\n[Some results omitted due to size limit]"
         
         response_body = json.dumps({"result": result})
         logger.info(f"📦 Response body size: {len(response_body)} bytes")
@@ -1907,19 +1929,33 @@ def handle_agent_query(event):
         logger.info(f"⏱️ TIMING: Starting agent invocation at {invoke_start - total_start:.3f}s")
         logger.info(f"🤖 AGENT QUERY: {sanitize_for_logging(query)}")
         logger.info(f"📋 Agent ID: {agent_id[:20]}... | Alias: {alias_id[:20]}...")
-        try:
-            response = bedrock_agent_runtime.invoke_agent(
-                agentId=agent_id,
-                agentAliasId=alias_id,
-                sessionId=session_id,
-                inputText=query,
-                enableTrace=True
-            )
-            logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
-            logger.info(f"✅ Agent response object received, processing stream...")
-        except Exception as e:
-            logger.error(f"Agent invocation failed after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
-            return cors_response({"error": "Failed to invoke agent"}, 500)
+        
+        # Retry logic for rate limiting
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                response = bedrock_agent_runtime.invoke_agent(
+                    agentId=agent_id,
+                    agentAliasId=alias_id,
+                    sessionId=session_id,
+                    inputText=query,
+                    enableTrace=True
+                )
+                logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
+                logger.info(f"✅ Agent response object received, processing stream...")
+                break
+            except Exception as e:
+                error_str = str(e)
+                if 'ThrottlingException' in error_str or 'rate' in error_str.lower():
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Rate limited, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                logger.error(f"Agent invocation failed after {time.time() - invoke_start:.3f}s: {sanitize_for_logging(str(e))}")
+                return cors_response({"error": "Service temporarily busy, please try again"}, 503)
         
         stream_start = time.time()
         answer = ""
@@ -2642,6 +2678,14 @@ def lambda_handler(event, context):
         logger.info("Warmup ping received")
         return {"statusCode": 200, "body": json.dumps({"status": "warm"})}
     
+    # Handle async agent query processing
+    if event.get("action") == "process_agent_query":
+        query_id = event.get("queryId")
+        query = event.get("query")
+        session_id = event.get("sessionId")
+        process_agent_query_background(query_id, query, session_id)
+        return {"statusCode": 200}
+    
     # Check if this is a Bedrock Agent action invocation
     if "messageVersion" in event and "agent" in event:
         api_path = event.get("apiPath", "")
@@ -2701,11 +2745,15 @@ def lambda_handler(event, context):
         elif path == "/cancel-upload" and method == "DELETE":
             return handle_cancel_upload_api(event)
         elif path == "/agent-query" and method == "POST":
-            return handle_agent_query(event)
+            return handle_agent_query_async(event)
+        elif path == "/agent-status" and method == "GET":
+            return handle_agent_status(event)
         elif path == "/get-image" and method == "GET":
             return handle_get_image(event)
         elif path == "/processing-status" and method == "GET":
             return handle_processing_status(event)
+        elif path == "/view-file" and method == "GET":
+            return handle_view_file(event)
         else:
             logger.error(f"Unhandled route | Path: {path} | Method: {method}")
             return cors_response({"error": f"Unhandled route: {path}"}, 404)
@@ -2713,3 +2761,249 @@ def lambda_handler(event, context):
     except Exception as e:
         logger.error(f"Lambda error | Type: {type(e).__name__} | Message: {str(e)[:200]}")
         return cors_response({"error": "Internal server error"}, 500)
+
+
+# -----------------------------------------------------------
+# Async Agent Query (replaces WebSocket)
+# -----------------------------------------------------------
+def handle_agent_query_async(event):
+    """Start async agent query - returns immediately with queryId."""
+    try:
+        body_str = event.get("body", "{}")
+        body = json.loads(body_str) if body_str else {}
+        
+        query = body.get("query", "")
+        session_id = body.get("sessionId", f"session-{int(time.time())}")
+        
+        if not query or len(query) > 10000:
+            return cors_response({"error": "Invalid query"}, 400)
+        
+        # Generate unique query ID
+        query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        
+        # Write initial status to S3
+        s3_client = get_s3_client()
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=f"agent-status/{query_id}.json",
+            Body=json.dumps({"status": "processing", "query": query, "sessionId": session_id}),
+            ContentType="application/json"
+        )
+        
+        logger.info(f"Query {query_id} started")
+        
+        # Invoke Lambda async to process query
+        lambda_client = boto3.client('lambda')
+        lambda_client.invoke(
+            FunctionName=os.getenv('AWS_LAMBDA_FUNCTION_NAME'),
+            InvocationType='Event',
+            Payload=json.dumps({
+                "action": "process_agent_query",
+                "queryId": query_id,
+                "query": query,
+                "sessionId": session_id
+            })
+        )
+        
+        return cors_response({"queryId": query_id, "status": "processing"})
+        
+    except Exception as e:
+        logger.error(f"Agent query failed: {e}")
+        return cors_response({"error": "Failed to start query"}, 500)
+
+
+def process_agent_query_background(query_id, query, session_id):
+    """Process agent query in background and write result to S3."""
+    s3_client = get_s3_client()
+    status_key = f"agent-status/{query_id}.json"
+    
+    try:
+        agent_id = os.getenv("BEDROCK_AGENT_ID")
+        alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
+        
+        if not agent_id or not alias_id:
+            raise ValueError("Agent config missing")
+        
+        bedrock_client = get_bedrock_client()
+        
+        # Update status: Searching
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=status_key,
+            Body=json.dumps({"status": "processing", "message": "Searching documents..."}),
+            ContentType="application/json"
+        )
+        time.sleep(0.5)  # Give frontend time to poll
+        
+        # Invoke agent with retry
+        for attempt in range(3):
+            try:
+                response = bedrock_client.invoke_agent(
+                    agentId=agent_id,
+                    agentAliasId=alias_id,
+                    sessionId=session_id,
+                    inputText=query,
+                    enableTrace=False
+                )
+                break
+            except Exception as e:
+                if 'Throttling' in str(e) and attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+        
+        
+        # Update status: Generating
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=status_key,
+            Body=json.dumps({"status": "processing", "message": "Generating response..."}),
+            ContentType="application/json"
+        )
+        
+        # Process response
+        answer = ""
+        for event in response.get('completion', []):
+            if 'chunk' in event and 'bytes' in event['chunk']:
+                answer += event['chunk']['bytes'].decode('utf-8')
+        
+        # Extract images if requested
+        images = []
+        if any(kw in query.lower() for kw in ['show', 'display', 'image', 'picture', 'diagram']):
+            import re, html
+            matches = re.findall(r'IMAGE_URL:([^\n|]+)', answer)
+            for s3_key in matches:
+                s3_key = html.unescape(s3_key.strip())
+                if s3_key.startswith('images/'):
+                    try:
+                        url = s3_client.generate_presigned_url(
+                            'get_object',
+                            Params={'Bucket': BUCKET, 'Key': s3_key},
+                            ExpiresIn=3600
+                        )
+                        images.append(url)
+                    except:
+                        pass
+            answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
+        
+        # Write success to S3
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=status_key,
+            Body=json.dumps({
+                "status": "completed",
+                "response": answer,
+                "images": images,
+                "sessionId": session_id
+            }),
+            ContentType="application/json"
+        )
+        
+        logger.info(f"Query {query_id} completed")
+        
+    except Exception as e:
+        logger.error(f"Query {query_id} failed: {e}")
+        try:
+            s3_client.put_object(
+                Bucket=BUCKET,
+                Key=status_key,
+                Body=json.dumps({"status": "failed", "error": str(e)}),
+                ContentType="application/json"
+            )
+        except:
+            pass
+
+
+def handle_view_file(event):
+    """Generate presigned URL for viewing uploaded file."""
+    try:
+        params = event.get("queryStringParameters") or {}
+        file_name = params.get("fileName")
+        
+        if not file_name:
+            return cors_response({"error": "fileName required"}, 400)
+        
+        logger.info(f"View file request: {sanitize_for_logging(file_name)}")
+        
+        s3_client = get_s3_client()
+        
+        # Remove .json extension (from processed/ folder listing)
+        base_name = file_name.replace('.json', '')
+        
+        # Remove timestamp prefix if present (format: 1234567890_filename)
+        if '_' in base_name:
+            parts = base_name.split('_', 1)
+            if parts[0].isdigit() and len(parts[0]) == 10:
+                base_name = parts[1]
+                logger.info(f"Stripped timestamp: {base_name}")
+        
+        # List ALL files in uploads/ and find exact match (ignoring extension)
+        try:
+            response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="uploads/")
+            if 'Contents' not in response:
+                return cors_response({"error": "No files in uploads"}, 404)
+            
+            # Search for file with matching name (any extension)
+            for obj in response['Contents']:
+                s3_filename = obj['Key'].replace('uploads/', '')
+                # Remove extension from both for comparison
+                s3_name_no_ext = s3_filename.rsplit('.', 1)[0] if '.' in s3_filename else s3_filename
+                base_name_no_ext = base_name.rsplit('.', 1)[0] if '.' in base_name else base_name
+                
+                if s3_name_no_ext == base_name_no_ext:
+                    s3_key = obj['Key']
+                    logger.info(f"Found match: {s3_key}")
+                    
+                    # Generate URL
+                    url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': BUCKET, 'Key': s3_key},
+                        ExpiresIn=300
+                    )
+                    return cors_response({"url": url})
+            
+            logger.error(f"No match for: {base_name}")
+            return cors_response({"error": "File not found"}, 404)
+            
+        except Exception as e:
+            logger.error(f"Error: {type(e).__name__}")
+            return cors_response({"error": "File not found"}, 404)
+        
+    except Exception as e:
+        logger.error(f"View error: {type(e).__name__}")
+        return cors_response({"error": "Failed to generate view URL"}, 500)
+
+
+def handle_agent_status(event):
+    """Check status of agent query."""
+    try:
+        params = event.get("queryStringParameters") or {}
+        query_id = params.get("queryId")
+        
+        if not query_id:
+            return cors_response({"error": "queryId required"}, 400)
+        
+        s3_client = get_s3_client()
+        status_key = f"agent-status/{query_id}.json"
+        
+        try:
+            response = s3_client.get_object(Bucket=BUCKET, Key=status_key)
+            status_data = json.loads(response['Body'].read().decode('utf-8'))
+            
+            # Delete status file after returning completed result
+            if status_data.get('status') in ['completed', 'failed']:
+                try:
+                    s3_client.delete_object(Bucket=BUCKET, Key=status_key)
+                except:
+                    pass
+            
+            return cors_response(status_data)
+            
+        except s3_client.exceptions.NoSuchKey:
+            return cors_response({"status": "not_found"}, 404)
+            
+    except Exception as e:
+        logger.error(f"Status check failed: {e}")
+        return cors_response({"error": "Failed to check status"}, 500)
+
+

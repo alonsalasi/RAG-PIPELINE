@@ -107,6 +107,22 @@ resource "aws_apigatewayv2_route" "rag_api_route_processing_status" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
+resource "aws_apigatewayv2_route" "rag_api_route_agent_status" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /agent-status"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_view_file" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /view-file"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id = aws_apigatewayv2_api.rag_api_gateway.id
   
@@ -121,6 +137,8 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
       jsonencode(aws_apigatewayv2_route.rag_api_route_delete_file),
       jsonencode(aws_apigatewayv2_route.rag_api_route_cancel_upload),
       jsonencode(aws_apigatewayv2_route.rag_api_route_processing_status),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_agent_status),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_view_file),
     ]))
   }
   
@@ -134,6 +152,8 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
     aws_apigatewayv2_route.rag_api_route_delete_file,
     aws_apigatewayv2_route.rag_api_route_cancel_upload,
     aws_apigatewayv2_route.rag_api_route_processing_status,
+    aws_apigatewayv2_route.rag_api_route_agent_status,
+    aws_apigatewayv2_route.rag_api_route_view_file,
     aws_apigatewayv2_integration.rag_api_integration
   ]
   
