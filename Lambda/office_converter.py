@@ -1,5 +1,6 @@
 """
 Office document converter - converts PPTX, DOCX, XLSX to text and images
+Also provides Word document (DOCX) editing capabilities
 Zero cost - uses only free Python libraries
 """
 import io
@@ -222,3 +223,236 @@ def extract_xlsx(file_path):
     except Exception as e:
         logger.error(f"XLSX extraction failed: {e}")
         return "", []
+
+
+# ============================================================================
+# WORD DOCUMENT EDITING FUNCTIONS
+# ============================================================================
+
+def create_docx(output_path, content=None):
+    """
+    Create a new Word document.
+    
+    Args:
+        output_path: Path where the document will be saved
+        content: Optional initial content (string or list of paragraphs)
+    
+    Returns:
+        Document object for further editing
+    
+    Example:
+        doc = create_docx("output.docx", "Hello World")
+        doc = create_docx("output.docx", ["Paragraph 1", "Paragraph 2"])
+    """
+    try:
+        doc = DocxDocument()
+        
+        if content:
+            if isinstance(content, str):
+                doc.add_paragraph(content)
+            elif isinstance(content, list):
+                for para in content:
+                    doc.add_paragraph(str(para))
+        
+        doc.save(output_path)
+        logger.info(f"Created new Word document: {output_path}")
+        return doc
+        
+    except Exception as e:
+        logger.error(f"Failed to create Word document: {e}")
+        raise
+
+
+def edit_docx(file_path):
+    """
+    Open an existing Word document for editing.
+    
+    Args:
+        file_path: Path to the Word document to edit
+    
+    Returns:
+        Document object for editing
+    
+    Example:
+        doc = edit_docx("input.docx")
+        doc.add_paragraph("New paragraph")
+        save_docx(doc, "output.docx")
+    """
+    try:
+        doc = DocxDocument(file_path)
+        logger.info(f"Opened Word document for editing: {file_path}")
+        return doc
+        
+    except Exception as e:
+        logger.error(f"Failed to open Word document: {e}")
+        raise
+
+
+def save_docx(doc, output_path):
+    """
+    Save a Word document to a file.
+    
+    Args:
+        doc: Document object to save
+        output_path: Path where the document will be saved
+    
+    Example:
+        doc = edit_docx("input.docx")
+        doc.add_paragraph("New content")
+        save_docx(doc, "output.docx")
+    """
+    try:
+        doc.save(output_path)
+        logger.info(f"Saved Word document: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Failed to save Word document: {e}")
+        raise
+
+
+def add_paragraph_to_docx(doc, text, style=None):
+    """
+    Add a paragraph to a Word document.
+    
+    Args:
+        doc: Document object
+        text: Text content for the paragraph
+        style: Optional paragraph style (e.g., 'Heading 1', 'Normal')
+    
+    Returns:
+        The added paragraph object
+    
+    Example:
+        doc = edit_docx("input.docx")
+        add_paragraph_to_docx(doc, "My Title", style='Heading 1')
+        add_paragraph_to_docx(doc, "Regular paragraph text")
+        save_docx(doc, "output.docx")
+    """
+    try:
+        para = doc.add_paragraph(text)
+        if style:
+            para.style = style
+        return para
+        
+    except Exception as e:
+        logger.error(f"Failed to add paragraph: {e}")
+        raise
+
+
+def add_heading_to_docx(doc, text, level=1):
+    """
+    Add a heading to a Word document.
+    
+    Args:
+        doc: Document object
+        text: Heading text
+        level: Heading level (0-9, where 0 is Title, 1 is Heading 1, etc.)
+    
+    Returns:
+        The added heading paragraph
+    
+    Example:
+        doc = edit_docx("input.docx")
+        add_heading_to_docx(doc, "Document Title", level=0)
+        add_heading_to_docx(doc, "Chapter 1", level=1)
+        add_heading_to_docx(doc, "Section 1.1", level=2)
+        save_docx(doc, "output.docx")
+    """
+    try:
+        heading = doc.add_heading(text, level=level)
+        return heading
+        
+    except Exception as e:
+        logger.error(f"Failed to add heading: {e}")
+        raise
+
+
+def replace_text_in_docx(file_path, output_path, replacements):
+    """
+    Replace text in a Word document.
+    
+    Args:
+        file_path: Path to the input Word document
+        output_path: Path where the modified document will be saved
+        replacements: Dictionary mapping old text to new text
+    
+    Example:
+        replace_text_in_docx(
+            "input.docx",
+            "output.docx",
+            {"[NAME]": "John Doe", "[DATE]": "2025-12-15"}
+        )
+    """
+    try:
+        doc = DocxDocument(file_path)
+        
+        # Replace in paragraphs
+        for para in doc.paragraphs:
+            for old_text, new_text in replacements.items():
+                if old_text in para.text:
+                    for run in para.runs:
+                        if old_text in run.text:
+                            run.text = run.text.replace(old_text, new_text)
+        
+        # Replace in tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for old_text, new_text in replacements.items():
+                            if old_text in para.text:
+                                for run in para.runs:
+                                    if old_text in run.text:
+                                        run.text = run.text.replace(old_text, new_text)
+        
+        doc.save(output_path)
+        logger.info(f"Replaced {len(replacements)} text patterns in document: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Failed to replace text in Word document: {e}")
+        raise
+
+
+def add_table_to_docx(doc, data, style='Light Grid Accent 1'):
+    """
+    Add a table to a Word document.
+    
+    Args:
+        doc: Document object
+        data: List of lists representing table rows (first row is header)
+        style: Table style name (optional)
+    
+    Returns:
+        The added table object
+    
+    Example:
+        doc = edit_docx("input.docx")
+        data = [
+            ["Name", "Age", "City"],
+            ["Alice", "30", "New York"],
+            ["Bob", "25", "San Francisco"]
+        ]
+        add_table_to_docx(doc, data)
+        save_docx(doc, "output.docx")
+    """
+    try:
+        if not data:
+            raise ValueError("Table data cannot be empty")
+        
+        rows = len(data)
+        cols = len(data[0])
+        
+        table = doc.add_table(rows=rows, cols=cols)
+        table.style = style
+        
+        # Populate table
+        for i, row_data in enumerate(data):
+            row_cells = table.rows[i].cells
+            for j, cell_value in enumerate(row_data):
+                row_cells[j].text = str(cell_value)
+        
+        return table
+        
+    except Exception as e:
+        logger.error(f"Failed to add table: {e}")
+        raise
