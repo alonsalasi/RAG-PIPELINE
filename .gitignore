@@ -18,3 +18,4 @@ terraform.tfvars
 .terraform.lock.hcl
 scripts/scheduler.log
 scripts/scheduler.log
+scripts/scheduler.log
