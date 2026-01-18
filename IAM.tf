@@ -69,8 +69,8 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Effect = "Allow",
         Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
         Resource = [
-          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*",
-          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*:*"
+          "arn:aws:logs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*",
+          "arn:aws:logs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*:*"
         ]
       },
       {
@@ -94,7 +94,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Resource = "*",
         Condition = {
           StringEquals = {
-            "aws:RequestedRegion" = data.aws_region.current.name
+            "aws:RequestedRegion" = data.aws_region.current.id
           }
         }
       },
@@ -110,7 +110,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Condition = {
 
           StringEquals = {
-            "aws:RequestedRegion" = data.aws_region.current.name
+            "aws:RequestedRegion" = data.aws_region.current.id
           }
         }
       },
@@ -128,7 +128,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
         Resource = [
           aws_kms_key.agent_encryption.arn,
-          "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:key/*"
+          "arn:aws:kms:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:key/*"
         ]
       },
 
@@ -138,7 +138,7 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
         Resource = "*",
         Condition = {
           StringEquals = {
-            "aws:RequestedRegion" = data.aws_region.current.name
+            "aws:RequestedRegion" = data.aws_region.current.id
           }
         }
       },
@@ -258,7 +258,7 @@ resource "aws_iam_policy" "lambda_agent_policy" {
       {
         Effect = "Allow",
         Action = ["lambda:InvokeFunction"],
-        Resource = "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agent-executor"
+        Resource = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agent-executor"
       },
       # SES email sending - DISABLED (requires NAT Gateway)
       # {
@@ -379,7 +379,7 @@ resource "aws_lambda_permission" "allow_bedrock_invoke" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.agent_executor.function_name
   principal     = "bedrock.amazonaws.com"
-  source_arn    = "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
+  source_arn    = "arn:aws:bedrock:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:agent/*"
 }
 
 #########################
@@ -422,7 +422,7 @@ resource "aws_iam_role_policy" "cognito_sms_policy" {
       Action = [
         "sns:Publish"
       ]
-      Resource = "arn:aws:sns:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      Resource = "arn:aws:sns:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:*"
       Condition = {
         StringEquals = {
           "sns:Protocol" = "sms"

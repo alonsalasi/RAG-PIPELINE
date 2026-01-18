@@ -119,7 +119,7 @@ resource "aws_route_table_association" "private" {
 resource "aws_vpc_endpoint" "s3_gateway" {
   count             = var.enable_lambda_vpc ? 1 : 0
   vpc_id            = aws_vpc.main[0].id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
+  service_name      = "com.amazonaws.${data.aws_region.current.id}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = concat([aws_route_table.public[0].id], aws_route_table.private[*].id)
 
@@ -136,7 +136,7 @@ resource "aws_vpc_endpoint" "s3_gateway" {
 resource "aws_vpc_endpoint" "bedrock_runtime" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.bedrock-runtime"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.bedrock-runtime"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]
@@ -154,7 +154,7 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
 resource "aws_vpc_endpoint" "bedrock_agent_runtime" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.bedrock-agent-runtime"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.bedrock-agent-runtime"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]
@@ -168,7 +168,7 @@ resource "aws_vpc_endpoint" "bedrock_agent_runtime" {
 resource "aws_vpc_endpoint" "sqs" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.sqs"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.sqs"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]
@@ -182,7 +182,7 @@ resource "aws_vpc_endpoint" "sqs" {
 resource "aws_vpc_endpoint" "sns" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.sns"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.sns"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]
@@ -196,7 +196,7 @@ resource "aws_vpc_endpoint" "sns" {
 resource "aws_vpc_endpoint" "kms" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.kms"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.kms"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]
@@ -210,7 +210,7 @@ resource "aws_vpc_endpoint" "kms" {
 resource "aws_vpc_endpoint" "logs" {
   count               = var.enable_lambda_vpc ? 1 : 0
   vpc_id              = aws_vpc.main[0].id
-  service_name        = "com.amazonaws.${data.aws_region.current.name}.logs"
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.logs"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.lambda_sg[0].id]

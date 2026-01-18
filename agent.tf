@@ -217,7 +217,7 @@ EOT
             }
 
             provisioner "local-exec" {
-              command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.name} --profile ${var.aws_profile} --no-verify-ssl"
+              command = "aws bedrock-agent prepare-agent --agent-id ${aws_bedrockagent_agent.rag_agent.agent_id} --region ${data.aws_region.current.id} --profile ${var.aws_profile} --no-verify-ssl"
             }
 
             depends_on = [
