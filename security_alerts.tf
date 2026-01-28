@@ -214,30 +214,90 @@ resource "aws_cloudwatch_event_target" "guardduty_findings_to_sns" {
 # CloudWatch Metric Filters for Log-Based Alerts
 # =========================================================
 
-# 7. Failed Login Attempts Filter
-resource "aws_cloudwatch_log_metric_filter" "failed_logins" {
-  name           = "${var.project_name}-failed-logins"
-  log_group_name = aws_cloudwatch_log_group.lambda_agent_logs.name
-  pattern        = "[time, request_id, level=ERROR*, msg=\"*authentication*failed*\" || msg=\"*login*failed*\" || msg=\"*invalid*credentials*\"]"
+# 7. Failed Cognito Login Attempts (via CloudTrail)
+resource "aws_cloudwatch_event_rule" "cognito_failed_auth" {
+  name        = "${var.project_name}-cognito-failed-auth"
+  description = "Alert on failed Cognito authentication attempts"
+
+  event_pattern = jsonencode({
+    source      = ["aws.cognito-idp"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = ["InitiateAuth", "AdminInitiateAuth", "RespondToAuthChallenge"]
+      errorCode = ["NotAuthorizedException", "UserNotFoundException", "PasswordResetRequiredException"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "cognito_failed_auth_to_sns" {
+  rule      = aws_cloudwatch_event_rule.cognito_failed_auth.name
+  target_id = "SendToSNS"
+  arn       = aws_sns_topic.security_alerts.arn
+
+  input_transformer {
+    input_paths = {
+      user   = "$.detail.requestParameters.username"
+      error  = "$.detail.errorCode"
+      time   = "$.time"
+      source = "$.detail.sourceIPAddress"
+    }
+    input_template = "\"SECURITY ALERT: Failed Login Attempt\\n\\nUser: <user>\\nError: <error>\\nTime: <time>\\nSource IP: <source>\\n\\nAction: Monitor for brute force attacks.\""
+  }
+}
+
+# 7b. Successful Cognito Login (for audit trail)
+resource "aws_cloudwatch_event_rule" "cognito_successful_auth" {
+  name        = "${var.project_name}-cognito-successful-auth"
+  description = "Log successful Cognito authentication for audit"
+
+  event_pattern = jsonencode({
+    source      = ["aws.cognito-idp"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = ["InitiateAuth", "AdminInitiateAuth", "RespondToAuthChallenge"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_log_group" "cognito_auth_logs" {
+  name              = "/aws/cognito/authentication"
+  retention_in_days = 30
+
+  tags = {
+    Name = "${var.project_name}-cognito-auth-logs"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "cognito_successful_auth_to_logs" {
+  rule      = aws_cloudwatch_event_rule.cognito_successful_auth.name
+  target_id = "SendToLogs"
+  arn       = aws_cloudwatch_log_group.cognito_auth_logs.arn
+}
+
+# 7c. Brute Force Detection (5+ failed attempts in 5 minutes)
+resource "aws_cloudwatch_log_metric_filter" "brute_force_attempts" {
+  name           = "${var.project_name}-brute-force-attempts"
+  log_group_name = aws_cloudwatch_log_group.cognito_auth_logs.name
+  pattern        = "{ $.detail.errorCode = \"NotAuthorizedException\" || $.detail.errorCode = \"UserNotFoundException\" }"
 
   metric_transformation {
-    name      = "FailedLoginAttempts"
+    name      = "BruteForceAttempts"
     namespace = "${var.project_name}/Security"
     value     = "1"
     unit      = "Count"
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "failed_login_spike" {
-  alarm_name          = "${var.project_name}-failed-login-spike"
+resource "aws_cloudwatch_metric_alarm" "brute_force_alert" {
+  alarm_name          = "${var.project_name}-brute-force-alert"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "FailedLoginAttempts"
+  metric_name         = "BruteForceAttempts"
   namespace           = "${var.project_name}/Security"
   period              = 300
   statistic           = "Sum"
   threshold           = 5
-  alarm_description   = "Multiple failed login attempts detected - possible brute force attack"
+  alarm_description   = "Brute force attack detected - 5+ failed login attempts in 5 minutes"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.security_alerts.arn]
 }
