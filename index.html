@@ -51,7 +51,7 @@
     .chat-log { flex:1; min-height:0; padding:20px; overflow-y:auto; background-color:#fdfdfd; height:0; }
     .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5; }
     .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
-    .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px;}
+    .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px; unicode-bidi:plaintext; }
     .assistant-message h1 { font-size:1.5em; margin:10px 0; border-bottom:2px solid #eee; padding-bottom:5px; }
     .assistant-message h2 { font-size:1.3em; margin:10px 0; border-bottom:1px solid #eee; padding-bottom:5px; }
     .assistant-message h3 { font-size:1.1em; margin:8px 0; font-weight:600; }
@@ -62,6 +62,10 @@
     .assistant-message li { margin:5px 0; }
     .assistant-message strong { font-weight:600; }
     .assistant-message em { font-style:italic; }
+    .assistant-message table { border-collapse:collapse; width:100%; margin:15px 0; }
+    .assistant-message table th { background:#f0f0f0; padding:10px; border:1px solid #ddd; font-weight:600; text-align:left; }
+    .assistant-message table td { padding:10px; border:1px solid #ddd; }
+    .assistant-message table tr:nth-child(even) { background:#f9f9f9; }
     .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
     .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
     .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
@@ -692,7 +696,18 @@
       // Poll for status with adaptive intervals
       let elapsedTime = 0;
       const startTime = Date.now();
-      const maxTime = 90000; // 90 seconds max
+      const maxTime = 180000; // 180 seconds max (3 minutes)
+      let currentMessage = 'Thinking...';
+      
+      // Update timer display every second
+      const timerInterval = setInterval(() => {
+        elapsedTime = Date.now() - startTime;
+        if(elapsedTime >= maxTime || !responseDiv.parentNode) {
+          clearInterval(timerInterval);
+        } else {
+          responseDiv.innerHTML = `<span class="spinner"></span> ${currentMessage} (${Math.floor(elapsedTime/1000)}s)`;
+        }
+      }, 1000);
       
       while(elapsedTime < maxTime) {
         // Adaptive polling intervals
@@ -711,9 +726,10 @@
         
         if(!statusRes.ok) {
           if(statusRes.status === 404) {
-            responseDiv.innerHTML = `<span class="spinner"></span> Thinking... (${Math.floor(elapsedTime/1000)}s)`;
+            currentMessage = 'Thinking...';
             continue;
           }
+          clearInterval(timerInterval);
           throw new Error('Status check failed');
         }
         
@@ -721,56 +737,96 @@
         
         // Update status message if available
         if(status.message && status.status === 'processing') {
-          responseDiv.innerHTML = `<span class="spinner"></span> ${status.message} (${Math.floor(elapsedTime/1000)}s)`;
+          currentMessage = status.message;
         } else if(status.status === 'processing') {
-          responseDiv.innerHTML = `<span class="spinner"></span> Thinking... (${Math.floor(elapsedTime/1000)}s)`;
+          currentMessage = 'Thinking...';
         }
         
         if(status.status === 'completed') {
-          CHAT_LOG.removeChild(responseDiv);
+          clearInterval(timerInterval);
+          if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
           
           const finalDiv = document.createElement('div');
           finalDiv.className = 'message assistant-message';
-          finalDiv.innerHTML = marked.parse(status.response);
-          finalDiv.style.direction = 'auto';
-          finalDiv.style.textAlign = 'start';
           
-          if(status.images && status.images.length > 0) {
-            const imgContainer = document.createElement('div');
-            imgContainer.style.cssText = 'margin-top:15px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;';
-            
-            status.images.forEach(imgUrl => {
-              const imgWrapper = document.createElement('div');
-              imgWrapper.style.cssText = 'border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fafafa;box-shadow:0 4px 12px rgba(0,0,0,0.1);cursor:pointer;';
-              
-              const img = document.createElement('img');
-              img.src = imgUrl;
-              img.style.cssText = 'width:100%;height:auto;display:block;max-height:300px;object-fit:contain;background:#fff;';
-              img.onclick = () => window.open(imgUrl, '_blank');
-              
-              imgWrapper.appendChild(img);
-              imgContainer.appendChild(imgWrapper);
+          // Parse response for IMAGE_URL markers and convert to actual images
+          let responseText = status.response;
+          const imageUrls = [];
+          
+          // Extract IMAGE_URL markers
+          const imageUrlPattern = /IMAGE_URL:([^\n|]+)/g;
+          let match;
+          while ((match = imageUrlPattern.exec(responseText)) !== null) {
+            imageUrls.push(match[1].trim());
+          }
+          
+          // Remove IMAGE_URL markers from text
+          responseText = responseText.replace(/IMAGE_URL:[^\n]+\n?/g, '');
+          responseText = responseText.replace(/images\/[^\n]+\.(?:jpg|jpeg|png|gif)[^\n]*\n?/g, '');
+          responseText = responseText.replace(/\n{3,}/g, '\n\n').trim();
+          
+          // Use marked to parse markdown
+          finalDiv.innerHTML = marked.parse(responseText || ' ');
+          
+          // Detect Hebrew and apply RTL
+          const hebrewChars = (responseText.match(/[\u0590-\u05FF]/g) || []).length;
+          const totalChars = responseText.replace(/\s/g, '').length;
+          const hebrewRatio = totalChars > 0 ? hebrewChars / totalChars : 0;
+          
+          if (hebrewRatio > 0.3) {
+            finalDiv.style.direction = 'rtl';
+            finalDiv.style.textAlign = 'right';
+          } else {
+            finalDiv.style.direction = 'ltr';
+            finalDiv.style.textAlign = 'left';
+          }
+          
+          // Add images from status.images OR extracted IMAGE_URLs
+          const allImages = status.images || [];
+          
+          // If we found IMAGE_URL markers, generate presigned URLs
+          if(imageUrls.length > 0 && allImages.length === 0) {
+            // Request presigned URLs from backend
+            Promise.all(imageUrls.map(async (s3Key) => {
+              try {
+                const res = await fetch(`${API_GATEWAY_URL}/get-image?key=${encodeURIComponent(s3Key)}`, {
+                  headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                return data.url;
+              } catch(e) {
+                console.error('Failed to get image URL:', e);
+                return null;
+              }
+            })).then(urls => {
+              const validUrls = urls.filter(u => u);
+              if(validUrls.length > 0) {
+                addImagesToMessage(finalDiv, validUrls);
+              }
             });
-            finalDiv.appendChild(imgContainer);
+          } else if(allImages.length > 0) {
+            addImagesToMessage(finalDiv, allImages);
           }
           
           CHAT_LOG.appendChild(finalDiv);
           CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
           break;
         } else if(status.status === 'failed') {
-          CHAT_LOG.removeChild(responseDiv);
+          clearInterval(timerInterval);
+          if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
           appendMessage('assistant', 'Error: ' + (status.error || 'Query failed'), null, true);
           break;
         }
       }
       
+      clearInterval(timerInterval);
       if(elapsedTime >= maxTime) {
-        CHAT_LOG.removeChild(responseDiv);
-        appendMessage('assistant', 'Query took too long (>90s). The system may be overloaded. Please try again.', null, true);
+        if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+        appendMessage('assistant', 'Query took too long (>3 minutes). The system may be overloaded. Please try again.', null, true);
       }
       
     }catch(e){
-      if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+      try { if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv); } catch(err) {}
       appendMessage('assistant', 'Error: ' + e.message, null, true);
     }
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
@@ -780,6 +836,25 @@
     CHAT_LOG.innerHTML = '';
     sessionId = generateSessionId();
     appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
+  }
+
+  function addImagesToMessage(messageDiv, imageUrls) {
+    const imgContainer = document.createElement('div');
+    imgContainer.style.cssText = 'margin-top:15px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;';
+    
+    imageUrls.forEach(imgUrl => {
+      const imgWrapper = document.createElement('div');
+      imgWrapper.style.cssText = 'border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fafafa;box-shadow:0 4px 12px rgba(0,0,0,0.1);cursor:pointer;';
+      
+      const img = document.createElement('img');
+      img.src = imgUrl;
+      img.style.cssText = 'width:100%;height:auto;display:block;max-height:300px;object-fit:contain;background:#fff;';
+      img.onclick = () => window.open(imgUrl, '_blank');
+      
+      imgWrapper.appendChild(img);
+      imgContainer.appendChild(imgWrapper);
+    });
+    messageDiv.appendChild(imgContainer);
   }
 
   function renderFileList(filenames, searchTerm = '', sortBy = currentSort){

@@ -15,29 +15,8 @@ resource "aws_vpc" "main" {
   }
 }
 
-resource "aws_internet_gateway" "gw" {
-  count  = var.enable_lambda_vpc ? 1 : 0
-  vpc_id = aws_vpc.main[0].id
-  tags = {
-    Name = "${var.project_name}-igw"
-  }
-}
-
 data "aws_availability_zones" "available" {
   state = "available"
-}
-
-# Public Subnets
-resource "aws_subnet" "public" {
-  count                   = var.enable_lambda_vpc ? 2 : 0
-  vpc_id                  = aws_vpc.main[0].id
-  cidr_block              = "10.0.${count.index + 1}.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "${var.project_name}-public-subnet-${count.index + 1}"
-  }
 }
 
 # Private Subnets
@@ -52,57 +31,10 @@ resource "aws_subnet" "private" {
   }
 }
 
-# NAT Gateway - Required for WebSocket API responses (only 1 needed)
-resource "aws_eip" "nat" {
-  count  = var.enable_lambda_vpc ? 1 : 0
-  domain = "vpc"
-
-  tags = {
-    Name = "${var.project_name}-nat-eip"
-  }
-}
-
-resource "aws_nat_gateway" "main" {
-  count         = var.enable_lambda_vpc ? 1 : 0
-  allocation_id = aws_eip.nat[0].id
-  subnet_id     = aws_subnet.public[0].id
-
-  tags = {
-    Name = "${var.project_name}-nat-gw"
-  }
-
-  depends_on = [aws_internet_gateway.gw]
-}
-
-# Public Route Table
-resource "aws_route_table" "public" {
-  count  = var.enable_lambda_vpc ? 1 : 0
-  vpc_id = aws_vpc.main[0].id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.gw[0].id
-  }
-
-  tags = {
-    Name = "${var.project_name}-public-rt"
-  }
-}
-
-resource "aws_route_table_association" "public" {
-  count          = var.enable_lambda_vpc ? 2 : 0
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public[0].id
-}
-
-# Private Route Table - Routes internet traffic through NAT Gateway
+# Private Route Table - No internet access, only VPC endpoints
 resource "aws_route_table" "private" {
   count  = var.enable_lambda_vpc ? 2 : 0
   vpc_id = aws_vpc.main[0].id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[0].id
-  }
 
   tags = {
     Name = "${var.project_name}-private-rt-${count.index + 1}"
@@ -121,7 +53,7 @@ resource "aws_vpc_endpoint" "s3_gateway" {
   vpc_id            = aws_vpc.main[0].id
   service_name      = "com.amazonaws.${data.aws_region.current.id}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids   = concat([aws_route_table.public[0].id], aws_route_table.private[*].id)
+  route_table_ids   = aws_route_table.private[*].id
 
   tags = {
     Name = "${var.project_name}-s3-endpoint"
@@ -218,6 +150,20 @@ resource "aws_vpc_endpoint" "logs" {
 
   tags = {
     Name = "${var.project_name}-logs-endpoint"
+  }
+}
+
+resource "aws_vpc_endpoint" "lambda" {
+  count               = var.enable_lambda_vpc ? 1 : 0
+  vpc_id              = aws_vpc.main[0].id
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.lambda"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.lambda_sg[0].id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-lambda-endpoint"
   }
 }
 

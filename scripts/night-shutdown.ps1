@@ -1,5 +1,5 @@
 # Night Shutdown Script - Destroy expensive resources
-# Saves ~$119/month when not in use
+# Saves ~$87/month when not in use
 
 Write-Host "Night Shutdown - Destroying expensive resources..." -ForegroundColor Cyan
 Write-Host ""
@@ -24,44 +24,6 @@ Write-Host "  VPC ID: $vpcId" -ForegroundColor Gray
 
 # Check current state
 Write-Host "Checking current resources..." -ForegroundColor Yellow
-
-# Get NAT Gateways
-$natGatewaysJson = aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$vpcId" "Name=state,Values=available" --output json --profile default | ConvertFrom-Json
-$natGateways = $natGatewaysJson.NatGateways
-
-if ($natGateways -and $natGateways.Count -gt 0) {
-  Write-Host "Found $($natGateways.Count) NAT Gateway(s) to delete" -ForegroundColor Yellow
-  foreach ($nat in $natGateways) {
-    try {
-      aws ec2 delete-nat-gateway --nat-gateway-id $nat.NatGatewayId --profile default 2>&1 | Out-Null
-      Write-Host "  Deleted NAT Gateway: $($nat.NatGatewayId)" -ForegroundColor Green
-    } catch {
-      Write-Host "  Failed to delete NAT Gateway $($nat.NatGatewayId): $_" -ForegroundColor Red
-      $hasErrors = $true
-      $errorDetails += "NAT Gateway deletion failed: $($_.Exception.Message)"
-    }
-  }
-  
-  # Wait for NAT Gateways to delete before releasing EIPs
-  Write-Host "  Waiting 30s for NAT Gateways to delete..." -ForegroundColor Gray
-  Start-Sleep -Seconds 30
-  
-  # Release ALL Elastic IPs in VPC (not just tagged ones)
-  $eipsJson = aws ec2 describe-addresses --filters "Name=domain,Values=vpc" --output json --profile default | ConvertFrom-Json
-  $eips = $eipsJson.Addresses | Where-Object { $_.AssociationId -eq $null -or $_.AssociationId -eq "" }
-  if ($eips) {
-    foreach ($eip in $eips) {
-      try {
-        aws ec2 release-address --allocation-id $eip.AllocationId --profile default 2>&1 | Out-Null
-        Write-Host "  Released Elastic IP: $($eip.AllocationId)" -ForegroundColor Green
-      } catch {
-        Write-Host "  Failed to release EIP $($eip.AllocationId): $_" -ForegroundColor Yellow
-      }
-    }
-  }
-} else {
-  Write-Host "  No NAT Gateways found" -ForegroundColor Gray
-}
 
 # Get VPC Endpoints
 $vpcEndpointsJson = aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpcId" --output json --profile default | ConvertFrom-Json
@@ -95,27 +57,20 @@ Write-Host "  Stopped Config Recorder" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "Shutdown complete! Resources destroyed:" -ForegroundColor Green
-Write-Host "  - 1x NAT Gateway (~$32/month saved overnight)" -ForegroundColor Gray
-Write-Host "  - 1x Elastic IP" -ForegroundColor Gray
-Write-Host "  - 6x VPC Endpoints (~$42/month saved overnight)" -ForegroundColor Gray
-Write-Host "  - GuardDuty (~$4-6/month saved overnight)" -ForegroundColor Gray
+Write-Host "  - 7x VPC Endpoints (~$50/month saved overnight)" -ForegroundColor Gray
+Write-Host "    * Bedrock Runtime, Bedrock Agent Runtime" -ForegroundColor Gray
+Write-Host "    * SQS, SNS, KMS, CloudWatch Logs, Lambda" -ForegroundColor Gray
+Write-Host "    * (S3 Gateway is FREE, kept running)" -ForegroundColor Gray
+Write-Host "  - GuardDuty (~$5/month saved overnight)" -ForegroundColor Gray
 Write-Host "  - AWS Config (~$2/month saved overnight)" -ForegroundColor Gray
-Write-Host "  - Total overnight savings: ~$80-82/month" -ForegroundColor Gray
+Write-Host "  - Total overnight savings: ~$57/month" -ForegroundColor Gray
 Write-Host "" -ForegroundColor Gray
-Write-Host "Note: Lambda and WebSocket will not work until morning startup" -ForegroundColor Yellow
+Write-Host "Note: Lambda will not work until morning startup" -ForegroundColor Yellow
 Write-Host "Run morning-startup.ps1 to restore functionality" -ForegroundColor Yellow
 
 # Validate shutdown
 Write-Host ""
 Write-Host "Validating shutdown..." -ForegroundColor Yellow
-
-# Check NAT Gateways
-$remainingNats = aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$vpcId" "Name=state,Values=available" --output json --profile default | ConvertFrom-Json
-if ($remainingNats.NatGateways.Count -eq 0) {
-  Write-Host "  All NAT Gateways destroyed" -ForegroundColor Green
-} else {
-  Write-Host "  $($remainingNats.NatGateways.Count) NAT Gateway(s) still exist" -ForegroundColor Yellow
-}
 
 # Check VPC Endpoints (exclude deleting state)
 $remainingEndpoints = aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpcId" --output json --profile default | ConvertFrom-Json

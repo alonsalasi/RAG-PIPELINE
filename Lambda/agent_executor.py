@@ -2867,24 +2867,23 @@ def process_agent_query_background(query_id, query, session_id):
             if 'chunk' in event and 'bytes' in event['chunk']:
                 answer += event['chunk']['bytes'].decode('utf-8')
         
-        # Extract images if requested
+        # Extract images - ALWAYS check for images to complement answers
         images = []
-        if any(kw in query.lower() for kw in ['show', 'display', 'image', 'picture', 'diagram']):
-            import re, html
-            matches = re.findall(r'IMAGE_URL:([^\n|]+)', answer)
-            for s3_key in matches:
-                s3_key = html.unescape(s3_key.strip())
-                if s3_key.startswith('images/'):
-                    try:
-                        url = s3_client.generate_presigned_url(
-                            'get_object',
-                            Params={'Bucket': BUCKET, 'Key': s3_key},
-                            ExpiresIn=3600
-                        )
-                        images.append(url)
-                    except:
-                        pass
-            answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
+        import re, html
+        matches = re.findall(r'IMAGE_URL:([^\n|]+)', answer)
+        for s3_key in matches:
+            s3_key = html.unescape(s3_key.strip())
+            if s3_key.startswith('images/'):
+                try:
+                    url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': BUCKET, 'Key': s3_key},
+                        ExpiresIn=3600
+                    )
+                    images.append(url)
+                except:
+                    pass
+        answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
         
         # Write success to S3
         s3_client.put_object(
