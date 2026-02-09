@@ -9,7 +9,7 @@ resource "null_resource" "build_and_push_ingestion_image" {
     office_converter_hash = filemd5("${path.module}/Lambda/office_converter.py")
     image_analysis_hash  = filemd5("${path.module}/Lambda/image_analysis.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger      = "2025-03-15-s3client-fix"
+    rebuild_trigger      = "2026-02-09-parser-import-fix"
   }
   
   provisioner "local-exec" {
@@ -29,6 +29,7 @@ resource "aws_lambda_function" "ingestion_worker" {
 
   package_type = "Image"
   image_uri    = "${aws_ecr_repository.ingestion_lambda_repo.repository_url}:latest"
+  source_code_hash = "4a39e01807d6ee8144bbf9175addbafc978d82099fb05f92b3e13e5c88402d2f"
   kms_key_arn  = aws_kms_key.agent_encryption.arn
 
   dynamic "vpc_config" {
@@ -45,6 +46,7 @@ resource "aws_lambda_function" "ingestion_worker" {
       MAX_PARALLEL_OCR = 4
       DPI              = 150
       PROJECT_NAME     = var.project_name
+      FORCE_UPDATE     = "2026-02-09-parser-fix"
     }
   }
 

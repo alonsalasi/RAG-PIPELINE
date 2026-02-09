@@ -51,6 +51,32 @@ resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
       days_after_initiation = 7
     }
   }
+
+  rule {
+    id     = "autofill-sessions-cleanup"
+    status = "Enabled"
+
+    filter {
+      prefix = "document-autofill/sessions/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+
+  rule {
+    id     = "autofill-completed-cleanup"
+    status = "Enabled"
+
+    filter {
+      prefix = "document-autofill/completed/"
+    }
+
+    expiration {
+      days = 3
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "rag_documents_block" {

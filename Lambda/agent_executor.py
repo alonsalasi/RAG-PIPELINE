@@ -2754,6 +2754,12 @@ def lambda_handler(event, context):
             return handle_processing_status(event)
         elif path == "/view-file" and method == "GET":
             return handle_view_file(event)
+        elif path == "/autofill/extract-source" and method == "POST":
+            return handle_autofill_extract_source(event)
+        elif path == "/autofill/match-fields" and method == "POST":
+            return handle_autofill_match_fields(event)
+        elif path == "/autofill/fill-document" and method == "POST":
+            return handle_autofill_fill_document(event)
         else:
             logger.error(f"Unhandled route | Path: {path} | Method: {method}")
             return cors_response({"error": f"Unhandled route: {path}"}, 404)
@@ -3004,5 +3010,280 @@ def handle_agent_status(event):
     except Exception as e:
         logger.error(f"Status check failed: {e}")
         return cors_response({"error": "Failed to check status"}, 500)
+
+
+
+
+# ===================================================================
+# DOCUMENT AUTO-FILL HANDLERS
+# ===================================================================
+
+def handle_autofill_extract_source(event):
+    """Save source document and trigger parsing via ingestion Lambda."""
+    try:
+        logger.info("Autofill extract source called")
+        body_str = event.get("body", "{}")
+        body = json.loads(body_str) if body_str else {}
+        
+        session_id = body.get("sessionId", f"autofill_{int(time.time())}")
+        check_status = body.get("checkStatus", False)
+        
+        # Status check mode
+        if check_status:
+            s3_client = get_s3_client()
+            text_key = f"document-autofill/sessions/{session_id}/source_text.txt"
+            try:
+                s3_client.head_object(Bucket=BUCKET, Key=text_key)
+                return cors_response({"status": "ready"})
+            except:
+                return cors_response({"status": "processing"})
+        
+        # Upload mode
+        file_data = body.get("fileData")
+        filename = body.get("filename")
+        
+        logger.info(f"Session: {session_id}, Filename: {filename}, Has data: {bool(file_data)}")
+        
+        if not file_data or not filename:
+            return cors_response({"error": "Missing fileData or filename"}, 400)
+        
+        import base64
+        try:
+            file_bytes = base64.b64decode(file_data)
+            logger.info(f"Decoded {len(file_bytes)} bytes")
+        except Exception as decode_err:
+            logger.error(f"Base64 decode failed: {decode_err}")
+            return cors_response({"error": "Invalid file data"}, 400)
+        
+        s3_client = get_s3_client()
+        source_key = f"document-autofill/sessions/{session_id}/source_{filename}"
+        s3_client.put_object(Bucket=BUCKET, Key=source_key, Body=file_bytes)
+        logger.info(f"Saved to S3: {source_key}")
+        
+        # Invoke ingestion Lambda to parse document
+        lambda_client = boto3.client('lambda')
+        ingestion_function = os.getenv('INGESTION_LAMBDA_NAME', 'pdfquery-ingestion-worker')
+        logger.info(f"Invoking {ingestion_function}")
+        
+        lambda_client.invoke(
+            FunctionName=ingestion_function,
+            InvocationType='Event',
+            Payload=json.dumps({
+                "action": "parse_autofill_document",
+                "sessionId": session_id,
+                "s3Key": source_key,
+                "filename": filename
+            })
+        )
+        
+        logger.info(f"Triggered parsing for {filename}")
+        return cors_response({"sessionId": session_id, "status": "processing"})
+        
+    except Exception as e:
+        logger.error(f"Extract source failed: {e}", exc_info=True)
+        return cors_response({"error": str(e)}, 500)
+
+
+
+def handle_autofill_match_fields(event):
+    """Save target document and trigger parsing."""
+    try:
+        body_str = event.get("body", "{}")
+        body = json.loads(body_str) if body_str else {}
+        
+        session_id = body.get("sessionId")
+        file_data = body.get("fileData")
+        filename = body.get("filename")
+        
+        if not session_id or not file_data or not filename:
+            return cors_response({"error": "Missing required fields"}, 400)
+        
+        import base64
+        file_bytes = base64.b64decode(file_data)
+        
+        s3_client = get_s3_client()
+        target_key = f"document-autofill/sessions/{session_id}/target_{filename}"
+        s3_client.put_object(Bucket=BUCKET, Key=target_key, Body=file_bytes)
+        
+        # Trigger parsing for target document
+        lambda_client = boto3.client('lambda')
+        ingestion_function = os.getenv('INGESTION_LAMBDA_NAME', 'pdfquery-ingestion-worker')
+        target_text_key = f"document-autofill/sessions/{session_id}/target_text.txt"
+        lambda_client.invoke(
+            FunctionName=ingestion_function,
+            InvocationType='Event',
+            Payload=json.dumps({
+                "action": "parse_autofill_document",
+                "sessionId": session_id,
+                "s3Key": target_key,
+                "filename": filename,
+                "outputKey": target_text_key
+            })
+        )
+        
+        logger.info(f"Saved and triggered parsing for target: {filename}")
+        return cors_response({"status": "ready"})
+        
+    except Exception as e:
+        logger.error(f"Match fields failed: {e}", exc_info=True)
+        return cors_response({"error": str(e)}, 500)
+
+
+
+def handle_autofill_fill_document(event):
+    """Fill target document fields in-place using LLM to map source data."""
+    try:
+        body_str = event.get("body", "{}")
+        body = json.loads(body_str) if body_str else {}
+        session_id = body.get("sessionId")
+        if not session_id:
+            return cors_response({"error": "Missing sessionId"}, 400)
+        s3_client = get_s3_client()
+        
+        # Get source text
+        text_key = f"document-autofill/sessions/{session_id}/source_text.txt"
+        try:
+            text_obj = s3_client.get_object(Bucket=BUCKET, Key=text_key)
+            source_text = text_obj['Body'].read().decode('utf-8')
+        except s3_client.exceptions.NoSuchKey:
+            return cors_response({"error": "Source not ready. Please wait and try again."}, 404)
+        
+        # Get target document
+        target_objects = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=f"document-autofill/sessions/{session_id}/target_")
+        if not target_objects.get('Contents'):
+            return cors_response({"error": "Target document not found"}, 404)
+        target_key = target_objects['Contents'][0]['Key']
+        target_filename = target_key.split('/')[-1].replace('target_', '')
+        file_ext = target_filename.rsplit('.', 1)[-1].lower() if '.' in target_filename else 'txt'
+        
+        # Download original target file
+        import io
+        target_obj = s3_client.get_object(Bucket=BUCKET, Key=target_key)
+        target_bytes = io.BytesIO(target_obj['Body'].read())
+        
+        # Handle TXT files with simple LLM filling
+        if file_ext == 'txt':
+            target_text = target_bytes.read().decode('utf-8')
+            bedrock = boto3.client('bedrock-runtime', region_name=os.getenv("AWS_REGION"))
+            prompt = f"""Fill this form using ONLY exact values from source. Do NOT calculate.\n\nSOURCE:\n{source_text}\n\nFORM:\n{target_text}\n\nRULES:\n1. Copy exact values only\n2. Match yearly to yearly, monthly to monthly\n3. If not in source, write "Data not available"\n4. NO calculations\n5. Keep Question:/Answer: format\n\nFilled form:"""
+            response = bedrock.invoke_model(modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0", body=json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}))
+            result = json.loads(response['body'].read())
+            filled_text = result['content'][0]['text']
+            output_filename = target_filename.rsplit('.', 1)[0] + '_filled.txt'
+            filled_key = f"document-autofill/completed/{session_id}_{output_filename}"
+            s3_client.put_object(Bucket=BUCKET, Key=filled_key, Body=filled_text.encode('utf-8'), ContentType='text/plain')
+            download_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': BUCKET, 'Key': filled_key}, ExpiresIn=3600)
+            logger.info(f"TXT document filled: {filled_key}")
+            return cors_response({"downloadUrl": download_url, "filename": output_filename})
+        
+        # Extract fields from target document
+        fields = []
+        if file_ext == 'docx':
+            from docx import Document
+            doc = Document(target_bytes)
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    fields.append({'type': 'paragraph', 'text': para.text, 'obj': para})
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            fields.append({'type': 'cell', 'text': cell.text, 'obj': cell})
+        elif file_ext == 'xlsx':
+            from openpyxl import load_workbook
+            wb = load_workbook(target_bytes)
+            ws = wb.active
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value:
+                        fields.append({'type': 'cell', 'text': str(cell.value), 'obj': cell})
+        elif file_ext == 'pptx':
+            from pptx import Presentation
+            prs = Presentation(target_bytes)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, 'text') and shape.text.strip():
+                        fields.append({'type': 'shape', 'text': shape.text, 'obj': shape})
+        else:
+            return cors_response({"error": "Unsupported file format"}, 400)
+        
+        if not fields:
+            return cors_response({"error": "No fillable fields found in target"}, 400)
+        
+        # Use LLM to map source data to each field
+        bedrock = boto3.client('bedrock-runtime', region_name=os.getenv("AWS_REGION"))
+        field_mappings = []
+        
+        for field in fields:
+            prompt = f"""Given this source data and a field from a form, determine the appropriate value to fill.
+
+SOURCE DATA:
+{source_text}
+
+FIELD TEXT: {field['text']}
+
+If this field should be filled with data from the source, respond with ONLY the exact value to fill (no explanations).
+If this is a label/header or no matching data exists, respond with: SKIP
+
+Value:"""
+            
+            response = bedrock.invoke_model(
+                modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": prompt}]
+                })
+            )
+            result = json.loads(response['body'].read())
+            value = result['content'][0]['text'].strip()
+            
+            if value and value != "SKIP":
+                field_mappings.append({'field': field, 'value': value})
+        
+        # Fill fields in original document
+        if file_ext == 'docx':
+            for mapping in field_mappings:
+                obj = mapping['field']['obj']
+                if mapping['field']['type'] == 'paragraph':
+                    obj.text = mapping['value']
+                elif mapping['field']['type'] == 'cell':
+                    obj.text = mapping['value']
+            output_buffer = io.BytesIO()
+            doc.save(output_buffer)
+            file_bytes = output_buffer.getvalue()
+            content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        elif file_ext == 'xlsx':
+            for mapping in field_mappings:
+                mapping['field']['obj'].value = mapping['value']
+            output_buffer = io.BytesIO()
+            wb.save(output_buffer)
+            file_bytes = output_buffer.getvalue()
+            content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        elif file_ext == 'pptx':
+            for mapping in field_mappings:
+                shape = mapping['field']['obj']
+                if hasattr(shape, 'text_frame'):
+                    shape.text_frame.text = mapping['value']
+            output_buffer = io.BytesIO()
+            prs.save(output_buffer)
+            file_bytes = output_buffer.getvalue()
+            content_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        
+        output_filename = target_filename.rsplit('.', 1)[0] + '_filled.' + file_ext
+        filled_key = f"document-autofill/completed/{session_id}_{output_filename}"
+        s3_client.put_object(Bucket=BUCKET, Key=filled_key, Body=file_bytes, ContentType=content_type)
+        download_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': BUCKET, 'Key': filled_key}, ExpiresIn=3600)
+        logger.info(f"Document filled: {filled_key} ({len(field_mappings)} fields)")
+        return cors_response({"downloadUrl": download_url, "filename": output_filename})
+    except Exception as e:
+        logger.error(f"Fill failed: {e}", exc_info=True)
+        return cors_response({"error": str(e)}, 500)
+
+
+
+
+
+
 
 

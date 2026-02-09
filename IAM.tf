@@ -258,7 +258,10 @@ resource "aws_iam_policy" "lambda_agent_policy" {
       {
         Effect = "Allow",
         Action = ["lambda:InvokeFunction"],
-        Resource = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agent-executor"
+        Resource = [
+          "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agent-executor",
+          "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-ingestion-worker"
+        ]
       },
       # SES email sending - DISABLED (requires NAT Gateway)
       # {

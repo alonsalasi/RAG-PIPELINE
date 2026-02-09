@@ -45,6 +45,13 @@
     #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-wrap:break-word; overflow-wrap:break-word; display:flex; justify-content:space-between; align-items:center;}
     .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
     .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10; display:flex; justify-content:space-between; align-items:center;}
+    .tab-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:0.9em; transition:all 0.3s; }
+    .tab-btn:hover { background:rgba(255,255,255,0.3); }
+    .tab-btn.active { background:white; color:var(--primary-color); font-weight:600; }
+    .autofill-stage { background:white; padding:30px; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+    .autofill-stage h3 { color:#333; margin-bottom:15px; font-size:1.3em; }
+    .autofill-stage input[type="file"] { padding:10px; border:2px dashed #dee2e6; border-radius:8px; width:100%; cursor:pointer; }
+    .autofill-stage input[type="file"]:hover { border-color:var(--primary-color); background:#f8f9fa; }
     .user-info { font-size:0.8em; display:flex; gap:10px; align-items:center;}
     .logout-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em;}
     .logout-btn:hover { background:rgba(255,255,255,0.3);}
@@ -181,19 +188,52 @@
 
 <div class="container">
   <div class="header">
-    <span>AI Document Assistant</span>
+    <div style="display:flex;gap:20px;align-items:center;">
+      <button id="tab-chat" class="tab-btn active" onclick="switchTab('chat')">💬 Chat AI</button>
+      <button id="tab-autofill" class="tab-btn" onclick="switchTab('autofill')">📝 Document Auto-Fill</button>
+    </div>
     <div class="user-info">
       <span id="user-email"></span>
       <button id="logout-btn" class="logout-btn">Logout</button>
     </div>
   </div>
 
-  <div class="chat-log" id="chat-log"></div>
+  <div id="chat-mode" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+    <div class="chat-log" id="chat-log"></div>
+    <div class="input-area">
+      <button id="clear-chat" class="btn" style="background:#6c757d;">Clear</button>
+      <input type="text" id="user-input" placeholder="Ask me anything about your documents...">
+      <button id="send-button" class="btn">Send</button>
+    </div>
+  </div>
 
-  <div class="input-area">
-    <button id="clear-chat" class="btn" style="background:#6c757d;">Clear</button>
-    <input type="text" id="user-input" placeholder="Ask me anything about your documents...">
-    <button id="send-button" class="btn">Send</button>
+  <div id="autofill-mode" style="display:none;flex:1;padding:40px;overflow-y:auto;">
+    <div style="max-width:800px;margin:0 auto;">
+      <h2 style="margin-bottom:30px;color:#333;">📝 Document Auto-Fill</h2>
+      
+      <div id="stage-1" class="autofill-stage">
+        <h3>Step 1: Upload Source Document</h3>
+        <p style="color:#666;margin-bottom:20px;">Upload the document containing the data you want to extract (PDF, DOCX, XLSX, TXT)</p>
+        <input type="file" id="source-file" accept=".pdf,.docx,.xlsx,.txt" style="margin-bottom:15px;">
+        <button id="upload-source-btn" class="btn">Extract Data</button>
+        <div id="source-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+
+      <div id="stage-2" class="autofill-stage" style="display:none;margin-top:40px;">
+        <h3>Step 2: Upload Target Document</h3>
+        <p style="color:#666;margin-bottom:20px;">Upload the template document you want to fill (DOCX, XLSX, PPTX, TXT)</p>
+        <input type="file" id="target-file" accept=".docx,.xlsx,.pptx,.txt" style="margin-bottom:15px;">
+        <button id="upload-target-btn" class="btn">Match Fields</button>
+        <div id="target-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+
+      <div id="stage-3" class="autofill-stage" style="display:none;margin-top:40px;">
+        <h3>Step 3: Review & Confirm Matches</h3>
+        <div id="matches-container" style="margin:20px 0;"></div>
+        <button id="fill-document-btn" class="btn">Fill Document</button>
+        <div id="fill-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+    </div>
   </div>
 </div>
 </div>
@@ -1545,6 +1585,233 @@
   });
   
   CLEAR_CHAT.addEventListener('click', clearChat);
+  
+  // ===================================================================
+  // DOCUMENT AUTO-FILL FUNCTIONALITY
+  // ===================================================================
+  let autofillSessionId = null;
+  let extractedData = {};
+  let fieldMappings = {};
+
+  window.switchTab = (tab) => {
+    const chatMode = document.getElementById('chat-mode');
+    const autofillMode = document.getElementById('autofill-mode');
+    const chatTab = document.getElementById('tab-chat');
+    const autofillTab = document.getElementById('tab-autofill');
+
+    if (tab === 'chat') {
+      chatMode.style.display = 'flex';
+      autofillMode.style.display = 'none';
+      chatTab.classList.add('active');
+      autofillTab.classList.remove('active');
+    } else {
+      chatMode.style.display = 'none';
+      autofillMode.style.display = 'block';
+      chatTab.classList.remove('active');
+      autofillTab.classList.add('active');
+    }
+  };
+
+  document.getElementById('upload-source-btn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('source-file');
+    const file = fileInput.files[0];
+    const statusDiv = document.getElementById('source-status');
+    const uploadBtn = document.getElementById('upload-source-btn');
+    
+    if (!file) {
+      statusDiv.textContent = 'Please select a file first';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    // Check if file is empty
+    if (file.size === 0) {
+      statusDiv.innerHTML = '<div style="color:#dc3545;">✗ File is empty</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please select a file with content.</div>';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Extracting data...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take 10-30 seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      console.log('Reading file:', file.name, 'size:', file.size);
+      
+      // Read file as ArrayBuffer and convert to base64
+      const arrayBuffer = await file.arrayBuffer();
+      console.log('ArrayBuffer size:', arrayBuffer.byteLength);
+      
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Data = btoa(binary);
+      console.log('Base64 length:', base64Data.length);
+      
+      const payload = {
+        sessionId: autofillSessionId || `autofill_${Date.now()}`,
+        fileData: base64Data,
+        filename: file.name
+      };
+      console.log('Payload keys:', Object.keys(payload));
+      console.log('Sending request to:', `${API_GATEWAY_URL}/autofill/extract-source`);
+      
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/extract-source`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(payload)
+      });
+
+      console.log('Response status:', res.status);
+      const data = await res.json();
+      console.log('Response data:', data);
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      autofillSessionId = data.sessionId;
+      
+      // Wait for parsing to complete
+      statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div>Waiting for parsing...</div></div>';
+      
+      // Poll for completion (wait up to 30 seconds)
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        const checkRes = await fetch(`${API_GATEWAY_URL}/autofill/extract-source`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sessionId: autofillSessionId, checkStatus: true })
+        });
+        
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          if (checkData.status === 'ready') {
+            statusDiv.textContent = `✓ Extracted data from ${file.name}`;
+            statusDiv.style.color = '#28a745';
+            break;
+          }
+        }
+      }
+      
+      document.getElementById('stage-2').style.display = 'block';
+    } catch (err) {
+      console.error('Extract error:', err);
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${err.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('upload-target-btn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('target-file');
+    const file = fileInput.files[0];
+    const statusDiv = document.getElementById('target-status');
+    const uploadBtn = document.getElementById('upload-target-btn');
+    
+    if (!file) {
+      statusDiv.textContent = 'Please select a file first';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    if (file.size === 0) {
+      statusDiv.innerHTML = '<div style="color:#dc3545;">✗ File is empty</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please select a file with content.</div>';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Uploading and parsing...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take 10-30 seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Data = btoa(binary);
+      
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/match-fields`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          sessionId: autofillSessionId,
+          fileData: base64Data,
+          filename: file.name
+        })
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      // Wait for target parsing (5 seconds should be enough for small files)
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      statusDiv.textContent = `✓ Target document ready`;
+      statusDiv.style.color = '#28a745';
+      
+      document.getElementById('stage-3').style.display = 'block';
+    } catch (err) {
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${err.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  function renderMatches(matches) {
+    const container = document.getElementById('matches-container');
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Ready to fill document with extracted data</div>';
+  }
+
+  document.getElementById('fill-document-btn').addEventListener('click', async () => {
+    const statusDiv = document.getElementById('fill-status');
+    const fillBtn = document.getElementById('fill-document-btn');
+    
+    fillBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Filling document...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take a few seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/fill-document`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ sessionId: autofillSessionId })
+      });
+
+      console.log('Fill response status:', res.status);
+      const data = await res.json();
+      console.log('Fill response data:', data);
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      if (!data.downloadUrl || !data.filename) {
+        console.error('Missing downloadUrl or filename:', data);
+        throw new Error('Server returned incomplete data');
+      }
+      
+      statusDiv.innerHTML = `✓ Document filled! <a href="${data.downloadUrl}" download="${data.filename}" style="color:#007bff;text-decoration:underline;font-weight:600;">Download ${data.filename}</a>`;
+      statusDiv.style.color = '#28a745';
+    } catch (e) {
+      console.error('Fill error:', e);
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${e.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      fillBtn.disabled = false;
+    }
+  });
   
   document.getElementById('file-search').addEventListener('input', (e) => {
     renderFileList(allFiles, e.target.value, currentSort);

@@ -8,8 +8,11 @@ resource "null_resource" "build_and_push_agent_image" {
     dockerfile_hash   = filemd5("${path.module}/Lambda/agent.Dockerfile")
     requirements_hash = filemd5("${path.module}/Lambda/agent_requirements.txt")
     source_code_hash  = filemd5("${path.module}/Lambda/agent_executor.py")
+    parser_hash       = filemd5("${path.module}/Lambda/document_parser.py")
+    matcher_hash      = filemd5("${path.module}/Lambda/field_matcher.py")
+    filler_hash       = filemd5("${path.module}/Lambda/document_filler.py")
     repo_url          = aws_ecr_repository.agent_lambda_repo.repository_url
-    rebuild_trigger   = "2025-03-15-profile-fix"
+    rebuild_trigger   = "2025-03-15-skip-rebuild"
   }
 
   provisioner "local-exec" {
@@ -53,6 +56,7 @@ resource "aws_lambda_function" "agent_executor" {
       FORCE_UPDATE             = "2025-11-02-fix-env-vars-v2"
       USER_POOL_ID             = aws_cognito_user_pool.agent_users.id
       CLIENT_ID                = aws_cognito_user_pool_client.agent_client.id
+      INGESTION_LAMBDA_NAME    = aws_lambda_function.ingestion_worker.function_name
     }
   }
 

@@ -123,6 +123,30 @@ resource "aws_apigatewayv2_route" "rag_api_route_view_file" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
+resource "aws_apigatewayv2_route" "rag_api_route_autofill_extract" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /autofill/extract-source"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_autofill_match" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /autofill/match-fields"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_autofill_fill" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /autofill/fill-document"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id = aws_apigatewayv2_api.rag_api_gateway.id
   
@@ -139,6 +163,9 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
       jsonencode(aws_apigatewayv2_route.rag_api_route_processing_status),
       jsonencode(aws_apigatewayv2_route.rag_api_route_agent_status),
       jsonencode(aws_apigatewayv2_route.rag_api_route_view_file),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_extract),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_match),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_fill),
     ]))
   }
   
@@ -154,6 +181,9 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
     aws_apigatewayv2_route.rag_api_route_processing_status,
     aws_apigatewayv2_route.rag_api_route_agent_status,
     aws_apigatewayv2_route.rag_api_route_view_file,
+    aws_apigatewayv2_route.rag_api_route_autofill_extract,
+    aws_apigatewayv2_route.rag_api_route_autofill_match,
+    aws_apigatewayv2_route.rag_api_route_autofill_fill,
     aws_apigatewayv2_integration.rag_api_integration
   ]
   
