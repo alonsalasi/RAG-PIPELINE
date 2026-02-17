@@ -599,8 +599,10 @@ def process_message(record):
                                     if ocr_text.strip():
                                         all_text_parts.append(f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n")
                                         logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                    else:
+                                        logger.warning(f"Page {page_num}: OCR returned no text (possible blank page or image-only)")
                                 except Exception as ocr_e:
-                                    logger.warning(f"Page {page_num} OCR failed: {ocr_e}")
+                                    logger.error(f"Page {page_num} OCR failed: {ocr_e}", exc_info=True)
                                 
                                 page_image.close()
                         
@@ -768,6 +770,7 @@ def process_message(record):
                                 
                                 logger.info(f"Page {page_num}: Final confidence {avg_confidence:.1f}%")
                                 
+                                # Always add OCR text even if confidence is low - better to have something than nothing
                                 if ocr_text.strip():
                                     # Add English translation for non-Latin text to improve cross-language search
                                     has_non_latin = any(ord(c) > 127 for c in ocr_text)
@@ -790,8 +793,10 @@ def process_message(record):
                                     else:
                                         full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
                                         logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
+                                else:
+                                    logger.warning(f"Page {page_num}: OCR returned no text (possible blank page or image-only)")
                             except Exception as ocr_e:
-                                logger.warning(f"Page {page_num} Tesseract failed: {ocr_e}")
+                                logger.error(f"Page {page_num} Tesseract OCR failed: {ocr_e}", exc_info=True)
                             
                             page_image.close()
                         
@@ -822,8 +827,13 @@ def process_message(record):
             
             if not full_text.strip() or len(full_text.strip()) < 50:
                 logger.warning(f"Insufficient text extracted | Length: {len(full_text)} chars | File: {base_name}")
-                # Don't return - still process images even if text extraction failed
-                full_text = f"Document: {base_name} - Text extraction failed, content available through images only."
+                # For image-only PDFs, create meaningful content from image metadata
+                if image_metadata:
+                    image_descriptions = [f"Page {img['page']}: {img['description']}" for img in image_metadata if img.get('page')]
+                    full_text = f"Document: {base_name}\nThis document contains {len(image_metadata)} images.\n" + "\n".join(image_descriptions)
+                    logger.info(f"Created text content from {len(image_metadata)} image descriptions")
+                else:
+                    full_text = f"Document: {base_name} - No text or images could be extracted."
 
             # Check cancellation before chunking
             check_cancelled(base_name)
@@ -984,43 +994,88 @@ def process_message(record):
             
             # Load or create master index
             embed_start = time.time()
-            if master_exists:
-                logger.info("Loading existing master index")
+            max_retries = 3
+            retry_delay = 2
+            
+            for attempt in range(max_retries):
                 try:
-                    master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
-                except Exception as load_err:
-                    logger.warning(f"Failed to load existing index: {load_err}, creating new one")
-                    master_store = FAISS.from_documents(docs, embed)
-                    master_exists = False
-                
-                if master_exists:
-                    existing_count = master_store.index.ntotal
-                    logger.info(f"Master index loaded | Existing vectors: {existing_count}")
+                    # Re-download master index on each retry to get latest version
+                    if attempt > 0:
+                        logger.info(f"Retry {attempt}/{max_retries}: Re-downloading master index")
+                        try:
+                            s3_client.download_file(BUCKET, "vector_store/master/index.faiss", master_index_path)
+                            s3_client.download_file(BUCKET, "vector_store/master/index.pkl", master_pkl_path)
+                            master_exists = True
+                        except:
+                            master_exists = False
                     
-                    # Add new documents to master index
-                    master_store.add_documents(docs)
-                    new_count = master_store.index.ntotal
-                    logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
-            else:
-                logger.info(f"Creating new master index | Documents: {len(docs)}")
-                master_store = FAISS.from_documents(docs, embed)
-                logger.info(f"Master index created | Vectors: {master_store.index.ntotal} | Time: {time.time() - embed_start:.2f}s")
-            
-            # Save updated master index
-            master_store.save_local(master_index_dir)
-            
-            # Verify files exist
-            if not os.path.exists(master_index_path) or not os.path.exists(master_pkl_path):
-                logger.error("Master index files not created")
-                raise Exception("Failed to create master index files")
-            
-            # Upload master index
-            upload_start = time.time()
-            update_progress(base_name, 95, "Finalizing and saving index...")
-            try:
-                s3_client.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
-                s3_client.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
-                logger.info(f"Master index uploaded | Bucket: {BUCKET} | Time: {time.time() - upload_start:.2f}s")
+                    if master_exists:
+                        logger.info("Loading existing master index")
+                        try:
+                            master_store = FAISS.load_local(master_index_dir, embed, allow_dangerous_deserialization=True)
+                        except Exception as load_err:
+                            logger.warning(f"Failed to load existing index: {load_err}, creating new one")
+                            master_store = FAISS.from_documents(docs, embed)
+                            master_exists = False
+                        
+                        if master_exists:
+                            existing_count = master_store.index.ntotal
+                            logger.info(f"Master index loaded | Existing vectors: {existing_count}")
+                            
+                            # Add new documents to master index
+                            master_store.add_documents(docs)
+                            new_count = master_store.index.ntotal
+                            logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
+                    else:
+                        logger.info(f"Creating new master index | Documents: {len(docs)}")
+                        master_store = FAISS.from_documents(docs, embed)
+                        logger.info(f"Master index created | Vectors: {master_store.index.ntotal} | Time: {time.time() - embed_start:.2f}s")
+                    
+                    # Save updated master index
+                    master_store.save_local(master_index_dir)
+                    
+                    # Verify files exist
+                    if not os.path.exists(master_index_path) or not os.path.exists(master_pkl_path):
+                        logger.error("Master index files not created")
+                        raise Exception("Failed to create master index files")
+                    
+                    # Upload master index with retry
+                    upload_start = time.time()
+                    update_progress(base_name, 95, "Finalizing and saving index...")
+                    try:
+                        s3_client.upload_file(master_index_path, BUCKET, "vector_store/master/index.faiss")
+                        s3_client.upload_file(master_pkl_path, BUCKET, "vector_store/master/index.pkl")
+                        logger.info(f"Master index uploaded | Bucket: {BUCKET} | Time: {time.time() - upload_start:.2f}s")
+                        
+                        # Success - break retry loop
+                        break
+                        
+                    except Exception as e:
+                        logger.error(f"Master index upload failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
+                        if attempt < max_retries - 1:
+                            logger.info(f"Retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            continue
+                        raise
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
+                        time.sleep(retry_delay)
+                        continue
+                    raise
+                
+                # CRITICAL: Clear query cache when new documents are added
+                try:
+                    logger.info("Clearing query cache after document upload...")
+                    cache_response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="query-cache/", MaxKeys=1000)
+                    if cache_response.get('Contents'):
+                        cache_keys = [{'Key': obj['Key']} for obj in cache_response['Contents']]
+                        s3_client.delete_objects(Bucket=BUCKET, Delete={'Objects': cache_keys, 'Quiet': True})
+                        logger.info(f"Cleared {len(cache_keys)} cached queries")
+                except Exception as cache_err:
+                    logger.warning(f"Failed to clear query cache: {cache_err}")
+                    
             except Exception as e:
                 logger.error(f"Master index upload failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
                 raise

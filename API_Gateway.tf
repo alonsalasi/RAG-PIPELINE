@@ -147,6 +147,38 @@ resource "aws_apigatewayv2_route" "rag_api_route_autofill_fill" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
+resource "aws_apigatewayv2_route" "rag_api_route_save_chat" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "POST /save-chat"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_list_chats" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /list-chats"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_get_chat" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "GET /get-chat"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+resource "aws_apigatewayv2_route" "rag_api_route_delete_chat" {
+  api_id             = aws_apigatewayv2_api.rag_api_gateway.id
+  route_key          = "DELETE /delete-chat"
+  target             = "integrations/${aws_apigatewayv2_integration.rag_api_integration.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
 resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
   api_id = aws_apigatewayv2_api.rag_api_gateway.id
   
@@ -166,6 +198,10 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
       jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_extract),
       jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_match),
       jsonencode(aws_apigatewayv2_route.rag_api_route_autofill_fill),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_save_chat),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_list_chats),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_get_chat),
+      jsonencode(aws_apigatewayv2_route.rag_api_route_delete_chat),
     ]))
   }
   
@@ -184,6 +220,10 @@ resource "aws_apigatewayv2_deployment" "rag_api_deployment" {
     aws_apigatewayv2_route.rag_api_route_autofill_extract,
     aws_apigatewayv2_route.rag_api_route_autofill_match,
     aws_apigatewayv2_route.rag_api_route_autofill_fill,
+    aws_apigatewayv2_route.rag_api_route_save_chat,
+    aws_apigatewayv2_route.rag_api_route_list_chats,
+    aws_apigatewayv2_route.rag_api_route_get_chat,
+    aws_apigatewayv2_route.rag_api_route_delete_chat,
     aws_apigatewayv2_integration.rag_api_integration
   ]
   

@@ -1,0 +1,120 @@
+2026-02-17 16:32:12    1667311 03-APCR-AIF_Content+Review_02.pdf
+2026-02-17 16:32:17    1046995 05.MOF_FinOps - May 7_v1.pdf
+2026-02-17 16:32:22    1353652 06.MOF_FinOps - June 17_s.pdf
+2026-02-17 16:32:26     653124 2020dhmsm.pdf
+2026-02-17 16:32:30     332726 21-372350_Cloudbank_TCC_Factsheet_Pages.pdf
+2026-02-17 16:32:33    2765385 21-428700-Edge-To-Cloud-FactSheet-Print.pdf
+2026-02-17 16:32:38     970593 22-533551-FinOps_FS-Digital.pdf
+2026-02-17 16:32:42    3700463 22-626950-AIOPS Factsheet-Print.pdf
+2026-02-17 16:32:46     937956 22-626950-AIOps Factsheet-Digital.pdf
+2026-02-17 16:32:51    2264789 22-626990-ZT Factsheet-Digital.pdf
+2026-02-17 16:32:54    4051169 22-626990-ZT Factsheet-Print.pdf
+2026-02-17 16:32:59     848449 22_660500_AI_FAIRS_Brochure_Digital.pdf
+2026-02-17 16:33:03     613474 23-769011_FactSheet_NASAIT_CSS_Digital.pdf
+2026-02-17 16:33:07     613474 23-769011_FactSheet_NASAIT_CSS_ForPrint.pdf
+2026-02-17 16:33:12     213660 23-792450_DES_Factsheet_Digital.pdf
+2026-02-17 16:33:16      68403 23-815000_FactSheet_Sentinel_NSINBasic_Digital.pdf
+2026-02-17 16:33:21     451414 23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.pdf
+2026-02-17 16:33:25    3996300 23-899200_MezzoBrochure_Digital (002).pdf
+2026-02-17 16:33:29     464957 23-920484-NGEN Overview Fact Sheet_digital.pdf
+2026-02-17 16:33:33     397102 24-053127875_In3Sight_Mission_Cloud_Digital.pdf
+2026-02-17 16:33:37    2507834 24-053127875_In3Sight_Mission_Cloud_Print.pdf
+2026-02-17 16:33:41     586027 24-0612-27919-Moveworks Fact sheet-Digital.pdf
+2026-02-17 16:33:45     297778 24-0618-27939_DISA_IT_FS_Digital.pdf
+2026-02-17 16:33:49     522042 24-1172501_FactSheet_CloudModernizationOverview_Digital.pdf
+2026-02-17 16:33:53     684493 24-1182250 Digital Modernization Practices_R3.pdf
+2026-02-17 16:33:57     587011 24-995001_FactSheet_ConfidentialComputing_Digital.pdf
+2026-02-17 16:34:01    1316408 24-995001_FactSheet_ConfidentialComputing_ForPrint.pdf
+2026-02-17 16:34:05     136218 25-1179050-Cloud and Data Center Practice FS-DIGITAL.pdf
+2026-02-17 16:34:09    2008520 25-1179050-Cloud and Data Center Practice FS-PRINT.pdf
+2026-02-17 16:34:13     110505 25-1183550-Defensive Cyber FS-DIGITAL.pdf
+2026-02-17 16:34:16    1924334 25-1183550-Defensive Cyber FS-PRINT.pdf
+2026-02-17 16:34:20     135759 25-1183600-Enterprise Digital Experience FS-DIGITAL.pdf
+2026-02-17 16:34:24    1984455 25-1183600-Enterprise Digital Experience FS-PRINT.pdf
+2026-02-17 16:34:28     538869 25-1218700-InSight Cloud Management Platform Fact Sheet_digital.pdf
+2026-02-17 16:34:32     561142 25-1218700-InSight Cloud Management Platform Fact Sheet_print.pdf
+2026-02-17 16:34:36     938725 25-1219014-InSight IT Service Management Fact Sheet_digital.pdf
+2026-02-17 16:34:41      98736 25-1234400-CRaaS Factsheet-DIGITAL.pdf
+2026-02-17 16:34:45    1567268 25-1234400-CRaaS Factsheet-PRINT.pdf
+2026-02-17 16:34:48     129515 25-1240150-Networks Practice FS-DIGITAL.pdf
+2026-02-17 16:34:53    1965570 25-1240150-Networks Practice FS-PRINT.pdf
+2026-02-17 16:34:56     400360 25-1242541-GMS_Fact Sheet_PRINT.pdf
+2026-02-17 16:35:00     382808 25-1242541-GMS_Fact Sheet_digital.pdf
+2026-02-17 16:35:04     143634 25-1242950-Information Advantage FS-DIGITAL.pdf
+2026-02-17 16:35:09    1997426 25-1242950-Information Advantage FS-PRINT.pdf
+2026-02-17 16:35:13    1475792 25-1246150-ConnectiV Energy Resilience Case Study_PRINT.pdf
+2026-02-17 16:35:17    1409939 25-1246150-ConnectiV Energy Resilience Case Study_digital.pdf
+2026-02-17 16:35:21    1888054 25-1260150-WP-Outsmarting the Silent Threat-print.pdf
+2026-02-17 16:35:25     424508 25-1260150-WP-Outsmarting the Silent Threat-web.pdf
+2026-02-17 16:35:29    1267661 25-1261187-Cloud Insight Discover Fact Sheet.pdf
+2026-02-17 16:35:33    1373536 25-1261187-Cloud Insight Discover Fact Sheet_print.pdf
+2026-02-17 16:35:37     624381 25-1262150-Cloud Insight Assess Fact Sheet.pdf
+2026-02-17 16:35:42    1070826 25-1262185-Cloud Insight Design Fact Sheet.pdf
+2026-02-17 16:35:46    1106135 25-1262185-Cloud Insight Design Fact Sheet_print.pdf
+2026-02-17 16:35:50     904777 25-1262900-InSight FinOps Fact Sheet.pdf
+2026-02-17 16:35:53     953731 25-1262900-InSight FinOps Fact Sheet_print.pdf
+2026-02-17 16:35:57    1342329 25-1262950-InSight Application Lifecycle Management Fact Sheet.pdf
+2026-02-17 16:36:01    1408737 25-1262950-InSight Application Lifecycle Management Fact Sheet_print.pdf
+2026-02-17 16:36:05     672740 25-1262985-InSight ITOM Fact Sheet.pdf
+2026-02-17 16:36:10     693268 25-1262985-InSight ITOM Fact Sheet_print.pdf
+2026-02-17 16:36:14     325993 25-1263020-Leidos Secure Access Cloud Fact Sheet.pdf
+2026-02-17 16:36:18     340172 25-1263020-Leidos Secure Access Cloud Fact Sheet_print.pdf
+2026-02-17 16:36:22     162534 25-1264100-Application Modernization FS-DIGITAL.pdf
+2026-02-17 16:36:26    2049355 25-1264100-Application Modernization FS-PRINT.pdf
+2026-02-17 16:36:30     119240 25-1278300-EXCITE Factsheet-DIGITAL.pdf
+2026-02-17 16:36:34    1628914 25-1278300-EXCITE Factsheet-PRINT.pdf
+2026-02-17 16:36:37     151072 25-1278700-CyberSPEAR Factsheet-DIGITAL.pdf
+2026-02-17 16:36:42    2376879 25-1278700-CyberSPEAR Factsheet-PRINT.pdf
+2026-02-17 16:36:47     808291 25-1280350-InSight Cloud Management PlatformWiz Fact Sheet_Digital.pdf
+2026-02-17 16:36:51     768051 25-1280350-InSight Cloud Management PlatformWiz Fact Sheet_PRINT.pdf
+2026-02-17 16:36:55     791851 25-1289750-ZTRL Alignment Fact Sheet.pdf
+2026-02-17 16:36:59     828469 25-1289750-ZTRL Alignment Fact Sheet_print.pdf
+2026-02-17 16:37:03    3172604 25-1304600-Data ConnectiV_Final_Digital.pdf
+2026-02-17 16:37:07    3316984 25-1304600-Data ConnectiV_Final_Print.pdf
+2026-02-17 16:37:11      69867 25-1327435-AUKUS LSE Fact Sheet_PRINT.pdf
+2026-02-17 16:37:15      60304 25-1327435-AUKUS LSE Fact Sheet_digital.pdf
+2026-02-17 16:37:19   24881410 25-LEIDOS-0206-28956-Network Operations Security Center Brochure_Digital.pdf
+2026-02-17 16:37:25    3782641 37-2025 AWS_Leidos.docx
+2026-02-17 16:37:29    3480931 85-2025 GCP _Leidos.docx
+2026-02-17 16:37:33     205874 Bid Booklet Specializations Tabbed.xlsx
+2026-02-17 16:37:37     495363 Broch-Digital-Modernization-Digital-v-24-968555.pdf
+2026-02-17 16:37:42     317869 Current Mission Drivers and Q4 (003).pptx
+2026-02-17 16:37:46    3928806 D-23-15149_Privacy-Enhancing Technologies (PET) White Paper.pdf
+2026-02-17 16:37:50    9665843 DATA AND AI POTENTIAL (004).pptx
+2026-02-17 16:37:54   70113380 DATA_AND_AI_POTENTIAL.pptx
+2026-02-17 16:38:00     341128 DISA GSM-O II WP_23-LEIDOS-0418-26217.pdf
+2026-02-17 16:38:03     998722 DOD ABIS cloud migration enables faster biometric analysis worldwide.pdf
+2026-02-17 16:38:07    2989675 DUX_Public_Overview_UPDATED_Final.pptx
+2026-02-17 16:38:11    7251064 DevSecOps_Slide.pptx
+2026-02-17 16:38:15     478873 EDX Delight by Design.pdf
+2026-02-17 16:38:18     724231 EV-electrify-fleet.pdf
+2026-02-17 16:38:22    1731503 FINAL-CloudFactory-.jpg
+2026-02-17 16:38:25    3115758 FY24 SDD Annual Report_508.pdf
+2026-02-17 16:38:29    2603467 FinOps, Mission Cloud, and CloudBank.pdf
+2026-02-17 16:38:32    1735770 InSight Observe Fact Sheet_digital.pdf
+2026-02-17 16:38:36    1777909 InSight Observe Fact Sheet_print.pdf
+2026-02-17 16:38:40    1072471 Keeping America Infrastructure Safe with Quantum Technologies_Oct2022.pdf
+2026-02-17 16:38:43   31552134 LEIDOS_AI_Strategy_Upgraded_v2.pptx
+2026-02-17 16:38:48     597901 Leidos advances Department of Defense biometrics to the cloud.pdf
+2026-02-17 16:38:51    2846807 Leidos- VAST 2026.pptx
+2026-02-17 16:38:55    1157523 MOF Kickoff1 - 09.03.pdf
+2026-02-17 16:38:58     341892 ManagedX Fact Sheet.pdf
+2026-02-17 16:39:02     378766 OC2ELOT fact sheet.pdf
+2026-02-17 16:39:06   23051336 OC2ELOT_Presentation.pptx
+2026-02-17 16:39:10    2709440 OC2ELOT_VAST_Leidos_NVIDIA_Full.pptx
+2026-02-17 16:39:14    3460301 Software Factory Overview.pdf
+2026-02-17 16:39:18     588311 Sourcegraph Factsheet_Final_Digital.pdf
+2026-02-17 16:39:21     337004 Unlocking Mission Data - A Smarter Way to Share.pdf
+2026-02-17 16:39:25      22632 Veeam Tender English.docx
+2026-02-17 16:39:28     696717 digital moderinization.pdf
+2026-02-17 16:39:32     629890 digmode part 2.pdf
+2026-02-17 16:39:36     793601 power-grid-ai-powered.pdf
+2026-02-17 16:39:41     435830 zero-emissions-vehicles.pdf
+2026-01-05 13:36:51      65170 ???? ?????? ????? ????? ?????? ???  ???? 2.4.1 (002).docx
+2026-01-11 15:43:43    3923718 ????? ????- 16.2024.docx
+2026-02-15 17:17:27     522431 ?????+????+-+?????+5+-+????+??????+??????+AI+ML - ???? Leidos.docx
+2026-01-12 19:03:57    3606016 ???? ??????????? ??? ???????? ?????????.docx
+2026-02-16 14:27:18     676531 ????+??????+????? (5).pdf
+2026-02-16 14:27:17      84167 ??? ?????? ???- ???????? ?????? ?? ??????.pdf
+2026-02-16 14:27:18     381862 ?????? ???? ???? ??? ???? ????? ???? ?? ??? ???? ????? D21 Factsheet-Digital.pdf
+2026-02-16 14:27:31   65075620 ????? ???? AI.pptx

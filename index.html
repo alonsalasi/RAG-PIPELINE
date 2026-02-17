@@ -99,6 +99,28 @@
     .login-box button:hover { background:#0056b3;}
     .login-box button:disabled { background:#ccc; cursor:not-allowed;}
     .error-msg { color:var(--error-color); font-size:0.9em; margin-top:15px; text-align:center; padding:10px; background:#fff5f5; border-radius:6px; border:1px solid #ffdddd;}
+    .chat-history-sidebar { width:280px; background:#fff; border-left:1px solid #dee2e6; padding:15px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; transition:width 0.3s; }
+    .chat-history-sidebar.minimized { width:50px; padding:10px; }
+    .chat-history-sidebar.minimized .new-chat-btn, .chat-history-sidebar.minimized .chat-history-list, .chat-history-sidebar.minimized .chat-history-header span, .chat-history-sidebar.minimized .chat-history-toggle { display:none; }
+    .chat-history-header { font-weight:600; font-size:1.1em; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
+    .chat-history-toggle { background:none; border:none; cursor:pointer; font-size:1.2em; padding:0 4px; color:#6c757d; }
+    .chat-history-toggle:hover { color:#495057; }
+    .minimize-sidebar-btn { position:absolute; top:15px; right:15px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; cursor:pointer; padding:6px 10px; font-size:1.2em; color:#6c757d; transition:all 0.2s; }
+    .minimize-sidebar-btn:hover { background:#e9ecef; color:#495057; }
+    .chat-history-sidebar.minimized .minimize-sidebar-btn { position:static; margin:0 auto; }
+    .chat-history-list { display:flex; flex-direction:column; gap:10px; }
+    .chat-history-list.collapsed { display:none; }
+    .chat-item { padding:10px 12px; background:#f8f9fa; border-radius:8px; cursor:pointer; transition:all 0.2s; border:1px solid #e0e0e0; position:relative; }
+    .chat-item:hover { background:#e9ecef; transform:translateX(-2px); }
+    .chat-item.active { background:#007bff; color:white; border-color:#007bff; }
+    .chat-item-title { font-size:0.9em; font-weight:500; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:30px; }
+    .chat-item-time { font-size:0.75em; opacity:0.7; }
+    .chat-item-delete { position:absolute; top:8px; right:8px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:12px; padding:4px 6px; border-radius:4px; width:24px; height:24px; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
+    .chat-item-delete:hover { background:#dc3545; color:white; }
+    .chat-item.active .chat-item-delete { background:rgba(255,255,255,0.2); color:white; }
+    .chat-item.active .chat-item-delete:hover { background:rgba(255,255,255,0.3); }
+    .new-chat-btn { width:100%; padding:8px; background:#28a745; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; margin-bottom:10px; }
+    .new-chat-btn:hover { background:#218838; }
     #app { display:none; height:100vh; width:100vw; overflow:hidden; }
     #app[style*="display: flex"] { display:flex !important; flex-direction:row; }
   </style>
@@ -236,6 +258,16 @@
     </div>
   </div>
 </div>
+
+<div class="chat-history-sidebar" id="chat-history-sidebar">
+  <button class="minimize-sidebar-btn" onclick="toggleSidebar()" title="Minimize/Expand Sidebar">◀</button>
+  <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+  <div class="chat-history-header">
+    <span>💬 Chat History</span>
+    <button class="chat-history-toggle" onclick="toggleChatHistory()" title="Minimize/Expand">▼</button>
+  </div>
+  <div id="chat-list" class="chat-history-list"></div>
+</div>
 </div>
 
 <script>
@@ -284,6 +316,7 @@
           document.getElementById('app').style.display = 'flex';
           fetchUploadedFiles();
           clearChat();
+          loadChatHistory();
           startSessionTimer();
         } else {
           // Session invalid, force re-login
@@ -320,6 +353,7 @@
         document.getElementById('app').style.display = 'flex';
         fetchUploadedFiles();
         clearChat();
+        loadChatHistory();
         startSessionTimer();
       },
       onFailure: (err) => {
@@ -448,6 +482,7 @@
         document.getElementById('app').style.display = 'flex';
         fetchUploadedFiles();
         clearChat();
+        loadChatHistory();
         startSessionTimer();
       },
       onFailure: (err) => {
@@ -491,6 +526,7 @@
               document.getElementById('app').style.display = 'flex';
               fetchUploadedFiles();
               clearChat();
+              loadChatHistory();
               startSessionTimer();
             } else {
               errorDiv.textContent = 'Session error: ' + (err ? err.message : 'Unknown error');
@@ -558,6 +594,8 @@
   let selectedFiles = new Set();
   
   let sessionId = generateSessionId();
+  let currentChatId = `chat_${Date.now()}`;
+  let chatMessages = [];
   
   function generateSessionId() {
     return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -582,6 +620,12 @@
     const div=document.createElement('div');
     div.classList.add('message', `${role}-message`);
     if(isError) div.classList.add('error');
+    
+    // Track messages for chat history
+    if (!isError) {
+      chatMessages.push({ role, content, timestamp: Date.now() });
+      if (chatMessages.length % 2 === 0) saveCurrentChat();
+    }
     
     // Use auto direction for mixed content
     div.style.direction = 'auto';
@@ -875,6 +919,7 @@
   function clearChat() {
     CHAT_LOG.innerHTML = '';
     sessionId = generateSessionId();
+    chatMessages = [];
     appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
   }
 
@@ -1898,6 +1943,82 @@
     updateDeleteButton();
     fetchUploadedFiles();
   });
+  
+  // Chat History Functions
+  async function saveCurrentChat() {
+    if (chatMessages.length === 0) return;
+    // Find first user message for title
+    const firstUserMsg = chatMessages.find(m => m.role === 'user');
+    const title = firstUserMsg ? firstUserMsg.content.substring(0, 50) : 'New Chat';
+    const chatData = { id: currentChatId, messages: chatMessages, timestamp: Date.now(), title };
+    try {
+      await fetch(`${API_GATEWAY_URL}/save-chat`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(chatData) });
+      loadChatHistory();
+    } catch (e) { console.error('Save chat failed:', e); }
+  }
+  
+  async function loadChatHistory() {
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/list-chats`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      renderChatHistory(data.chats || []);
+    } catch (e) { console.error('Load chats failed:', e); }
+  }
+  
+  function renderChatHistory(chats) {
+    const chatList = document.getElementById('chat-list');
+    chatList.innerHTML = chats.map(chat => `<div class="chat-item ${chat.id === currentChatId ? 'active' : ''}" onclick="loadChat('${chat.id}')"><div class="chat-item-title">${chat.title}</div><div class="chat-item-time">${new Date(chat.timestamp).toLocaleDateString()}</div><button class="chat-item-delete" onclick="event.stopPropagation();deleteChat('${chat.id}')" title="Delete chat">✖</button></div>`).join('');
+  }
+  
+  window.toggleChatHistory = () => {
+    const chatList = document.getElementById('chat-list');
+    const toggleBtn = document.querySelector('.chat-history-toggle');
+    if (chatList && toggleBtn) {
+      chatList.classList.toggle('collapsed');
+      toggleBtn.textContent = chatList.classList.contains('collapsed') ? '▶' : '▼';
+    }
+  };
+  
+  window.toggleSidebar = () => {
+    const sidebar = document.getElementById('chat-history-sidebar');
+    const btn = document.querySelector('.minimize-sidebar-btn');
+    if (sidebar && btn) {
+      sidebar.classList.toggle('minimized');
+      btn.textContent = sidebar.classList.contains('minimized') ? '▶' : '◀';
+      btn.title = sidebar.classList.contains('minimized') ? 'Expand Sidebar' : 'Minimize Sidebar';
+    }
+  };
+  
+  window.loadChat = async (chatId) => {
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/get-chat?chatId=${chatId}`, { headers: getAuthHeaders() });
+      const chat = await res.json();
+      if (!chat) return;
+      currentChatId = chatId;
+      chatMessages = chat.messages;
+      CHAT_LOG.innerHTML = '';
+      chatMessages.forEach(msg => appendMessage(msg.role, msg.content));
+      loadChatHistory();
+    } catch (e) { console.error('Load chat failed:', e); }
+  };
+  
+  window.deleteChat = async (chatId) => {
+    if (!confirm('Delete this chat?')) return;
+    try {
+      await fetch(`${API_GATEWAY_URL}/delete-chat?chatId=${chatId}`, { method: 'DELETE', headers: getAuthHeaders() });
+      if (currentChatId === chatId) newChat();
+      loadChatHistory();
+    } catch (e) { console.error('Delete chat failed:', e); }
+  };
+  
+  window.newChat = () => {
+    currentChatId = `chat_${Date.now()}`;
+    chatMessages = [];
+    CHAT_LOG.innerHTML = '';
+    sessionId = generateSessionId();
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
+    loadChatHistory();
+  };
 </script>
 </body>
 </html>

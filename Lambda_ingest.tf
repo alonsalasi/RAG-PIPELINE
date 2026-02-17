@@ -8,13 +8,14 @@ resource "null_resource" "build_and_push_ingestion_image" {
     semantic_chunker_hash = filemd5("${path.module}/Lambda/semantic_chunker.py")
     office_converter_hash = filemd5("${path.module}/Lambda/office_converter.py")
     image_analysis_hash  = filemd5("${path.module}/Lambda/image_analysis.py")
+    document_parser_hash = filemd5("${path.module}/Lambda/document_parser.py")
     repo_url             = aws_ecr_repository.ingestion_lambda_repo.repository_url
-    rebuild_trigger      = "2026-02-09-parser-import-fix"
+    rebuild_trigger      = "2026-02-09-enhanced-ocr"
   }
   
   provisioner "local-exec" {
     interpreter = ["powershell", "-Command"]
-    command = "cd Lambda; .\\ingestion_cache_build_push.bat; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+    command = "cd Lambda; .\\ingestion_build_push.ps1; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
   }
 
   depends_on = [aws_ecr_repository.ingestion_lambda_repo, null_resource.build_and_push_agent_image]

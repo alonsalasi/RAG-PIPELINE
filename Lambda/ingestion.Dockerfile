@@ -13,11 +13,12 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------
-# 🌍 Install Tesseract language data (English, Hebrew, Turkish)
+# 🌍 Install Tesseract language data (English, Hebrew, Arabic, Turkish)
 # -----------------------------------------------------
 RUN mkdir -p /usr/share/tesseract-ocr/tessdata && \
     curl -k -L -o /usr/share/tesseract-ocr/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata && \
     curl -k -L -o /usr/share/tesseract-ocr/tessdata/heb.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/heb.traineddata && \
+    curl -k -L -o /usr/share/tesseract-ocr/tessdata/ara.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/ara.traineddata && \
     curl -k -L -o /usr/share/tesseract-ocr/tessdata/tur.traineddata https://github.com/tesseract-ocr/tessdata_best/raw/main/tur.traineddata
 
 # -----------------------------------------------------

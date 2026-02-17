@@ -152,6 +152,42 @@ if not BUCKET:
 # Track index timestamp to detect updates
 _index_s3_timestamp = None
 
+# Session history management
+MAX_HISTORY_PAIRS = 5  # Keep last 5 Q&A pairs
+
+def load_session_history(session_id):
+    """Load conversation history from S3."""
+    try:
+        s3_client = get_s3_client()
+        key = f"session-history/{session_id}.json"
+        obj = s3_client.get_object(Bucket=BUCKET, Key=key)
+        history = json.loads(obj['Body'].read().decode('utf-8'))
+        return history.get('messages', [])
+    except s3_client.exceptions.NoSuchKey:
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to load history: {type(e).__name__}")
+        return []
+
+def save_session_history(session_id, messages):
+    """Save conversation history to S3, keeping only last N pairs."""
+    try:
+        # Keep only last MAX_HISTORY_PAIRS Q&A pairs (each pair = 2 messages)
+        max_messages = MAX_HISTORY_PAIRS * 2
+        trimmed = messages[-max_messages:] if len(messages) > max_messages else messages
+        
+        s3_client = get_s3_client()
+        key = f"session-history/{session_id}.json"
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=key,
+            Body=json.dumps({'messages': trimmed, 'updated': int(time.time())}),
+            ContentType='application/json'
+        )
+        logger.info(f"Saved history: {len(trimmed)} messages (trimmed from {len(messages)})")
+    except Exception as e:
+        logger.warning(f"Failed to save history: {type(e).__name__}")
+
 @retry_with_backoff(max_retries=2)
 def preload_master_index(force_reload=False):
     """Preload master FAISS index with automatic update detection."""
@@ -183,7 +219,7 @@ def preload_master_index(force_reload=False):
         elif cache_key in _faiss_cache:
             logger.info("Master index already cached, checking S3...")
             # Still check if we should reload
-            if s3_last_modified > _index_s3_timestamp:
+            if _index_s3_timestamp is not None and s3_last_modified > _index_s3_timestamp:
                 logger.info("S3 has newer version, reloading...")
                 del _faiss_cache[cache_key]
                 if os.path.exists(cache_dir):
@@ -422,6 +458,24 @@ def handle_delete_file(filename):
 def optimized_search(query, top_k=30):
     """Intelligent search using semantic similarity."""
     try:
+        # CRITICAL: Always check for index updates before searching
+        # This ensures we don't miss recently uploaded files
+        global _index_s3_timestamp
+        s3_client = get_s3_client()
+        try:
+            s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+            s3_last_modified = s3_obj['LastModified'].timestamp()
+            
+            # If our cached timestamp is older than S3, force reload
+            if _index_s3_timestamp is None or s3_last_modified > _index_s3_timestamp:
+                logger.info(f"Index update detected before search, reloading...")
+                cache_key = "master_index"
+                if cache_key in _faiss_cache:
+                    del _faiss_cache[cache_key]
+                preload_master_index()
+        except Exception as check_err:
+            logger.warning(f"Could not check index timestamp: {type(check_err).__name__}")
+        
         # Use cached index first
         cache_key = "master_index"
         if cache_key in _faiss_cache:
@@ -961,6 +1015,17 @@ def handle_delete_file_api(event):
         
         # Wait a moment for S3 to propagate deletions
         time.sleep(0.5)
+        
+        # CRITICAL: Clear query cache when documents change
+        try:
+            logger.info("Clearing query cache after document deletion...")
+            cache_objects = list_all_s3_objects(BUCKET, "query-cache/", max_keys=1000)
+            if cache_objects:
+                cache_keys = [obj['Key'] for obj in cache_objects]
+                deleted = batch_delete_s3_objects(BUCKET, cache_keys)
+                logger.info(f"Cleared {deleted} cached queries")
+        except Exception as cache_err:
+            logger.warning(f"Failed to clear query cache: {cache_err}")
         
         # Rebuild master vector store (removes deleted document from index)
         try:
@@ -1921,6 +1986,10 @@ def handle_agent_query(event):
         try:
             bedrock_agent_runtime = get_bedrock_client()
             logger.info(f"⏱️ TIMING: Get Bedrock client took {time.time() - config_start:.3f}s")
+            
+            # Load conversation history
+            history = load_session_history(session_id)
+            logger.info(f"Loaded {len(history)} previous messages for session {session_id}")
         except Exception as e:
             logger.error(f"Failed to get Bedrock client: {sanitize_for_logging(str(e))}")
             return cors_response({"error": "Failed to initialize agent client"}, 500)
@@ -2162,6 +2231,12 @@ def handle_agent_query(event):
                     answer += "\n\nSource: " + ", ".join(source_info)
             
         logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
+        
+        # Save conversation history
+        history = load_session_history(session_id)
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": answer})
+        save_session_history(session_id, history)
         
         # Calculate total token usage (input + output)
         input_tokens = len(query) // 4
@@ -2760,6 +2835,14 @@ def lambda_handler(event, context):
             return handle_autofill_match_fields(event)
         elif path == "/autofill/fill-document" and method == "POST":
             return handle_autofill_fill_document(event)
+        elif path == "/save-chat" and method == "POST":
+            return handle_save_chat(event)
+        elif path == "/list-chats" and method == "GET":
+            return handle_list_chats(event)
+        elif path == "/get-chat" and method == "GET":
+            return handle_get_chat(event)
+        elif path == "/delete-chat" and method == "DELETE":
+            return handle_delete_chat(event)
         else:
             logger.error(f"Unhandled route | Path: {path} | Method: {method}")
             return cors_response({"error": f"Unhandled route: {path}"}, 404)
@@ -2783,6 +2866,28 @@ def handle_agent_query_async(event):
         
         if not query or len(query) > 10000:
             return cors_response({"error": "Invalid query"}, 400)
+        
+        # Check cache for similar question
+        cached = check_query_cache(query)
+        if cached:
+            logger.info(f"✅ CACHE HIT - Returning instant response")
+            # Generate unique query ID for frontend compatibility
+            query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+            # Write completed status immediately
+            s3_client = get_s3_client()
+            s3_client.put_object(
+                Bucket=BUCKET,
+                Key=f"agent-status/{query_id}.json",
+                Body=json.dumps({
+                    "status": "completed",
+                    "response": cached["response"],
+                    "images": cached.get("images", []),
+                    "sessionId": session_id,
+                    "cached": True
+                }),
+                ContentType="application/json"
+            )
+            return cors_response({"queryId": query_id, "status": "processing"})
         
         # Generate unique query ID
         query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -2816,6 +2921,75 @@ def handle_agent_query_async(event):
     except Exception as e:
         logger.error(f"Agent query failed: {e}")
         return cors_response({"error": "Failed to start query"}, 500)
+
+
+def normalize_query_for_cache(query):
+    """Normalize query for cache matching."""
+    import re
+    # Convert to lowercase
+    normalized = query.lower().strip()
+    # Remove extra whitespace
+    normalized = re.sub(r'\s+', ' ', normalized)
+    # Remove punctuation at end
+    normalized = normalized.rstrip('?.!,;:')
+    # Remove common filler words that don't change meaning
+    fillers = ['please', 'can you', 'could you', 'would you', 'tell me', 'show me']
+    for filler in fillers:
+        normalized = normalized.replace(filler, '')
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+def check_query_cache(query):
+    """Check if similar query exists in cache."""
+    try:
+        s3_client = get_s3_client()
+        normalized = normalize_query_for_cache(query)
+        query_hash = str(hash(normalized))
+        cache_key = f"query-cache/{query_hash}.json"
+        
+        logger.info(f"Cache check: normalized='{normalized}' hash={query_hash}")
+        
+        try:
+            obj = s3_client.get_object(Bucket=BUCKET, Key=cache_key)
+            cached = json.loads(obj['Body'].read().decode('utf-8'))
+            # Check if cache is less than 24 hours old
+            cache_age = time.time() - cached.get('timestamp', 0)
+            if cache_age < 86400:
+                logger.info(f"✅ CACHE HIT! Age: {cache_age:.0f}s")
+                return cached
+            else:
+                logger.info(f"Cache expired (age: {cache_age:.0f}s)")
+        except s3_client.exceptions.NoSuchKey:
+            logger.info("Cache miss - no matching query found")
+    except Exception as e:
+        logger.warning(f"Cache check failed: {e}")
+    return None
+
+def save_query_cache(query, response, images):
+    """Save query response to cache."""
+    try:
+        s3_client = get_s3_client()
+        normalized = normalize_query_for_cache(query)
+        query_hash = str(hash(normalized))
+        cache_key = f"query-cache/{query_hash}.json"
+        
+        logger.info(f"💾 Saving to cache: normalized='{normalized}' hash={query_hash}")
+        
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=cache_key,
+            Body=json.dumps({
+                "query": query,
+                "normalized": normalized,
+                "response": response,
+                "images": images,
+                "timestamp": time.time()
+            }),
+            ContentType="application/json"
+        )
+        logger.info(f"✅ Cache saved successfully")
+    except Exception as e:
+        logger.warning(f"Cache save failed: {e}")
 
 
 def process_agent_query_background(query_id, query, session_id):
@@ -2890,6 +3064,9 @@ def process_agent_query_background(query_id, query, session_id):
                 except:
                     pass
         answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
+        
+        # Save to cache
+        save_query_cache(query, answer, images)
         
         # Write success to S3
         s3_client.put_object(
@@ -3010,6 +3187,103 @@ def handle_agent_status(event):
     except Exception as e:
         logger.error(f"Status check failed: {e}")
         return cors_response({"error": "Failed to check status"}, 500)
+
+def handle_save_chat(event):
+    """Save chat history to S3."""
+    try:
+        body = json.loads(event.get("body", "{}"))
+        chat_id = body.get("id")
+        title = body.get("title", "New Chat")
+        messages = body.get("messages", [])
+        timestamp = body.get("timestamp", int(time.time()))
+        
+        # Get user email from Cognito JWT
+        claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
+        user_email = claims.get("email", claims.get("cognito:username", "unknown"))
+        
+        if not chat_id:
+            return cors_response({"error": "Missing chat ID"}, 400)
+        
+        s3_client = get_s3_client()
+        key = f"chat-history/{user_email}/{chat_id}.json"
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=key,
+            Body=json.dumps({"id": chat_id, "title": title, "messages": messages, "timestamp": timestamp}),
+            ContentType="application/json"
+        )
+        return cors_response({"success": True})
+    except Exception as e:
+        logger.error(f"Save chat failed: {e}")
+        return cors_response({"error": str(e)}, 500)
+
+def handle_list_chats(event):
+    """List user's chat history."""
+    try:
+        claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
+        user_email = claims.get("email", claims.get("cognito:username", "unknown"))
+        
+        s3_client = get_s3_client()
+        prefix = f"chat-history/{user_email}/"
+        
+        response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+        chats = []
+        for obj in response.get("Contents", []):
+            try:
+                chat_obj = s3_client.get_object(Bucket=BUCKET, Key=obj["Key"])
+                chat_data = json.loads(chat_obj["Body"].read().decode("utf-8"))
+                chats.append({"id": chat_data["id"], "title": chat_data["title"], "timestamp": chat_data["timestamp"]})
+            except:
+                pass
+        
+        chats.sort(key=lambda x: x["timestamp"], reverse=True)
+        return cors_response({"chats": chats[:50]})
+    except Exception as e:
+        logger.error(f"List chats failed: {e}")
+        return cors_response({"error": str(e)}, 500)
+
+def handle_get_chat(event):
+    """Load specific chat history."""
+    try:
+        params = event.get("queryStringParameters") or {}
+        chat_id = params.get("chatId")
+        
+        claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
+        user_email = claims.get("email", claims.get("cognito:username", "unknown"))
+        
+        if not chat_id:
+            return cors_response({"error": "chatId required"}, 400)
+        
+        s3_client = get_s3_client()
+        key = f"chat-history/{user_email}/{chat_id}.json"
+        response = s3_client.get_object(Bucket=BUCKET, Key=key)
+        chat_data = json.loads(response["Body"].read().decode("utf-8"))
+        return cors_response(chat_data)
+    except s3_client.exceptions.NoSuchKey:
+        return cors_response({"error": "Chat not found"}, 404)
+    except Exception as e:
+        logger.error(f"Load chat failed: {e}")
+        return cors_response({"error": str(e)}, 500)
+
+def handle_delete_chat(event):
+    """Delete chat history."""
+    try:
+        params = event.get("queryStringParameters") or {}
+        chat_id = params.get("chatId")
+        
+        claims = event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}).get("claims", {})
+        user_email = claims.get("email", claims.get("cognito:username", "unknown"))
+        
+        if not chat_id:
+            return cors_response({"error": "chatId required"}, 400)
+        
+        s3_client = get_s3_client()
+        key = f"chat-history/{user_email}/{chat_id}.json"
+        s3_client.delete_object(Bucket=BUCKET, Key=key)
+        return cors_response({"success": True})
+    except Exception as e:
+        logger.error(f"Delete chat failed: {e}")
+        return cors_response({"error": str(e)}, 500)
 
 
 
