@@ -755,16 +755,47 @@ def handle_list_files_api(event):
     """API Gateway handler for listing files."""
     try:
         import html
-        objects = list_all_s3_objects(BUCKET, "processed/")
-        filenames = []
-        for obj in objects:
-            if obj["Key"].endswith(".json"):
-                # Use string split instead of os.path.basename to preserve Unicode
-                filename = obj["Key"].split("/")[-1]
-                # Decode HTML entities
-                filename = html.unescape(filename)
-                filenames.append(filename)
-        return cors_response({"filenames": filenames})
+        s3_client = get_s3_client()
+        
+        response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="processed/")
+        
+        # Group by base name and keep latest
+        file_map = {}
+        if "Contents" in response:
+            for obj in response["Contents"]:
+                key = obj["Key"]
+                if key.endswith(".json"):
+                    filename = key.split("/")[-1]
+                    filename = html.unescape(filename)
+                    if filename.endswith('.json'):
+                        filename = filename[:-5]
+                    
+                    base_name = filename.split('_', 1)[1] if '_' in filename else filename
+                    
+                    # Keep only the latest version
+                    if base_name not in file_map or obj["LastModified"] > file_map[base_name]["date"]:
+                        file_map[base_name] = {"filename": filename, "date": obj["LastModified"]}
+        
+        # Get upload dates and build final list
+        files = []
+        for base_name, info in file_map.items():
+            upload_date = info["date"]
+            try:
+                upload_list = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=f"uploads/{base_name}")
+                if "Contents" in upload_list:
+                    for upload_obj in upload_list["Contents"]:
+                        upload_filename = upload_obj["Key"].replace("uploads/", "")
+                        upload_base = upload_filename.rsplit('.', 1)[0] if '.' in upload_filename else upload_filename
+                        if upload_base == base_name:
+                            upload_date = upload_obj["LastModified"]
+                            break
+            except:
+                pass
+            
+            upload_ts = int(upload_date.timestamp())
+            files.append(f"{upload_ts}_{base_name}")
+        
+        return cors_response({"filenames": files})
     except Exception as e:
         logger.error(f" List files error: {type(e).__name__}")
         return cors_response({"error": "Failed to list files"}, 500)
@@ -1262,6 +1293,12 @@ def handle_search_action(event):
             # Quoted filenames (highest priority - exact text in quotes)
             r'[""]([^""]+)["""]',  # Smart quotes
             r'["\'"]([^"\']+)["\']',  # Regular quotes (must be non-greedy and capture full content)
+            # "file" or "the file" followed by quoted name
+            r'(?:the\s+)?file\s+["\'"]([^"\']+)["\']',
+            # "the document NAME" or "document NAME" (capture until ? or end)
+            r'(?:the\s+)?(?:file|document)\s+([A-Za-z0-9][^?]+?)\?',
+            # COMPARISON QUERIES: "Compare X and Y" - extract BOTH document names
+            r'[Cc]ompare\s+(.+?)\s+and\s+(.+?)(?:\s+(?:pricing|for|in|to|with)|\s*$)',
             # Hebrew: "מהמסמך NAME" - capturing until punctuation
             r'מהמסמך\s+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
             # Hebrew: "ממסמך NAME"
@@ -1273,20 +1310,31 @@ def handle_search_action(event):
         for i, pattern in enumerate(patterns):
             match = re.search(pattern, decoded_input, re.IGNORECASE | re.UNICODE)
             if match:
-                # For quoted patterns, group 1 is the content; for others, may be group 1 or 2
-                doc_name_in_query = match.group(1).strip()
-                logger.info(f"🔍 Pattern {i} matched: '{doc_name_in_query}'")
-                # Remove trailing punctuation and file extensions
-                doc_name_in_query = doc_name_in_query.rstrip('.,;:!? \t')
-                if doc_name_in_query.endswith('.pdf'):
-                    doc_name_in_query = doc_name_in_query[:-4]
-                logger.info(f"🔍 Extracted doc name: '{doc_name_in_query}'")
-                break
+                # SPECIAL CASE: Comparison pattern (pattern index 4) returns 2 groups
+                if i == 4 and len(match.groups()) >= 2:
+                    doc1 = match.group(1).strip().rstrip('.,;:!? \t')
+                    doc2 = match.group(2).strip().rstrip('.,;:!? \t')
+                    logger.info(f"🔍 Pattern {i} matched (COMPARISON): '{doc1}' AND '{doc2}'")
+                    # CRITICAL: Don't set doc_name_in_query for comparison queries
+                    # This prevents the code from trying to filter to a single document
+                    # Instead, we'll search across ALL documents and let semantic search find both
+                    doc_name_in_query = None
+                    break
+                else:
+                    # For quoted patterns, group 1 is the content; for others, may be group 1 or 2
+                    doc_name_in_query = match.group(1).strip()
+                    logger.info(f"🔍 Pattern {i} matched: '{doc_name_in_query}'")
+                    # Remove trailing punctuation and file extensions
+                    doc_name_in_query = doc_name_in_query.rstrip('.,;:!? \t')
+                    if doc_name_in_query.endswith('.pdf'):
+                        doc_name_in_query = doc_name_in_query[:-4]
+                    logger.info(f"🔍 Extracted doc name: '{doc_name_in_query}'")
+                    break
         
-        # If document name specified, search by document name instead of query
-        # This helps narrow down results to the specific document the user is asking about
+        # CRITICAL FIX: If document name specified, search by document name to find the right document
         if doc_name_in_query:
-            search_query = doc_name_in_query
+            # Search by document name to find the right document
+            search_query = f"Document: {doc_name_in_query}"
             logger.info(f"🔍 Searching by document name: '{search_query}'")
         else:
             search_query = query
@@ -1349,6 +1397,14 @@ def handle_search_action(event):
                         if parts[0].isdigit() and len(parts[0]) == 10:  # Unix timestamp
                             normalized_source = parts[1]
                     
+                    # CRITICAL FIX: Also remove number prefixes like "25-1278700-"
+                    # Pattern: digits-digits-rest
+                    import re
+                    prefix_match = re.match(r'^\d+-\d+-(.+)$', normalized_source)
+                    if prefix_match:
+                        normalized_source = prefix_match.group(1)
+                        logger.info(f"🔍 Stripped number prefix: '{source}' → '{normalized_source}'")
+                    
                     # Check if query is a substring of source (handles partial names)
                     # Also check reversed to catch cases where source might be part of query
                     if (normalized_query_upper in normalized_source or normalized_source in normalized_query_upper):
@@ -1369,6 +1425,11 @@ def handle_search_action(event):
                             parts = source_normalized.split('_', 1)
                             if parts[0].isdigit() and len(parts[0]) == 10:  # Unix timestamp
                                 source_normalized = parts[1]
+                        
+                        # Remove number prefixes like "25-1278700-"
+                        prefix_match = re.match(r'^\d+-\d+-(.+)$', source_normalized)
+                        if prefix_match:
+                            source_normalized = prefix_match.group(1)
                         
                         ratio = SequenceMatcher(None, normalized_query_upper, source_normalized).ratio()
                         if ratio > 0.75 and ratio > best_ratio:  # 75% similarity threshold for better matches

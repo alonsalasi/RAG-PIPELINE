@@ -1,0 +1,338 @@
+2026-02-17 20:23:34       1101 1771352613_22-533551-FinOps_FS-Digital.json
+2026-02-17 20:23:34       4087 1771352613_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 20:23:54       1340 1771352633_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 20:23:59        408 1771352638_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 20:24:05       6888 1771352644_23-792450_DES_Factsheet_Digital.json
+2026-02-17 20:24:08       7171 1771352647_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 20:24:21       8380 1771352660_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 20:24:23        370 1771352662_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 20:24:25      20104 1771352664_DevSecOps_Slide.json
+2026-02-17 20:24:32       4122 1771352671_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 20:24:38       3613 1771352677_FINAL-CloudFactory-.json
+2026-02-17 20:24:54      15073 1771352693_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 20:24:58      17733 1771352697_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 20:25:00      91606 1771352699_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 20:25:03       1101 1771352702_22-533551-FinOps_FS-Digital.json
+2026-02-17 20:25:03      10314 1771352702_EV-electrify-fleet.json
+2026-02-17 20:25:06       1357 1771352705_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 20:25:08      23176 1771352707_OC2ELOT_Presentation.json
+2026-02-17 20:25:09       1357 1771352708_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 20:25:15       7144 1771352714_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 20:25:19        408 1771352717_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 20:25:27       9575 1771352726_03-APCR-AIF_Content+Review_02.json
+2026-02-17 20:25:33       1340 1771352732_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 20:25:38      20653 1771352737_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 20:25:41      17733 1771352740_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 20:25:47       8368 1771352746_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 20:25:52        411 1771352751_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 20:25:59       4087 1771352758_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 20:26:00      15933 1771352759_2020dhmsm.json
+2026-02-17 20:26:00        370 1771352759_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 20:26:01       4122 1771352760_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 20:26:02       6901 1771352761_23-792450_DES_Factsheet_Digital.json
+2026-02-17 20:26:02      20104 1771352761_DevSecOps_Slide.json
+2026-02-17 20:26:27       4087 1771352786_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 20:26:30      20630 1771352789_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 20:26:35      20254 1771352794_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 20:26:35       3613 1771352794_FINAL-CloudFactory-.json
+2026-02-17 20:26:40      23176 1771352799_OC2ELOT_Presentation.json
+2026-02-17 20:26:47      10503 1771352806_EV-electrify-fleet.json
+2026-02-17 20:26:48      20739 1771352807_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 20:26:51      20104 1771352810_DevSecOps_Slide.json
+2026-02-17 20:26:56      15110 1771352815_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 20:27:03      19378 1771352822_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 20:27:11      23176 1771352830_OC2ELOT_Presentation.json
+2026-02-17 20:27:12        370 1771352831_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 20:27:15       9051 1771352834_zero-emissions-vehicles.json
+2026-02-17 20:27:19      19378 1771352838_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 20:27:24       8388 1771352843_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 20:27:24       8848 1771352843_power-grid-ai-powered.json
+2026-02-17 20:27:28      19810 1771352847_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 20:27:28      10381 1771352847_EV-electrify-fleet.json
+2026-02-17 20:28:01       8920 1771352880_power-grid-ai-powered.json
+2026-02-17 20:28:10       9071 1771352889_zero-emissions-vehicles.json
+2026-02-17 20:28:30      91606 1771352909_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 20:28:40      91606 1771352919_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 20:28:44      97725 1771352923_DATA_AND_AI_POTENTIAL.json
+2026-02-17 20:29:54       1101 1771352993_22-533551-FinOps_FS-Digital.json
+2026-02-17 20:29:59      97725 1771352998_DATA_AND_AI_POTENTIAL.json
+2026-02-17 20:30:07       8368 1771353006_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 20:30:13        411 1771353012_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 20:30:28      17733 1771353027_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 20:30:30       1340 1771353029_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 20:30:37       8995 1771353036_zero-emissions-vehicles.json
+2026-02-17 20:30:44      19378 1771353043_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 20:30:54       8359 1771353053_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 20:30:58       8829 1771353057_power-grid-ai-powered.json
+2026-02-17 20:31:34       7137 1771353093_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 20:31:35       3613 1771353094_FINAL-CloudFactory-.json
+2026-02-17 20:31:44       9477 1771353103_03-APCR-AIF_Content+Review_02.json
+2026-02-17 20:31:46      15956 1771353105_2020dhmsm.json
+2026-02-17 20:31:53       9706 1771353112_03-APCR-AIF_Content+Review_02.json
+2026-02-17 20:32:09      15978 1771353128_2020dhmsm.json
+2026-02-17 20:32:36      19829 1771353155_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 20:33:15      20820 1771353194_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 20:41:47       8582 1771353706_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 20:41:49       8663 1771353708_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 20:41:50       6900 1771353709_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 20:42:10      10296 1771353729_22-533551-FinOps_FS-Digital.json
+2026-02-17 20:42:15      10362 1771353734_23-792450_DES_Factsheet_Digital.json
+2026-02-17 20:42:18      20104 1771353737_DevSecOps_Slide.json
+2026-02-17 20:42:41      16063 1771353760_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 20:42:48      23176 1771353767_OC2ELOT_Presentation.json
+2026-02-17 20:42:51       6817 1771353770_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 20:42:55      26666 1771353774_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 20:43:03      20147 1771353782_2020dhmsm.json
+2026-02-17 20:43:09      24570 1771353788_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 20:43:13      10031 1771353792_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 20:43:15        370 1771353794_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 20:43:37       9234 1771353816_zero-emissions-vehicles.json
+2026-02-17 20:43:41      15266 1771353820_EV-electrify-fleet.json
+2026-02-17 20:43:54      18392 1771353833_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 20:44:03      11086 1771353842_power-grid-ai-powered.json
+2026-02-17 20:44:11      19378 1771353850_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 20:44:22      91606 1771353861_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 20:45:09       3613 1771353908_FINAL-CloudFactory-.json
+2026-02-17 20:45:26      21943 1771353925_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 20:45:34      25384 1771353933_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 20:45:40      97725 1771353939_DATA_AND_AI_POTENTIAL.json
+2026-02-17 20:46:28      39195 1771353987_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 20:46:29      10270 1771353988_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 20:47:00      14413 1771354019_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 20:47:31      52544 1771354050_03-APCR-AIF_Content+Review_02.json
+2026-02-17 21:09:56       8594 1771355395_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 21:09:56       6808 1771355395_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 21:09:57       8473 1771355396_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 21:10:10      10558 1771355409_22-533551-FinOps_FS-Digital.json
+2026-02-17 21:10:14      10433 1771355413_23-792450_DES_Factsheet_Digital.json
+2026-02-17 21:10:46      15861 1771355445_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 21:10:49      26250 1771355448_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 21:10:55       6795 1771355454_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 21:10:59      20039 1771355458_2020dhmsm.json
+2026-02-17 21:11:25      19378 1771355484_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 21:11:37       9250 1771355496_zero-emissions-vehicles.json
+2026-02-17 21:11:46      23176 1771355505_OC2ELOT_Presentation.json
+2026-02-17 21:11:57       3613 1771355516_FINAL-CloudFactory-.json
+2026-02-17 21:11:59      91606 1771355518_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 21:12:02      18331 1771355521_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 21:12:05      24607 1771355524_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 21:12:06      13959 1771355525_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 21:12:08      10343 1771355527_power-grid-ai-powered.json
+2026-02-17 21:12:19        370 1771355538_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 21:12:34      20104 1771355553_DevSecOps_Slide.json
+2026-02-17 21:13:16      97725 1771355595_DATA_AND_AI_POTENTIAL.json
+2026-02-17 21:13:51      15499 1771355630_EV-electrify-fleet.json
+2026-02-17 21:14:18      39764 1771355657_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 21:14:32      10078 1771355671_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 21:14:55      10031 1771355694_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 21:15:46      21990 1771355745_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 21:15:56      25422 1771355755_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 21:16:12      51606 1771355771_03-APCR-AIF_Content+Review_02.json
+2026-02-17 21:35:24       8570 1771356923_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 21:35:25       8591 1771356924_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 21:35:25       6844 1771356924_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 21:35:25       6823 1771356924_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 21:35:34      10175 1771356933_22-533551-FinOps_FS-Digital.json
+2026-02-17 21:35:43      10168 1771356942_23-792450_DES_Factsheet_Digital.json
+2026-02-17 21:35:48        370 1771356947_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 21:35:50      10180 1771356949_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 21:35:50      20104 1771356949_DevSecOps_Slide.json
+2026-02-17 21:35:51      10000 1771356950_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 21:36:09      16146 1771356968_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 21:36:10      26561 1771356969_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 21:36:13      23176 1771356972_OC2ELOT_Presentation.json
+2026-02-17 21:36:22       3613 1771356981_FINAL-CloudFactory-.json
+2026-02-17 21:36:24      20019 1771356983_2020dhmsm.json
+2026-02-17 21:36:33      14422 1771356992_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 21:36:34      19378 1771356993_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 21:36:44      18159 1771357003_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 21:36:51      25535 1771357010_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 21:36:58      24295 1771357017_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 21:37:02       9270 1771357021_zero-emissions-vehicles.json
+2026-02-17 21:37:03      15267 1771357022_EV-electrify-fleet.json
+2026-02-17 21:37:04      91606 1771357023_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 21:37:07      21850 1771357026_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 21:37:23      10294 1771357042_power-grid-ai-powered.json
+2026-02-17 21:38:57      97725 1771357136_DATA_AND_AI_POTENTIAL.json
+2026-02-17 21:39:30      39330 1771357169_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 21:41:00      51262 1771357259_03-APCR-AIF_Content+Review_02.json
+2026-02-17 21:41:42       8581 1771357301_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 21:41:44       6793 1771357303_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 21:41:49       8600 1771357308_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 21:41:52       6799 1771357311_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 21:41:57      10149 1771357316_22-533551-FinOps_FS-Digital.json
+2026-02-17 21:42:09      10157 1771357328_23-792450_DES_Factsheet_Digital.json
+2026-02-17 21:42:21        370 1771357340_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 21:42:27      20104 1771357346_DevSecOps_Slide.json
+2026-02-17 21:42:29      10187 1771357348_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 21:42:34      10031 1771357353_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 21:42:37      15886 1771357356_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 21:42:43      26640 1771357362_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 21:42:43      23176 1771357362_OC2ELOT_Presentation.json
+2026-02-17 21:42:53       3613 1771357372_FINAL-CloudFactory-.json
+2026-02-17 21:42:57      18042 1771357376_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 21:42:58      20070 1771357377_2020dhmsm.json
+2026-02-17 21:43:01      14657 1771357380_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 21:43:03      25382 1771357382_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 21:43:05      24911 1771357384_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 21:43:05      19378 1771357384_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 21:43:24      22193 1771357403_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 21:43:37       9155 1771357416_zero-emissions-vehicles.json
+2026-02-17 21:43:40      15108 1771357419_EV-electrify-fleet.json
+2026-02-17 21:43:42      91606 1771357421_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 21:43:51      10304 1771357430_power-grid-ai-powered.json
+2026-02-17 21:44:54      97725 1771357493_DATA_AND_AI_POTENTIAL.json
+2026-02-17 21:46:00      39712 1771357559_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 21:47:21      52326 1771357640_03-APCR-AIF_Content+Review_02.json
+2026-02-17 21:59:14       6837 1771358353_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 21:59:16       8556 1771358355_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 21:59:21       8578 1771358360_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 21:59:23       6853 1771358362_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 21:59:39      10281 1771358378_22-533551-FinOps_FS-Digital.json
+2026-02-17 21:59:40      10373 1771358379_23-792450_DES_Factsheet_Digital.json
+2026-02-17 21:59:43        370 1771358382_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 21:59:45       9857 1771358384_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 21:59:45      20104 1771358384_DevSecOps_Slide.json
+2026-02-17 21:59:46      10105 1771358385_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 22:00:08      23176 1771358407_OC2ELOT_Presentation.json
+2026-02-17 22:00:15      19988 1771358414_2020dhmsm.json
+2026-02-17 22:00:15      26196 1771358414_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 22:00:16      16307 1771358415_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 22:00:18       3613 1771358417_FINAL-CloudFactory-.json
+2026-02-17 22:00:25      18298 1771358424_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 22:00:31      19378 1771358430_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 22:00:35      14725 1771358434_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 22:00:58       9241 1771358457_zero-emissions-vehicles.json
+2026-02-17 22:01:03      24978 1771358462_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 22:01:05      25496 1771358464_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 22:01:11      21753 1771358470_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 22:01:13      91606 1771358472_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 22:01:14      10261 1771358473_power-grid-ai-powered.json
+2026-02-17 22:01:15      15181 1771358474_EV-electrify-fleet.json
+2026-02-17 22:02:53      97725 1771358572_DATA_AND_AI_POTENTIAL.json
+2026-02-17 22:03:51      39239 1771358630_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 22:05:20       8601 1771358719_23-769011_FactSheet_NASAIT_CSS_ForPrint.json
+2026-02-17 22:05:23      51195 1771358722_03-APCR-AIF_Content+Review_02.json
+2026-02-17 22:05:26       6892 1771358725_23-815000_FactSheet_Sentinel_NSINBasic_Digital.json
+2026-02-17 22:05:28       6841 1771358727_23-815000_FactSheet_Sentinel_NSINBasic_ForPrint.json
+2026-02-17 22:05:32       8653 1771358731_23-769011_FactSheet_NASAIT_CSS_Digital.json
+2026-02-17 22:05:39       8555 1771358738_25-1183550-Defensive Cyber FS-DIGITAL.json
+2026-02-17 22:05:42       9632 1771358741_23-920484-NGEN Overview Fact Sheet_digital.json
+2026-02-17 22:05:43      10265 1771358742_22-533551-FinOps_FS-Digital.json
+2026-02-17 22:05:43      10271 1771358742_25-1179050-Cloud and Data Center Practice FS-DIGITAL.json
+2026-02-17 22:05:45      10040 1771358744_23-792450_DES_Factsheet_Digital.json
+2026-02-17 22:05:46       7807 1771358745_25-1218700-InSight Cloud Management Platform Fact Sheet_digital.json
+2026-02-17 22:05:46       7759 1771358745_25-1218700-InSight Cloud Management Platform Fact Sheet_print.json
+2026-02-17 22:05:47       9990 1771358746_24-1182250 Digital Modernization Practices_R3.json
+2026-02-17 22:05:47       9614 1771358746_25-1183600-Enterprise Digital Experience FS-DIGITAL.json
+2026-02-17 22:05:52       9839 1771358751_24-995001_FactSheet_ConfidentialComputing_ForPrint.json
+2026-02-17 22:05:55      10275 1771358754_24-995001_FactSheet_ConfidentialComputing_Digital.json
+2026-02-17 22:05:59      16459 1771358758_25-1183600-Enterprise Digital Experience FS-PRINT.json
+2026-02-17 22:06:00       9069 1771358759_25-1219014-InSight IT Service Management Fact Sheet_digital.json
+2026-02-17 22:06:01       6776 1771358760_25-1262900-InSight FinOps Fact Sheet_print.json
+2026-02-17 22:06:06      10277 1771358765_25-1234400-CRaaS Factsheet-DIGITAL.json
+2026-02-17 22:06:06       8879 1771358765_25-1242950-Information Advantage FS-DIGITAL.json
+2026-02-17 22:06:09      15862 1771358768_22_660500_AI_FAIRS_Brochure_Digital.json
+2026-02-17 22:06:10      15990 1771358769_25-1242950-Information Advantage FS-PRINT.json
+2026-02-17 22:06:11       8168 1771358770_25-1262900-InSight FinOps Fact Sheet.json
+2026-02-17 22:06:14      22203 1771358773_22-626990-ZT Factsheet-Digital.json
+2026-02-17 22:06:15      26204 1771358774_21-428700-Edge-To-Cloud-FactSheet-Print.json
+2026-02-17 22:06:16      14185 1771358775_25-1183550-Defensive Cyber FS-PRINT.json
+2026-02-17 22:06:17      20107 1771358776_22-626990-ZT Factsheet-Print.json
+2026-02-17 22:06:19      16453 1771358778_25-1240150-Networks Practice FS-PRINT.json
+2026-02-17 22:06:19       7769 1771358778_25-1262950-InSight Application Lifecycle Management Fact Sheet.json
+2026-02-17 22:06:21      19963 1771358780_2020dhmsm.json
+2026-02-17 22:06:21      15009 1771358780_25-1234400-CRaaS Factsheet-PRINT.json
+2026-02-17 22:06:21       9604 1771358780_25-1262150-Cloud Insight Assess Fact Sheet.json
+2026-02-17 22:06:21      20104 1771358780_DevSecOps_Slide.json
+2026-02-17 22:06:22      17440 1771358781_22-626950-AIOPS Factsheet-Print.json
+2026-02-17 22:06:22       7907 1771358781_25-1263020-Leidos Secure Access Cloud Fact Sheet_print.json
+2026-02-17 22:06:23       7843 1771358782_25-1262950-InSight Application Lifecycle Management Fact Sheet_print.json
+2026-02-17 22:06:27       8522 1771358786_25-1261187-Cloud Insight Discover Fact Sheet.json
+2026-02-17 22:06:27       8270 1771358786_25-1262985-InSight ITOM Fact Sheet_print.json
+2026-02-17 22:06:28      19454 1771358787_25-1179050-Cloud and Data Center Practice FS-PRINT.json
+2026-02-17 22:06:29        370 1771358788_DUX_Public_Overview_UPDATED_Final.json
+2026-02-17 22:06:30       8733 1771358789_25-1261187-Cloud Insight Discover Fact Sheet_print.json
+2026-02-17 22:06:30       9241 1771358789_25-1264100-Application Modernization FS-DIGITAL.json
+2026-02-17 22:06:33      10782 1771358792_25-1242541-GMS_Fact Sheet_PRINT.json
+2026-02-17 22:06:33      10894 1771358792_25-1242541-GMS_Fact Sheet_digital.json
+2026-02-17 22:06:35     117805 1771358794_37-2025 AWS_Leidos.json
+2026-02-17 22:06:36      12819 1771358795_DATA AND AI POTENTIAL (004).json
+2026-02-17 22:06:38      18375 1771358797_24-053127875_In3Sight_Mission_Cloud_Digital.json
+2026-02-17 22:06:38      11344 1771358797_25-1262185-Cloud Insight Design Fact Sheet.json
+2026-02-17 22:06:40      14650 1771358799_24-0618-27939_DISA_IT_FS_Digital.json
+2026-02-17 22:06:41       2705 1771358800_Current Mission Drivers and Q4 (003).json
+2026-02-17 22:06:43      10115 1771358802_25-1278700-CyberSPEAR Factsheet-DIGITAL.json
+2026-02-17 22:06:46      18116 1771358805_24-0612-27919-Moveworks Fact sheet-Digital.json
+2026-02-17 22:06:48      24727 1771358807_21-372350_Cloudbank_TCC_Factsheet_Pages.json
+2026-02-17 22:06:48       9800 1771358807_25-1240150-Networks Practice FS-DIGITAL.json
+2026-02-17 22:06:50      18900 1771358809_25-1264100-Application Modernization FS-PRINT.json
+2026-02-17 22:06:50       2381 1771358809_Leidos- VAST 2026.json
+2026-02-17 22:06:52       3613 1771358811_FINAL-CloudFactory-.json
+2026-02-17 22:06:54       8046 1771358813_25-1263020-Leidos Secure Access Cloud Fact Sheet.json
+2026-02-17 22:06:55      25591 1771358814_24-053127875_In3Sight_Mission_Cloud_Print.json
+2026-02-17 22:06:57       7665 1771358816_25-1262985-InSight ITOM Fact Sheet.json
+2026-02-17 22:06:58      10604 1771358817_25-1327435-AUKUS LSE Fact Sheet_PRINT.json
+2026-02-17 22:06:59       9880 1771358818_25-1280350-InSight Cloud Management PlatformWiz Fact Sheet_PRINT.json
+2026-02-17 22:07:03       9392 1771358822_25-1278300-EXCITE Factsheet-DIGITAL.json
+2026-02-17 22:07:03      10264 1771358822_Veeam Tender English.json
+2026-02-17 22:07:04       9954 1771358823_25-1289750-ZTRL Alignment Fact Sheet.json
+2026-02-17 22:07:04      23176 1771358823_OC2ELOT_Presentation.json
+2026-02-17 22:07:05      32818 1771358824_25-1278300-EXCITE Factsheet-PRINT.json
+2026-02-17 22:07:05     157336 1771358824_85-2025 GCP _Leidos.json
+2026-02-17 22:07:05     726108 1771358824_Bid Booklet Specializations Tabbed.json
+2026-02-17 22:07:05       4792 1771358824_OC2ELOT fact sheet.json
+2026-02-17 22:07:07      10690 1771358826_25-1327435-AUKUS LSE Fact Sheet_digital.json
+2026-02-17 22:07:07      19378 1771358826_OC2ELOT_VAST_Leidos_NVIDIA_Full.json
+2026-02-17 22:07:09      11388 1771358828_25-1262185-Cloud Insight Design Fact Sheet_print.json
+2026-02-17 22:07:10      21743 1771358829_24-1172501_FactSheet_CloudModernizationOverview_Digital.json
+2026-02-17 22:07:14       9303 1771358833_25-1280350-InSight Cloud Management PlatformWiz Fact Sheet_Digital.json
+2026-02-17 22:07:17      20221 1771358836_25-1246150-ConnectiV Energy Resilience Case Study_PRINT.json
+2026-02-17 22:07:17      19698 1771358836_25-1246150-ConnectiV Energy Resilience Case Study_digital.json
+2026-02-17 22:07:17       6506 1771358836_ManagedX Fact Sheet.json
+2026-02-17 22:07:19      25538 1771358838_25-1278700-CyberSPEAR Factsheet-PRINT.json
+2026-02-17 22:07:20       6005 1771358839_InSight Observe Fact Sheet_print.json
+2026-02-17 22:07:24      18330 1771358843_22-626950-AIOps Factsheet-Digital.json
+2026-02-17 22:07:25      10145 1771358844_25-1289750-ZTRL Alignment Fact Sheet_print.json
+2026-02-17 22:07:26      10578 1771358845_25-1304600-Data ConnectiV_Final_Digital.json
+2026-02-17 22:07:39       5402 1771358858_InSight Observe Fact Sheet_digital.json
+2026-02-17 22:07:44      11196 1771358863_25-1304600-Data ConnectiV_Final_Print.json
+2026-02-17 22:07:50       9234 1771358869_zero-emissions-vehicles.json
+2026-02-17 22:07:52       9686 1771358871_Leidos advances Department of Defense biometrics to the cloud.json
+2026-02-17 22:07:53      11862 1771358872_Sourcegraph Factsheet_Final_Digital.json
+2026-02-17 22:08:04      15267 1771358883_23-899200_MezzoBrochure_Digital (002).json
+2026-02-17 22:08:04      91606 1771358883_LEIDOS_AI_Strategy_Upgraded_v2.json
+2026-02-17 22:08:05      18641 1771358884_DOD ABIS cloud migration enables faster biometric analysis worldwide.json
+2026-02-17 22:08:05      14760 1771358884_digmode part 2.json
+2026-02-17 22:08:10      10349 1771358889_power-grid-ai-powered.json
+2026-02-17 22:08:11      15279 1771358890_EV-electrify-fleet.json
+2026-02-17 22:08:12      27411 1771358891_25-1260150-WP-Outsmarting the Silent Threat-web.json
+2026-02-17 22:08:21      15436 1771358900_digital moderinization.json
+2026-02-17 22:08:29      11214 1771358908_DISA GSM-O II WP_23-LEIDOS-0418-26217.json
+2026-02-17 22:08:55      32515 1771358934_25-1260150-WP-Outsmarting the Silent Threat-print.json
+2026-02-17 22:08:55      97725 1771358934_DATA_AND_AI_POTENTIAL.json
+2026-02-17 22:09:08      21247 1771358947_Keeping America Infrastructure Safe with Quantum Technologies_Oct2022.json
+2026-02-17 22:09:13      25055 1771358952_EDX Delight by Design.json
+2026-02-17 22:09:18      24303 1771358957_05.MOF_FinOps - May 7_v1.json
+2026-02-17 22:09:41      33002 1771358980_06.MOF_FinOps - June 17_s.json
+2026-02-17 22:09:47      17524 1771358986_25-LEIDOS-0206-28956-Network Operations Security Center Brochure_Digital.json
+2026-02-17 22:09:55      52151 1771358994_03-APCR-AIF_Content+Review_02.json
+2026-02-17 22:10:45      39753 1771359044_Broch-Digital-Modernization-Digital-v-24-968555.json
+2026-02-17 22:11:02      52529 1771359061_03-APCR-AIF_Content+Review_02.json
+2026-02-17 22:11:06      38045 1771359065_Unlocking Mission Data - A Smarter Way to Share.json
+2026-02-17 22:12:18      51053 1771359137_D-23-15149_Privacy-Enhancing Technologies (PET) White Paper.json
+2026-02-17 22:12:54      60546 1771359173_MOF Kickoff1 - 09.03.json
+2026-02-17 22:14:06      25026 1771359245_05.MOF_FinOps - May 7_v1.json
+2026-02-17 22:14:43      33618 1771359282_06.MOF_FinOps - June 17_s.json
+2026-02-17 22:15:54      46045 1771359353_FinOps, Mission Cloud, and CloudBank.json
+2026-02-17 22:15:58      59272 1771359357_Software Factory Overview.json
+2026-02-17 22:16:15      52548 1771359374_03-APCR-AIF_Content+Review_02.json
+2026-02-17 22:17:37      50885 1771359456_D-23-15149_Privacy-Enhancing Technologies (PET) White Paper.json
+2026-02-17 22:17:51      60165 1771359470_MOF Kickoff1 - 09.03.json
+2026-02-17 22:19:22      10082 1771359561_25-1278700-CyberSPEAR Factsheet-DIGITAL.json
+2026-02-17 22:20:56      48537 1771359655_FinOps, Mission Cloud, and CloudBank.json
+2026-02-17 22:21:18      59659 1771359677_Software Factory Overview.json
+2026-02-17 22:23:04      10142 1771359783_25-1278700-CyberSPEAR Factsheet-DIGITAL.json
+2026-02-17 22:40:42      10272 1771360841_25-1278700-CyberSPEAR Factsheet-DIGITAL.json
+2026-02-17 23:10:49      24510 1771362648_05.MOF_FinOps - May 7_v1.json
+2026-02-17 23:15:50      25783 1771362949_05.MOF_FinOps - May 7_v1.json

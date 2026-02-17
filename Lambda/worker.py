@@ -121,9 +121,9 @@ def enhanced_ocr(page_image, lang='eng+heb+ara'):
     has_table = detect_actual_tables(page_image)
     
     if has_table:
-        # Use table preprocessing and preserve spaces
+        # Use table preprocessing
         processed_image = preprocess_for_tables(page_image)
-        config = '--psm 6 --oem 1 --preserve-interword-spaces 1'
+        config = '--psm 6 --oem 1'
         logger.info("Table detected, using table-optimized OCR")
     else:
         # Regular text processing without table optimization
@@ -577,7 +577,7 @@ def process_message(record):
                                     import pytesseract
                                     # Detect if page has actual table
                                     has_table = detect_actual_tables(page_image)
-                                    config = '--psm 6 --oem 1 --preserve-interword-spaces 1' if has_table else '--psm 6 --oem 1'
+                                    config = '--psm 6 --oem 1'
                                     logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
                                     
                                     ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config=config)
@@ -742,7 +742,7 @@ def process_message(record):
                                 import pytesseract
                                 # Detect if page has actual table
                                 has_table = detect_actual_tables(page_image)
-                                config = '--psm 6 --oem 1 --preserve-interword-spaces 1' if has_table else '--psm 6 --oem 1'
+                                config = '--psm 6 --oem 1'
                                 logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
                                 
                                 ocr_text = pytesseract.image_to_string(
@@ -988,7 +988,44 @@ def process_message(record):
                 master_exists = True
             except s3_client.exceptions.ClientError as e:
                 if e.response['Error']['Code'] == '404':
-                    logger.info("No existing master index, creating new one")
+                    logger.info("No existing master index, rebuilding from all processed files")
+                    # Rebuild from ALL processed files
+                    try:
+                        processed_resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix='processed/')
+                        all_docs = []
+                        for obj in processed_resp.get('Contents', []):
+                            if not obj['Key'].endswith('.json'):
+                                continue
+                            try:
+                                proc_obj = s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])
+                                metadata = json.loads(proc_obj['Body'].read().decode('utf-8'))
+                                source = metadata.get('source_file', '').split('/')[-1].replace('.pdf', '')
+                                full_text = metadata.get('full_text', '')
+                                if full_text:
+                                    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+                                    chunks = splitter.split_text(full_text)
+                                    for i, chunk in enumerate(chunks):
+                                        all_docs.append(Document(
+                                            page_content=f"Document: {source}\n{chunk}",
+                                            metadata={'source': source, 'source_file': metadata.get('source_file', ''), 'chunk_id': i}
+                                        ))
+                                for img in metadata.get('images', []):
+                                    img_num = img.get('image_number', 0)
+                                    page = img.get('page')
+                                    s3_key = img.get('s3_key', '')
+                                    desc = img.get('description', '')
+                                    content = f"Document: {source}\nIMAGE NUMBER {img_num}\nPage {page}: {desc}\nIMAGE_URL:{s3_key}|PAGE:{page}|SOURCE:{source}" if page else f"Document: {source}\nIMAGE NUMBER {img_num}\n{desc}\nIMAGE_URL:{s3_key}|SOURCE:{source}"
+                                    all_docs.append(Document(
+                                        page_content=content,
+                                        metadata={'source': source, 'source_file': metadata.get('source_file', ''), 'type': 'image', 'page': page, 'image_number': img_num, 's3_key': s3_key}
+                                    ))
+                            except:
+                                pass
+                        if all_docs:
+                            logger.info(f"Rebuilding master index from {len(all_docs)} documents across all processed files")
+                            docs.extend(all_docs)
+                    except Exception as rebuild_err:
+                        logger.warning(f"Failed to rebuild from processed files: {rebuild_err}")
                 else:
                     raise
             
@@ -996,6 +1033,8 @@ def process_message(record):
             embed_start = time.time()
             max_retries = 3
             retry_delay = 2
+            
+            logger.info(f"Starting master index update | Documents: {len(docs)} | Retries: {max_retries}")
             
             for attempt in range(max_retries):
                 try:
@@ -1006,7 +1045,8 @@ def process_message(record):
                             s3_client.download_file(BUCKET, "vector_store/master/index.faiss", master_index_path)
                             s3_client.download_file(BUCKET, "vector_store/master/index.pkl", master_pkl_path)
                             master_exists = True
-                        except:
+                        except Exception as retry_dl_err:
+                            logger.error(f"Retry download failed: {retry_dl_err}")
                             master_exists = False
                     
                     if master_exists:
@@ -1039,6 +1079,17 @@ def process_message(record):
                         logger.error("Master index files not created")
                         raise Exception("Failed to create master index files")
                     
+                    # CRITICAL: Clear query cache BEFORE uploading new index to prevent race conditions
+                    try:
+                        logger.info("Clearing query cache before index upload...")
+                        cache_response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="query-cache/", MaxKeys=1000)
+                        if cache_response.get('Contents'):
+                            cache_keys = [{'Key': obj['Key']} for obj in cache_response['Contents']]
+                            s3_client.delete_objects(Bucket=BUCKET, Delete={'Objects': cache_keys, 'Quiet': True})
+                            logger.info(f"Cleared {len(cache_keys)} cached queries before index update")
+                    except Exception as cache_err:
+                        logger.warning(f"Failed to clear query cache: {cache_err}")
+                    
                     # Upload master index with retry
                     upload_start = time.time()
                     update_progress(base_name, 95, "Finalizing and saving index...")
@@ -1059,26 +1110,13 @@ def process_message(record):
                         raise
                         
                 except Exception as e:
+                    logger.error(f"Master index update failed on attempt {attempt + 1}/{max_retries} | Error: {type(e).__name__} | Details: {str(e)}")
                     if attempt < max_retries - 1:
                         logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
                         time.sleep(retry_delay)
                         continue
+                    logger.error(f"All {max_retries} attempts failed for master index update")
                     raise
-                
-                # CRITICAL: Clear query cache when new documents are added
-                try:
-                    logger.info("Clearing query cache after document upload...")
-                    cache_response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="query-cache/", MaxKeys=1000)
-                    if cache_response.get('Contents'):
-                        cache_keys = [{'Key': obj['Key']} for obj in cache_response['Contents']]
-                        s3_client.delete_objects(Bucket=BUCKET, Delete={'Objects': cache_keys, 'Quiet': True})
-                        logger.info(f"Cleared {len(cache_keys)} cached queries")
-                except Exception as cache_err:
-                    logger.warning(f"Failed to clear query cache: {cache_err}")
-                    
-            except Exception as e:
-                logger.error(f"Master index upload failed | Error: {type(e).__name__} | Details: {str(e)[:100]}")
-                raise
 
             # Mark as processed - add image_number to each image in metadata
             for idx, img_meta in enumerate(image_metadata, 1):

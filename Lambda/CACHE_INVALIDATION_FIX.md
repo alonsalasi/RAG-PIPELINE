@@ -30,18 +30,19 @@ When a document is deleted, clear the entire query cache before rebuilding the i
 **Action:** Added cache clearing before index rebuild
 
 #### 2. worker.py - Clear cache on document upload  
-When a new document is successfully indexed, clear the entire query cache.
+When a new document is successfully indexed, clear the entire query cache **BEFORE** uploading the new index to prevent race conditions.
 
-**Location:** After master index upload in `process_message()` function
-**Action:** Added cache clearing after index upload
+**Location:** Before master index upload in `process_message()` function
+**Action:** Moved cache clearing to happen BEFORE index upload (was after)
+**Critical Fix:** Prevents race condition where queries between index upload and cache clear could re-cache stale responses
 
 ## How It Works Now
 
 ### Upload Flow:
 1. User uploads document
 2. Document is processed and indexed
-3. Master index is updated
-4. **Query cache is cleared** ✅
+3. **Query cache is cleared** ✅ (BEFORE index upload)
+4. Master index is updated
 5. Next query will get fresh results with new document
 
 ### Delete Flow:
@@ -54,6 +55,16 @@ When a new document is successfully indexed, clear the entire query cache.
 - Minimal: Cache clearing is a simple S3 batch delete (max 1000 objects)
 - Only happens when documents change (not on every query)
 - First query after document change will be slower (cache miss), subsequent queries will be fast (new cache)
+
+## Race Condition Fix (Critical)
+**Problem:** If cache was cleared AFTER index upload, there was a window where:
+1. New index is uploaded
+2. User queries immediately
+3. Gets cached "no information" response
+4. That stale response gets re-cached
+5. Cache clear happens (too late)
+
+**Solution:** Cache is now cleared BEFORE index upload, ensuring no stale responses can be cached during the update window.
 
 ## Alternative Approaches Considered
 

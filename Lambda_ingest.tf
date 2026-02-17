@@ -15,7 +15,7 @@ resource "null_resource" "build_and_push_ingestion_image" {
   
   provisioner "local-exec" {
     interpreter = ["powershell", "-Command"]
-    command = "cd Lambda; .\\ingestion_build_push.ps1; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+    command = "cd Lambda; .\\ingestion_cache_build_push.bat; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
   }
 
   depends_on = [aws_ecr_repository.ingestion_lambda_repo, null_resource.build_and_push_agent_image]
@@ -59,11 +59,23 @@ resource "aws_lambda_function" "ingestion_worker" {
     target_arn = aws_sqs_queue.ingestion_dlq.arn
   }
   
-  reserved_concurrent_executions = 10
+  reserved_concurrent_executions = 50
 
   depends_on = [
     null_resource.build_and_push_ingestion_image
   ]
+}
+
+# Lambda Event Source Mapping for SQS
+resource "aws_lambda_event_source_mapping" "sqs_to_lambda" {
+  event_source_arn = aws_sqs_queue.rag_ingestion_queue.arn
+  function_name    = aws_lambda_function.ingestion_worker.arn
+  batch_size       = 1
+  enabled          = true
+
+  scaling_config {
+    maximum_concurrency = 50
+  }
 }
 
 # Allow S3 to invoke ingestion Lambda

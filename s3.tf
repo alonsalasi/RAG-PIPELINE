@@ -106,74 +106,68 @@ resource "aws_s3_bucket_cors_configuration" "rag_documents_cors" {
   }
 }
 
-# S3 Event Notification to trigger ingestion Lambda
+# S3 Event Notification to send to SQS
 resource "aws_s3_bucket_notification" "rag_documents_notification" {
   bucket = aws_s3_bucket.rag_documents.id
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".pdf"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".pdf"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".pptx"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".pptx"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".docx"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".docx"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".xlsx"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".xlsx"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".jpg"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".jpg"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".jpeg"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".jpeg"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".png"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".png"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion_worker.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "uploads/"
-    filter_suffix       = ".tiff"
+  queue {
+    queue_arn     = aws_sqs_queue.rag_ingestion_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "uploads/"
+    filter_suffix = ".tiff"
   }
 
   depends_on = [
-    aws_lambda_permission.allow_s3_invoke,
-    aws_lambda_function.ingestion_worker
+    aws_sqs_queue_policy.allow_s3_to_sqs,
+    aws_sqs_queue.rag_ingestion_queue
   ]
-
-  lifecycle {
-    replace_triggered_by = [
-      aws_lambda_function.ingestion_worker
-    ]
-  }
 }

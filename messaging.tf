@@ -5,10 +5,15 @@
 # Ingestion Queue
 resource "aws_sqs_queue" "rag_ingestion_queue" {
   name                       = "${var.project_name}-ingestion-queue"
-  visibility_timeout_seconds = 900
+  visibility_timeout_seconds = 300
   message_retention_seconds  = 1209600
   receive_wait_time_seconds  = 20
   kms_master_key_id          = aws_kms_key.agent_encryption.arn
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.ingestion_dlq.arn
+    maxReceiveCount     = 3
+  })
 
   tags = {
     Name = "${var.project_name}-ingestion-queue"
@@ -24,6 +29,30 @@ resource "aws_sqs_queue" "ingestion_dlq" {
   tags = {
     Name = "${var.project_name}-ingestion-dlq"
   }
+}
+
+# SQS Policy to allow S3 to send messages
+resource "aws_sqs_queue_policy" "allow_s3_to_sqs" {
+  queue_url = aws_sqs_queue.rag_ingestion_queue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "s3.amazonaws.com"
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.rag_ingestion_queue.arn
+        Condition = {
+          ArnEquals = {
+            "aws:SourceArn" = aws_s3_bucket.rag_documents.arn
+          }
+        }
+      }
+    ]
+  })
 }
 
 # Agent Dead Letter Queue
