@@ -149,6 +149,11 @@ resource "aws_iam_policy" "lambda_ingestion_policy" {
           aws_sqs_queue.rag_ingestion_queue.arn,
           "${aws_sqs_queue.rag_ingestion_queue.arn}-dlq"
         ]
+      },
+      {
+        Effect = "Allow",
+        Action = ["lambda:InvokeFunction"],
+        Resource = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-ingestion-worker"
       }
     ]
   })

@@ -24,6 +24,18 @@ def lambda_handler(event, context):
         return handle_parse_autofill(event)
     
     logger.info("🚀 INGESTION Lambda triggered (not API Lambda).")
+    
+    # Check if this is a direct invocation (has page_range at top level)
+    if "page_range" in event:
+        logger.info(f"Direct invocation detected with page_range: {event['page_range']}")
+        try:
+            process_message(event)
+            return {"batchItemFailures": []}
+        except Exception as e:
+            logger.error(f"⚠️ Direct invocation failed: {type(e).__name__}")
+            return {"batchItemFailures": []}
+    
+    # SQS batch processing
     records_count = len(event.get('Records', []))
     logger.info(f"Event type: {type(event).__name__}, Records count: {records_count}")
     if logger.isEnabledFor(logging.DEBUG):
@@ -38,7 +50,6 @@ def lambda_handler(event, context):
         logger.info(f"🟦 Processing record {msg_id}")
 
         try:
-            # process_message will now raise an error on failure
             process_message(record)
             
         except Exception as inner_e:

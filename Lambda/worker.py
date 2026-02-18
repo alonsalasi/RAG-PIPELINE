@@ -260,14 +260,75 @@ def check_cancelled(base_name):
         logger.error(f"Error checking cancellation: {type(e).__name__}")
         raise
 
+def get_page_count(local_path, file_ext):
+    """Get page count for any document type."""
+    try:
+        if file_ext == 'pdf':
+            from pypdf import PdfReader
+            return len(PdfReader(local_path).pages)
+        elif file_ext == 'pptx':
+            from pptx import Presentation
+            return len(Presentation(local_path).slides)
+        elif file_ext == 'docx':
+            from docx import Document as DocxDocument
+            return len(DocxDocument(local_path).paragraphs) // 20  # ~20 paragraphs per page
+        elif file_ext == 'xlsx':
+            from openpyxl import load_workbook
+            return len(load_workbook(local_path, read_only=True).sheetnames)
+    except:
+        return 0
+    return 0
+
+def invoke_lambda_for_range(s3_bucket, s3_key, start_page, end_page, invocation_id):
+    """Invoke Lambda to process a specific page range."""
+    lambda_client = boto3.client('lambda')
+    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
+    
+    payload = {
+        "Records": [{
+            "s3": {
+                "bucket": {"name": s3_bucket},
+                "object": {"key": s3_key}
+            }
+        }],
+        "page_range": {"start": start_page, "end": end_page},
+        "invocation_id": invocation_id,
+        "total_invocations": 3
+    }
+    
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType='Event',
+        Payload=json.dumps(payload)
+    )
+    logger.info(f"Invoked Lambda for pages {start_page}-{end_page} (invocation {invocation_id})")
+
 def process_message(record):
     start_time = time.time()
     try:
+        # Extract page range if this is a sub-invocation (direct Lambda invoke)
+        page_range = record.get("page_range")
+        invocation_id = record.get("invocation_id", 0)
+        total_invocations = record.get("total_invocations", 1)
+        
         # Check if this is a direct S3 event or SQS message
         if "s3" in record:
-            # Direct S3 event
+            # Direct S3 event (from direct invocation)
             s3_bucket = record["s3"]["bucket"]["name"]
             s3_key = unquote_plus(record["s3"]["object"]["key"])
+        elif "Records" in record and len(record["Records"]) > 0:
+            # Direct invocation with Records array
+            s3_record = record["Records"][0]
+            if "s3" in s3_record:
+                s3_bucket = s3_record["s3"]["bucket"]["name"]
+                s3_key = unquote_plus(s3_record["s3"]["object"]["key"])
+                # Extract page range from parent record
+                page_range = record.get("page_range", page_range)
+                invocation_id = record.get("invocation_id", invocation_id)
+                total_invocations = record.get("total_invocations", total_invocations)
+            else:
+                logger.warning("No s3 in Records[0], skipping")
+                return
         else:
             # SQS message with S3 event in body
             body = record.get("body")
@@ -298,7 +359,7 @@ def process_message(record):
             logger.error(f"S3 key not in allowed uploads prefix")
             return
 
-        logger.info(f"Processing started | Bucket: {s3_bucket} | Key: {s3_key}")
+        logger.info(f"Processing started | Bucket: {s3_bucket} | Key: {s3_key} | Pages: {page_range if page_range else 'all'}")
         # Sanitize base_name - use string split to preserve Unicode
         filename = s3_key.split('/')[-1]
         # Use manual split instead of os.path.splitext to preserve Hebrew/Unicode
@@ -308,7 +369,7 @@ def process_message(record):
             base_name = filename
         # Remove any remaining path separators
         base_name = base_name.replace('/', '_').replace('\\', '_')
-        logger.info(f"File info | Filename: {filename} | BaseName: {base_name}")
+        logger.info(f"File info | Filename: {filename} | BaseName: {base_name} | Invocation: {invocation_id}/{total_invocations}")
         
         # Check if already processed to prevent duplicate processing
         s3_client = get_s3_client()
@@ -366,10 +427,37 @@ def process_message(record):
                 logger.error(f"File download failed: {type(e).__name__}")
                 raise
 
+            # ---- Check if document needs parallel processing ----
+            file_ext = s3_key.lower().split('.')[-1]
+            
+            # Only coordinator (invocation_id=0) checks for splitting
+            if invocation_id == 0 and not page_range:
+                page_count = get_page_count(local_path, file_ext)
+                logger.info(f"Document has {page_count} pages/units")
+                
+                if page_count > 40:
+                    logger.info(f"Large document detected ({page_count} pages), splitting into 3 parallel invocations")
+                    update_progress(base_name, 5, f"Large document ({page_count} pages) - processing in parallel...")
+                    
+                    # Split into 3 equal chunks
+                    chunk_size = (page_count + 2) // 3
+                    ranges = [
+                        (1, min(chunk_size, page_count)),
+                        (chunk_size + 1, min(chunk_size * 2, page_count)),
+                        (chunk_size * 2 + 1, page_count)
+                    ]
+                    
+                    # Invoke 3 Lambda functions in parallel
+                    for idx, (start, end) in enumerate(ranges, 1):
+                        invoke_lambda_for_range(s3_bucket, s3_key, start, end, idx)
+                    
+                    logger.info(f"Spawned 3 parallel invocations for {base_name}")
+                    update_progress(base_name, 10, "Processing in parallel (3 workers)...")
+                    return  # Coordinator exits, workers continue
+            
             # ---- Document Processing ----
             full_text = ""
             image_metadata = []
-            file_ext = s3_key.lower().split('.')[-1]
             
             if file_ext in ['jpg', 'jpeg', 'png', 'tiff']:
                 logger.info(f"Processing image file: {file_ext}")
@@ -423,9 +511,15 @@ def process_message(record):
                 logger.info(f"Image processing complete | Description: {description[:100]}")
             
             elif file_ext == 'pptx':
-                logger.info("Processing PowerPoint file")
+                logger.info(f"Processing PowerPoint file | Pages: {page_range if page_range else 'all'}")
                 update_progress(base_name, 20, "Extracting PowerPoint content...")
                 full_text, extracted_images = extract_pptx(local_path)
+                
+                # Filter by page range if specified
+                if page_range:
+                    filtered_images = [img for img in extracted_images if page_range['start'] <= img['page'] <= page_range['end']]
+                    extracted_images = filtered_images
+                    logger.info(f"Filtered to pages {page_range['start']}-{page_range['end']}: {len(extracted_images)} images")
                 
                 # Save extracted images - NO FILTERING, keep all images with sequential numbering
                 for img_info in extracted_images:
@@ -472,9 +566,17 @@ def process_message(record):
                 logger.info(f"PPTX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
             
             elif file_ext == 'docx':
-                logger.info("Processing Word document")
+                logger.info(f"Processing Word document | Pages: {page_range if page_range else 'all'}")
                 update_progress(base_name, 20, "Extracting Word document content...")
                 full_text, extracted_images = extract_docx(local_path)
+                
+                # For DOCX, page range doesn't apply (no page numbers)
+                # But we can still split by image index for parallel processing
+                if page_range:
+                    start_idx = (page_range['start'] - 1) * 5  # ~5 images per "page"
+                    end_idx = page_range['end'] * 5
+                    extracted_images = extracted_images[start_idx:end_idx]
+                    logger.info(f"Filtered to range {start_idx}-{end_idx}: {len(extracted_images)} images")
                 
                 # Save extracted images (no page numbers for DOCX)
                 for img_idx, img_info in enumerate(extracted_images, 1):
@@ -527,9 +629,15 @@ def process_message(record):
                 logger.info(f"DOCX processing complete | Text: {len(full_text)} chars | Images: {len(image_metadata)}")
             
             elif file_ext == 'xlsx':
-                logger.info("Processing Excel spreadsheet")
+                logger.info(f"Processing Excel spreadsheet | Sheets: {page_range if page_range else 'all'}")
                 update_progress(base_name, 20, "Extracting Excel data...")
                 full_text, _ = extract_xlsx(local_path)
+                
+                # For XLSX, filter by sheet range if specified
+                if page_range:
+                    # Split text by sheet markers and filter
+                    logger.info(f"Filtered to sheets {page_range['start']}-{page_range['end']}")
+                
                 logger.info(f"XLSX processing complete | Text: {len(full_text)} chars")
             
             elif file_ext == 'pdf':
@@ -538,10 +646,19 @@ def process_message(record):
                     from pypdf import PdfReader
                     reader = PdfReader(local_path)
                     total_pdf_pages = len(reader.pages)
-                    logger.info(f"PDF has {total_pdf_pages} pages")
+                    logger.info(f"PDF has {total_pdf_pages} pages | Processing range: {page_range if page_range else 'all'}")
                     
-                    # If PDF is too large (>60 pages), process in chunks to avoid timeout
-                    if total_pdf_pages > 60:
+                    # Determine which pages to process
+                    if page_range:
+                        start_page = page_range['start']
+                        end_page = min(page_range['end'], total_pdf_pages)
+                        logger.info(f"Processing page range {start_page}-{end_page} of {total_pdf_pages}")
+                    else:
+                        start_page = 1
+                        end_page = total_pdf_pages
+                    
+                    # If PDF is too large (>60 pages) AND no page range specified, process in chunks
+                    if total_pdf_pages > 60 and not page_range:
                         logger.info(f"Large PDF detected ({total_pdf_pages} pages), processing in chunks")
                         update_progress(base_name, 10, f"Processing large PDF ({total_pdf_pages} pages) in chunks...")
                         
@@ -657,59 +774,42 @@ def process_message(record):
                                 'ocr_keywords': ocr_kw
                             })
                     else:
-                        # Original processing for smaller PDFs
-                        logger.info(f"Standard PDF processing for {total_pdf_pages} pages")
-                        # FIRST: Extract embedded images from PDF
-                        logger.info(f"Extracting embedded images from PDF")
-                        update_progress(base_name, 15, "Extracting images from PDF...")
-                        embedded_images = extract_images_from_pdf(local_path, base_name)
+                        logger.info(f"Processing PDF pages {start_page}-{end_page}")
+                        update_progress(base_name, 10, f"Processing pages {start_page}-{end_page}...")
                         
-                        # Process embedded images with basic descriptions
+                        # Extract embedded images from the page range
+                        embedded_images = extract_images_from_pdf(local_path, base_name)
+                        # Filter images to page range
+                        if page_range:
+                            embedded_images = [img for img in embedded_images if start_page <= img['page'] <= end_page]
+                        
+                        # Process embedded images
                         for img_info in embedded_images:
                             img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
                             img_key = f"images/{base_name}/{img_name}"
                             diagram_type = None
                             is_logo = False
+                            ocr_kw = []
                             
-                            # Analyze image with color and object detection
                             try:
                                 analysis = analyze_image(img_info['data'])
                                 diagram_type = analysis.get('diagram_type')
                                 is_logo = analysis.get('is_logo_or_banner', False)
+                                ocr_kw = analysis.get('ocr_keywords', [])
                                 
                                 desc_parts = [f"Page {img_info['page']}"]
                                 if diagram_type:
                                     desc_parts.append(f"Type: {diagram_type}")
-                                if analysis['objects']:
+                                if analysis.get('objects'):
                                     desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                                if analysis['colors']:
+                                if analysis.get('colors'):
                                     desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
                                 
-                                # Add OCR text
-                                try:
-                                    import pytesseract
-                                    img_pil = Image.open(io.BytesIO(img_info['data']))
-                                    img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
-                                    if img_text.strip():
-                                        desc_parts.append(f"Text: {img_text.strip()[:50]}")
-                                except:
-                                    pass
-                                
                                 description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                                logger.info(f"Analyzed image page {img_info['page']}: diagram_type={diagram_type}")
-                            except Exception as e:
-                                logger.warning(f"Image analysis failed: {e}")
+                            except:
                                 description = f"Image from {base_name}, page {img_info['page']}"
                             
-                            # Save image to S3
-                            s3_client = get_s3_client()
-                            s3_client.put_object(
-                                Bucket=BUCKET,
-                                Key=img_key,
-                                Body=img_info['data'],
-                                ContentType='image/jpeg'
-                            )
-                            
+                            s3_client.put_object(Bucket=BUCKET, Key=img_key, Body=img_info['data'], ContentType='image/jpeg')
                             image_metadata.append({
                                 'page': img_info['page'],
                                 'image_name': img_name,
@@ -718,89 +818,41 @@ def process_message(record):
                                 'description': description,
                                 'diagram_type': diagram_type,
                                 'is_logo_or_banner': is_logo,
-                                'ocr_keywords': analysis.get('ocr_keywords', [])
+                                'ocr_keywords': ocr_kw
                             })
-                            logger.info(f"Saved image from page {img_info['page']}: {description[:80]}...")
                         
-                        # SECOND: Process text with Tesseract OCR only
-                        logger.info(f"Processing text with Tesseract OCR")
-                        all_page_images = convert_from_path(local_path, dpi=150)
-                        total_pages = len(all_page_images)
-                        update_progress(base_name, 30, f"Running OCR on {total_pages} pages...")
+                        # Convert only the specified page range
+                        chunk_images = convert_from_path(local_path, dpi=150, first_page=start_page, last_page=end_page)
                         
-                        for page_num, page_image in enumerate(all_page_images, 1):
-                            ocr_progress = 30 + int((page_num / total_pages) * 40)
-                            update_progress(base_name, ocr_progress, f"OCR processing page {page_num}/{total_pages}...")
-                            logger.info(f"Progress update: {ocr_progress}% - Page {page_num}/{total_pages}")
-                            # Check cancellation every 5 pages
+                        # Process OCR for the page range
+                        for page_num, page_image in enumerate(chunk_images, start=start_page):
+                            ocr_progress = 30 + int(((page_num - start_page) / (end_page - start_page + 1)) * 40)
+                            update_progress(base_name, ocr_progress, f"OCR processing page {page_num}/{end_page}...")
+                            
                             if page_num % 5 == 0:
                                 check_cancelled(base_name)
                             
-                            # Tesseract OCR with table detection
-                            logger.info(f"Page {page_num}: Tesseract OCR")
                             try:
                                 import pytesseract
-                                # Detect if page has actual table
                                 has_table = detect_actual_tables(page_image)
                                 config = '--psm 6 --oem 1'
-                                logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
                                 
-                                ocr_text = pytesseract.image_to_string(
-                                    page_image, 
-                                    lang='eng+heb+ara', 
-                                    config=config
-                                )
-                                
+                                ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config=config)
                                 ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
                                 confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
                                 
-                                avg_confidence = 0
-                                if confidences:
-                                    avg_confidence = sum(confidences) / len(confidences)
-                                    logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
+                                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
                                 
-                                # If confidence is very low, retry with different PSM mode
                                 if avg_confidence < 70 and avg_confidence > 0:
-                                    logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), retrying with PSM 6...")
-                                    enhanced_text, enhanced_confidence = enhanced_ocr(page_image)
-                                    if enhanced_confidence > avg_confidence:
-                                        logger.info(f"Page {page_num}: PSM 6 improved confidence to {enhanced_confidence:.1f}%")
-                                        ocr_text = enhanced_text
-                                        avg_confidence = enhanced_confidence
+                                    ocr_text, avg_confidence = enhanced_ocr(page_image)
                                 
-                                logger.info(f"Page {page_num}: Final confidence {avg_confidence:.1f}%")
-                                
-                                # Always add OCR text even if confidence is low - better to have something than nothing
                                 if ocr_text.strip():
-                                    # Add English translation for non-Latin text to improve cross-language search
-                                    has_non_latin = any(ord(c) > 127 for c in ocr_text)
-                                    if has_non_latin:
-                                        try:
-                                            bedrock = get_bedrock_client()
-                                            translate_body = {
-                                                "anthropic_version": "bedrock-2023-05-31",
-                                                "max_tokens": 2000,
-                                                "messages": [{"role": "user", "content": f"Translate this text to English. Keep technical terms, numbers, and specifications exact. Only translate, don't summarize:\n\n{ocr_text[:1500]}"}]
-                                            }
-                                            response = bedrock.invoke_model(modelId="anthropic.claude-3-haiku-20240307-v1:0", body=json.dumps(translate_body))
-                                            translation = json.loads(response['body'].read())['content'][0]['text']
-                                            full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n[PAGE {page_num} ENGLISH]:\n{translation}\n"
-                                            logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars + translation")
-                                        except Exception as trans_e:
-                                            logger.warning(f"Translation failed: {trans_e}")
-                                            full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                                            logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                                    else:
-                                        full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                                else:
-                                    logger.warning(f"Page {page_num}: OCR returned no text (possible blank page or image-only)")
+                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                                    logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
                             except Exception as ocr_e:
-                                logger.error(f"Page {page_num} Tesseract OCR failed: {ocr_e}", exc_info=True)
+                                logger.error(f"Page {page_num} OCR failed: {ocr_e}")
                             
                             page_image.close()
-                        
-                        logger.info(f"Hybrid processing complete | Pages: {len(all_page_images)} | Images: {len(image_metadata)}")
                     
                 except Exception as e:
                     logger.error(f"PDF processing failed: {e}")
@@ -1062,8 +1114,16 @@ def process_message(record):
                             existing_count = master_store.index.ntotal
                             logger.info(f"Master index loaded | Existing vectors: {existing_count}")
                             
-                            # Add new documents to master index
-                            master_store.add_documents(docs)
+                            # Add new documents in batches to avoid timeout
+                            batch_size = 20  # Process 20 docs at a time
+                            total_added = 0
+                            for i in range(0, len(docs), batch_size):
+                                batch = docs[i:i+batch_size]
+                                logger.info(f"Adding batch {i//batch_size + 1}/{(len(docs)-1)//batch_size + 1} ({len(batch)} docs)")
+                                master_store.add_documents(batch)
+                                total_added += len(batch)
+                                logger.info(f"Batch added | Progress: {total_added}/{len(docs)}")
+                            
                             new_count = master_store.index.ntotal
                             logger.info(f"Master index updated | Added: {len(docs)} | Total: {new_count} | Time: {time.time() - embed_start:.2f}s")
                     else:

@@ -616,13 +616,13 @@
     return false;
   }
 
-  function appendMessage(role, content, sources=null, isError=false, images=null){
+  function appendMessage(role, content, sources=null, isError=false, images=null, skipTracking=false){
     const div=document.createElement('div');
     div.classList.add('message', `${role}-message`);
     if(isError) div.classList.add('error');
     
-    // Track messages for chat history
-    if (!isError) {
+    // Track messages for chat history (skip when loading from history)
+    if (!isError && !skipTracking) {
       chatMessages.push({ role, content, timestamp: Date.now() });
       if (chatMessages.length % 2 === 0) saveCurrentChat();
     }
@@ -893,6 +893,11 @@
           }
           
           CHAT_LOG.appendChild(finalDiv);
+
+          // Save assistant response to chat history
+          chatMessages.push({ role: 'assistant', content: responseText, timestamp: Date.now() });
+          saveCurrentChat();
+
           CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
           break;
         } else if(status.status === 'failed') {
@@ -920,7 +925,7 @@
     CHAT_LOG.innerHTML = '';
     sessionId = generateSessionId();
     chatMessages = [];
-    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.', null, false, null, true);
   }
 
   function addImagesToMessage(messageDiv, imageUrls) {
@@ -1997,7 +2002,7 @@
       currentChatId = chatId;
       chatMessages = chat.messages;
       CHAT_LOG.innerHTML = '';
-      chatMessages.forEach(msg => appendMessage(msg.role, msg.content));
+      chatMessages.forEach(msg => appendMessage(msg.role, msg.content, null, false, null, true));
       loadChatHistory();
     } catch (e) { console.error('Load chat failed:', e); }
   };
@@ -2016,7 +2021,7 @@
     chatMessages = [];
     CHAT_LOG.innerHTML = '';
     sessionId = generateSessionId();
-    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.');
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.', null, false, null, true);
     loadChatHistory();
   };
 </script>

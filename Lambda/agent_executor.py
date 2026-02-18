@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+import re
 from urllib.parse import unquote_plus
 from decimal import Decimal
 from functools import wraps
@@ -152,8 +153,70 @@ if not BUCKET:
 # Track index timestamp to detect updates
 _index_s3_timestamp = None
 
-# Session history management
-MAX_HISTORY_PAIRS = 5  # Keep last 5 Q&A pairs
+# Session history management with compression
+MAX_HISTORY_TOKENS = 100000  # Max tokens for conversation history (50% of 200K limit)
+MIN_RECENT_PAIRS = 5  # Always keep last 5 Q&A pairs uncompressed
+
+def estimate_tokens(text):
+    """Estimate token count (4 chars ≈ 1 token)."""
+    return len(str(text)) // 4
+
+def compress_history(messages):
+    """Compress old messages when token limit exceeded."""
+    if len(messages) <= MIN_RECENT_PAIRS * 2:
+        return messages
+    
+    total_tokens = sum(estimate_tokens(m.get('content', '')) for m in messages)
+    
+    if total_tokens <= MAX_HISTORY_TOKENS:
+        return messages
+    
+    logger.info(f"Compressing history: {total_tokens} tokens, {len(messages)} messages")
+    
+    # Keep recent messages uncompressed
+    recent = messages[-(MIN_RECENT_PAIRS * 2):]
+    old = messages[:-(MIN_RECENT_PAIRS * 2)]
+    
+    # Summarize old messages using Bedrock
+    try:
+        bedrock = boto3.client('bedrock-runtime', region_name=os.getenv("AWS_REGION"))
+        
+        # Build conversation text
+        conv_text = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in old])
+        
+        prompt = f"""Summarize this conversation history concisely, preserving key facts, questions asked, and answers given. Keep it under 500 words.
+
+CONVERSATION:
+{conv_text}
+
+SUMMARY:"""
+        
+        response = bedrock.invoke_model(
+            modelId="us.anthropic.claude-3-haiku-20240307-v1:0",
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}]
+            })
+        )
+        
+        result = json.loads(response['body'].read())
+        summary = result['content'][0]['text']
+        
+        # Replace old messages with summary
+        compressed = [
+            {"role": "system", "content": f"Previous conversation summary: {summary}"}
+        ] + recent
+        
+        new_tokens = sum(estimate_tokens(m.get('content', '')) for m in compressed)
+        logger.info(f"Compressed: {total_tokens} → {new_tokens} tokens ({len(messages)} → {len(compressed)} messages)")
+        
+        return compressed
+        
+    except Exception as e:
+        logger.error(f"Compression failed: {e}, falling back to truncation")
+        # Fallback: keep only recent messages
+        return recent
 
 def load_session_history(session_id):
     """Load conversation history from S3."""
@@ -170,110 +233,22 @@ def load_session_history(session_id):
         return []
 
 def save_session_history(session_id, messages):
-    """Save conversation history to S3, keeping only last N pairs."""
+    """Save conversation history with automatic compression."""
     try:
-        # Keep only last MAX_HISTORY_PAIRS Q&A pairs (each pair = 2 messages)
-        max_messages = MAX_HISTORY_PAIRS * 2
-        trimmed = messages[-max_messages:] if len(messages) > max_messages else messages
+        # Compress if needed
+        compressed = compress_history(messages)
         
         s3_client = get_s3_client()
         key = f"session-history/{session_id}.json"
         s3_client.put_object(
             Bucket=BUCKET,
             Key=key,
-            Body=json.dumps({'messages': trimmed, 'updated': int(time.time())}),
+            Body=json.dumps({'messages': compressed, 'updated': int(time.time())}),
             ContentType='application/json'
         )
-        logger.info(f"Saved history: {len(trimmed)} messages (trimmed from {len(messages)})")
+        logger.info(f"Saved history: {len(compressed)} messages")
     except Exception as e:
         logger.warning(f"Failed to save history: {type(e).__name__}")
-
-@retry_with_backoff(max_retries=2)
-def preload_master_index(force_reload=False):
-    """Preload master FAISS index with automatic update detection."""
-    from langchain_community.vectorstores import FAISS
-    import shutil
-    from datetime import datetime
-    
-    global _index_s3_timestamp
-    cache_key = "master_index"
-    cache_dir = "/tmp/master_index"
-    s3_client = get_s3_client()
-    
-    # FORCE RELOAD: Always check S3 for updates
-    try:
-        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-        s3_last_modified = s3_obj['LastModified'].timestamp()
-        
-        # If we have a cached index, check if S3 version is newer
-        if cache_key in _faiss_cache and _index_s3_timestamp is not None:
-            if s3_last_modified > _index_s3_timestamp:
-                logger.info(f"S3 index updated (cached: {datetime.fromtimestamp(_index_s3_timestamp)}, S3: {datetime.fromtimestamp(s3_last_modified)}), reloading...")
-                del _faiss_cache[cache_key]
-                # Also clear disk cache
-                if os.path.exists(cache_dir):
-                    shutil.rmtree(cache_dir)
-            else:
-                logger.info("Master index cached and up-to-date")
-                return
-        elif cache_key in _faiss_cache:
-            logger.info("Master index already cached, checking S3...")
-            # Still check if we should reload
-            if _index_s3_timestamp is not None and s3_last_modified > _index_s3_timestamp:
-                logger.info("S3 has newer version, reloading...")
-                del _faiss_cache[cache_key]
-                if os.path.exists(cache_dir):
-                    shutil.rmtree(cache_dir)
-            else:
-                return
-            
-    except s3_client.exceptions.ClientError as e:
-        if e.response.get('Error', {}).get('Code') == '404':
-            logger.info("No master index exists yet")
-            return
-        logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
-    
-    except s3_client.exceptions.ClientError as e:
-        if e.response.get('Error', {}).get('Code') == '404':
-            logger.info("No master index exists yet")
-            return
-        logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
-        return
-    
-    if os.path.exists(cache_dir):
-        shutil.rmtree(cache_dir)
-    
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    index_file = os.path.join(cache_dir, "index.faiss")
-    pkl_file = os.path.join(cache_dir, "index.pkl")
-    
-    start_time = time.time()
-    # Download files in parallel for faster startup
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future1 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.faiss", index_file)
-        future2 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.pkl", pkl_file)
-        concurrent.futures.wait([future1, future2])
-    
-    embeddings = get_embeddings_client()
-    master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
-    _faiss_cache[cache_key] = master_index
-    
-    # Store S3 timestamp for future comparisons
-    try:
-        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-        _index_s3_timestamp = s3_obj['LastModified'].timestamp()
-    except:
-        _index_s3_timestamp = time.time()
-    
-    logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors in {time.time() - start_time:.2f}s")
-
-try:
-    preload_master_index()
-except Exception as e:
-    logger.error(f"Startup preload failed: {type(e).__name__}")
-
 
 def list_all_s3_objects(bucket, prefix, max_keys=1000):
     """List all S3 objects with pagination support and limits."""
@@ -329,9 +304,281 @@ def batch_delete_s3_objects(bucket, keys):
     
     return deleted_count
 
-# -----------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------
+def get_document_context(metadata, base_name):
+    """Extract rich document-level context for chunk enrichment."""
+    context_parts = [f"Document: {base_name}"]
+    
+    # Add text preview summary
+    text_preview = metadata.get('text_preview', '').strip()
+    if text_preview:
+        first_line = text_preview.split('\n')[0][:80].strip()
+        if first_line:
+            context_parts.append(f"Subject: {first_line}")
+    
+    # Add visual context from first image
+    images = metadata.get('images', [])
+    if images:
+        first_img = images[0].get('description', '')
+        if 'BRAND:' in first_img:
+            brand = first_img.split('BRAND:')[1].split('\n')[0].strip()
+            if brand and brand.lower() != 'none visible':
+                context_parts.append(f"Brand: {brand}")
+    
+    return " | ".join(context_parts)
+
+def rebuild_master_index():
+    """Rebuild master index from all remaining processed documents."""
+    try:
+        from langchain_community.vectorstores import FAISS
+        from langchain.docstore.document import Document
+        import tempfile
+        
+        logger.info(" Rebuilding master index...")
+        
+        # Get all processed documents
+        processed_objects = list_all_s3_objects(BUCKET, "processed/")
+        if not processed_objects:
+            logger.info(" No documents to index, deleting master index")
+            try:
+                s3_client = get_s3_client()
+                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.pkl")
+            except:
+                pass
+            # Clear cache
+            if "master_index" in _faiss_cache:
+                del _faiss_cache["master_index"]
+            return
+        
+        embeddings = get_embeddings_client()
+        all_docs = []
+        
+        # Collect all documents from processed files
+        for obj in processed_objects:
+            if not obj['Key'].endswith('.json'):
+                continue
+            
+            try:
+                # Get processed metadata
+                s3_client = get_s3_client()
+                response = s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])
+                metadata = json.loads(response['Body'].read().decode('utf-8'))
+                
+                source_file = metadata.get('source_file', '')
+                # Use string split instead of os.path.basename to preserve Hebrew/Unicode
+                base_name = source_file.split('/')[-1].replace('.pdf', '')
+                
+                # Get rich document context
+                context_prefix = get_document_context(metadata, base_name)
+                
+                # Get full text from metadata (not just preview)
+                full_text = metadata.get('full_text', metadata.get('text_preview', ''))
+                logger.info(f"📄 {base_name}: full_text length = {len(full_text)} chars")
+                if full_text and len(full_text) > 100:  # Ensure we have real text, not just metadata
+                    # Use smaller chunks for better ranking and more comprehensive coverage
+                    from langchain.text_splitter import RecursiveCharacterTextSplitter
+                    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+                    chunks = splitter.split_text(full_text)
+                    
+                    for i, chunk in enumerate(chunks):
+                        # CRITICAL: Verify chunk doesn't start with image markers
+                        if chunk.strip().startswith('Image from') or 'IMAGE_URL:' in chunk:
+                            logger.warning(f"⚠️ Skipping image-like chunk: {chunk[:100]}")
+                            continue
+                        
+                        doc = Document(
+                            page_content=f"Document: {base_name}\n{chunk}",
+                            metadata={
+                                "source": base_name,
+                                "source_file": source_file,  # Full S3 path
+                                "s3_key": source_file,  # Include S3 key
+                                "chunk_id": i,
+                                "type": "text"  # CRITICAL: Mark as text for proper filtering
+                            }
+                        )
+                        all_docs.append(doc)
+                        if i < 2:  # Log first 2 chunks for debugging
+                            logger.info(f"✅ Text chunk {i}: {chunk[:100]}")
+                    logger.info(f"Created {len(chunks)} text chunks for {base_name}")
+                else:
+                    logger.warning(f"⚠️ {base_name}: No valid full_text (length={len(full_text)})")
+                
+                # Add image documents with surrounding text context
+                images = metadata.get('images', [])
+                # Filter out small images BEFORE numbering
+                filtered_images = []
+                for img_meta in images:
+                    s3_key = img_meta.get('s3_key', '')
+                    # Skip tiny images (same logic as search)
+                    if s3_key:
+                        try:
+                            s3_obj = s3_client.head_object(Bucket=BUCKET, Key=s3_key)
+                            file_size = s3_obj.get('ContentLength', 0)
+                            if file_size < 10000:  # 10KB minimum
+                                continue
+                        except:
+                            pass
+                    filtered_images.append(img_meta)
+                
+                # Now number the filtered images
+                for idx, img_meta in enumerate(filtered_images, 1):
+                    img_desc = img_meta.get('description', 'Image')
+                    s3_key = img_meta.get('s3_key', '')
+                    page = img_meta.get('page')
+                    
+                    # Extract text context around the image (few lines before/after)
+                    text_context = img_meta.get('text_context', '')
+                    if not text_context and full_text and page:
+                        # Fallback: extract text near the page number
+                        lines = full_text.split('\n')
+                        context_lines = []
+                        for i, line in enumerate(lines):
+                            if f'page {page}' in line.lower() or f'עמוד {page}' in line:
+                                # Get 3 lines before and after
+                                start = max(0, i-3)
+                                end = min(len(lines), i+4)
+                                context_lines = lines[start:end]
+                                break
+                        text_context = ' '.join(context_lines).strip()[:300]
+                    
+                    # Build page content with context
+                    if page is not None:
+                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\nPage {page}: {img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|PAGE:{page}|SOURCE:{base_name}"
+                    else:
+                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\n{img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|SOURCE:{base_name}"
+                    
+                    img_doc = Document(
+                        page_content=page_content,
+                        metadata={
+                            "source": base_name,
+                            "source_file": source_file,  # Full S3 path
+                            "s3_key": s3_key,
+                            "uploaded_name": source_file.split('/')[-1] if source_file else '',
+                            "type": "image",
+                            "page": page,
+                            "image_number": idx,
+                            "image_url": img_meta.get('url', ''),
+                            "context_summary": context_prefix,
+                            "text_context": text_context
+                        }
+                    )
+                    all_docs.append(img_doc)
+                    
+            except Exception as e:
+                logger.error(f" Failed to process {obj['Key']}: {e}")
+        
+        if not all_docs:
+            logger.warning(" No documents collected for indexing")
+            return
+        
+        logger.info(f" Creating master index with {len(all_docs)} documents")
+        
+        # Create new master index
+        with tempfile.TemporaryDirectory() as tmpdir:
+            master_store = FAISS.from_documents(all_docs, embeddings)
+            master_store.save_local(tmpdir)
+            
+            # Upload to S3
+            s3_client = get_s3_client()
+            s3_client.upload_file(os.path.join(tmpdir, "index.faiss"), BUCKET, "vector_store/master/index.faiss")
+            s3_client.upload_file(os.path.join(tmpdir, "index.pkl"), BUCKET, "vector_store/master/index.pkl")
+        
+        # Clear cache to force reload
+        if "master_index" in _faiss_cache:
+            del _faiss_cache["master_index"]
+        
+        logger.info(" Master index rebuilt successfully")
+        
+    except Exception as e:
+        logger.error(f" Failed to rebuild master index: {e}")
+        raise
+
+@retry_with_backoff(max_retries=2)
+def preload_master_index(force_reload=False):
+    """Preload master FAISS index with automatic update detection."""
+    from langchain_community.vectorstores import FAISS
+    import shutil
+    from datetime import datetime
+    
+    global _index_s3_timestamp
+    cache_key = "master_index"
+    cache_dir = "/tmp/master_index"
+    s3_client = get_s3_client()
+    
+    # FORCE RELOAD: Always check S3 for updates
+    try:
+        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+        s3_last_modified = s3_obj['LastModified'].timestamp()
+        
+        # If we have a cached index, check if S3 version is newer
+        if cache_key in _faiss_cache and _index_s3_timestamp is not None:
+            if s3_last_modified > _index_s3_timestamp:
+                logger.info(f"S3 index updated (cached: {datetime.fromtimestamp(_index_s3_timestamp)}, S3: {datetime.fromtimestamp(s3_last_modified)}), reloading...")
+                del _faiss_cache[cache_key]
+                # Also clear disk cache
+                if os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir)
+            else:
+                logger.info("Master index cached and up-to-date")
+                return
+        elif cache_key in _faiss_cache:
+            logger.info("Master index already cached, checking S3...")
+            # Still check if we should reload
+            if _index_s3_timestamp is not None and s3_last_modified > _index_s3_timestamp:
+                logger.info("S3 has newer version, reloading...")
+                del _faiss_cache[cache_key]
+                if os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir)
+            else:
+                return
+            
+    except s3_client.exceptions.ClientError as e:
+        if e.response.get('Error', {}).get('Code') == '404':
+            logger.info("No master index exists yet, rebuilding...")
+            rebuild_master_index()
+            return
+        logger.warning(f"Error checking S3 index timestamp: {type(e).__name__}")
+        return
+    
+    if os.path.exists(cache_dir):
+        shutil.rmtree(cache_dir)
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    index_file = os.path.join(cache_dir, "index.faiss")
+    pkl_file = os.path.join(cache_dir, "index.pkl")
+    
+    start_time = time.time()
+    # Download files in parallel for faster startup
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.faiss", index_file)
+        future2 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.pkl", pkl_file)
+        concurrent.futures.wait([future1, future2])
+    
+    embeddings = get_embeddings_client()
+    master_index = FAISS.load_local(cache_dir, embeddings, allow_dangerous_deserialization=True)
+    _faiss_cache[cache_key] = master_index
+    
+    # Store S3 timestamp for future comparisons
+    try:
+        s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+        _index_s3_timestamp = s3_obj['LastModified'].timestamp()
+    except:
+        _index_s3_timestamp = time.time()
+    
+    logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors in {time.time() - start_time:.2f}s")
+
+try:
+    preload_master_index()
+except Exception as e:
+    import traceback
+    logger.error(f"Startup preload failed: {type(e).__name__}")
+    logger.error(f"Error details: {str(e)}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
+
+
+
 def cors_response(body=None, status=200):
     """Return a standard CORS-enabled response."""
     return {
@@ -800,183 +1047,6 @@ def handle_list_files_api(event):
         logger.error(f" List files error: {type(e).__name__}")
         return cors_response({"error": "Failed to list files"}, 500)
 
-def get_document_context(metadata, base_name):
-    """Extract rich document-level context for chunk enrichment."""
-    context_parts = [f"Document: {base_name}"]
-    
-    # Add text preview summary
-    text_preview = metadata.get('text_preview', '').strip()
-    if text_preview:
-        first_line = text_preview.split('\n')[0][:80].strip()
-        if first_line:
-            context_parts.append(f"Subject: {first_line}")
-    
-    # Add visual context from first image
-    images = metadata.get('images', [])
-    if images:
-        first_img = images[0].get('description', '')
-        if 'BRAND:' in first_img:
-            brand = first_img.split('BRAND:')[1].split('\n')[0].strip()
-            if brand and brand.lower() != 'none visible':
-                context_parts.append(f"Brand: {brand}")
-    
-    return " | ".join(context_parts)
-
-def rebuild_master_index():
-    """Rebuild master index from all remaining processed documents."""
-    try:
-        from langchain_community.vectorstores import FAISS
-        from langchain.docstore.document import Document
-        import tempfile
-        
-        logger.info(" Rebuilding master index...")
-        
-        # Get all processed documents
-        processed_objects = list_all_s3_objects(BUCKET, "processed/")
-        if not processed_objects:
-            logger.info(" No documents to index, deleting master index")
-            try:
-                s3_client = get_s3_client()
-                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-                s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.pkl")
-            except:
-                pass
-            # Clear cache
-            if "master_index" in _faiss_cache:
-                del _faiss_cache["master_index"]
-            return
-        
-        embeddings = get_embeddings_client()
-        all_docs = []
-        
-        # Collect all documents from processed files
-        for obj in processed_objects:
-            if not obj['Key'].endswith('.json'):
-                continue
-            
-            try:
-                # Get processed metadata
-                s3_client = get_s3_client()
-                response = s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])
-                metadata = json.loads(response['Body'].read().decode('utf-8'))
-                
-                source_file = metadata.get('source_file', '')
-                # Use string split instead of os.path.basename to preserve Hebrew/Unicode
-                base_name = source_file.split('/')[-1].replace('.pdf', '')
-                
-                # Get rich document context
-                context_prefix = get_document_context(metadata, base_name)
-                
-                # Get full text from metadata (not just preview)
-                full_text = metadata.get('full_text', metadata.get('text_preview', ''))
-                if full_text:
-                    # Use smaller chunks for better ranking
-                    from langchain.text_splitter import RecursiveCharacterTextSplitter
-                    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-                    chunks = splitter.split_text(full_text)
-                    
-                    for i, chunk in enumerate(chunks):
-                        doc = Document(
-                            page_content=f"Document: {base_name}\n{chunk}",
-                            metadata={
-                                "source": base_name,
-                                "source_file": source_file,  # Full S3 path
-                                "s3_key": source_file,  # Include S3 key
-                                "chunk_id": i
-                            }
-                        )
-                        all_docs.append(doc)
-                
-                # Add image documents with surrounding text context
-                images = metadata.get('images', [])
-                # Filter out small images BEFORE numbering
-                filtered_images = []
-                for img_meta in images:
-                    s3_key = img_meta.get('s3_key', '')
-                    # Skip tiny images (same logic as search)
-                    if s3_key:
-                        try:
-                            s3_obj = s3_client.head_object(Bucket=BUCKET, Key=s3_key)
-                            file_size = s3_obj.get('ContentLength', 0)
-                            if file_size < 10000:  # 10KB minimum
-                                continue
-                        except:
-                            pass
-                    filtered_images.append(img_meta)
-                
-                # Now number the filtered images
-                for idx, img_meta in enumerate(filtered_images, 1):
-                    img_desc = img_meta.get('description', 'Image')
-                    s3_key = img_meta.get('s3_key', '')
-                    page = img_meta.get('page')
-                    
-                    # Extract text context around the image (few lines before/after)
-                    text_context = img_meta.get('text_context', '')
-                    if not text_context and full_text and page:
-                        # Fallback: extract text near the page number
-                        lines = full_text.split('\n')
-                        context_lines = []
-                        for i, line in enumerate(lines):
-                            if f'page {page}' in line.lower() or f'עמוד {page}' in line:
-                                # Get 3 lines before and after
-                                start = max(0, i-3)
-                                end = min(len(lines), i+4)
-                                context_lines = lines[start:end]
-                                break
-                        text_context = ' '.join(context_lines).strip()[:300]
-                    
-                    # Build page content with context
-                    if page is not None:
-                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\nPage {page}: {img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|PAGE:{page}|SOURCE:{base_name}"
-                    else:
-                        page_content = f"Document: {base_name}\nIMAGE NUMBER {idx} | Image #{idx} | Image number {idx} | תמונה מספר {idx}\n{img_desc}\nContext: {text_context}\nIMAGE_URL:{s3_key}|SOURCE:{base_name}"
-                    
-                    img_doc = Document(
-                        page_content=page_content,
-                        metadata={
-                            "source": base_name,
-                            "source_file": source_file,  # Full S3 path
-                            "s3_key": s3_key,
-                            "uploaded_name": source_file.split('/')[-1] if source_file else '',
-                            "type": "image",
-                            "page": page,
-                            "image_number": idx,
-                            "image_url": img_meta.get('url', ''),
-                            "context_summary": context_prefix,
-                            "text_context": text_context
-                        }
-                    )
-                    all_docs.append(img_doc)
-                    
-            except Exception as e:
-                logger.error(f" Failed to process {obj['Key']}: {e}")
-        
-        if not all_docs:
-            logger.warning(" No documents collected for indexing")
-            return
-        
-        logger.info(f" Creating master index with {len(all_docs)} documents")
-        
-        # Create new master index
-        with tempfile.TemporaryDirectory() as tmpdir:
-            master_store = FAISS.from_documents(all_docs, embeddings)
-            master_store.save_local(tmpdir)
-            
-            # Upload to S3
-            s3_client = get_s3_client()
-            s3_client.upload_file(os.path.join(tmpdir, "index.faiss"), BUCKET, "vector_store/master/index.faiss")
-            s3_client.upload_file(os.path.join(tmpdir, "index.pkl"), BUCKET, "vector_store/master/index.pkl")
-        
-        # Clear cache to force reload
-        if "master_index" in _faiss_cache:
-            del _faiss_cache["master_index"]
-        
-        logger.info(" Master index rebuilt successfully")
-        
-    except Exception as e:
-        logger.error(f" Failed to rebuild master index: {e}")
-        raise
-
 def handle_batch_delete_api(event):
     """API Gateway handler for rebuilding index after batch delete."""
     try:
@@ -1244,48 +1314,13 @@ def handle_search_action(event):
         if any(word in original_lower.split() for word in ['picture', 'photo', 'image', 'drawing', 'תמונה', 'תמונות']):
             image_signals += 1
         
-        # Decision based on signal strength
-        if image_signals >= 10:
-            # Strong visual command detected - IMAGES ONLY
-            wants_images = True
-            wants_text = False
-            logger.info(f"🖼️ Intent: IMAGES (signals: text={text_signals}, image={image_signals})")
-        elif text_signals > image_signals:
-            wants_text = True
-            wants_images = False
-            logger.info(f"📄 Intent: TEXT (signals: text={text_signals}, image={image_signals})")
-        elif image_signals > text_signals:
-            wants_images = True
-            wants_text = False
-            logger.info(f"🖼️ Intent: IMAGES (signals: text={text_signals}, image={image_signals})")
-        else:
-            # Equal or no strong signals = hybrid
-            wants_text = True
-            wants_images = True
-            logger.info(f"🔄 Intent: HYBRID (signals: text={text_signals}, image={image_signals})")
-        
-        # 2. Wide Retrieval with fuzzy matching
-        vector_start = time.time()
-        
-        # Check for specific image number request (e.g., "image 5", "איור מספר 5")
-        import re
-        image_number_match = re.search(r'(?:image|picture|photo|diagram|תמונה|תמונות|איור|דיאגרמה)\s*(?:number|num|#|מספר)?\s*(\d+)', original_input)
-        requested_image_num = None
-        if image_number_match:
-            requested_image_num = int(image_number_match.group(1))
-            logger.info(f"🔢 Specific image number requested: {requested_image_num}")
-        
-        # Extract document name - try to match against actual document names in index
-        doc_filter = None
-        
-        # For specific image number requests, search MORE results to ensure we find it
-        search_k = 100 if requested_image_num else 50
-        
         # Extract document name early to use in search
         doc_name_in_query = None
         # Decode HTML entities FIRST (e.g., &quot; -> ")
         import html
-        decoded_input = html.unescape(original_input)
+        # CRITICAL: Use the agent's reformulated query for extraction, not original input
+        # The agent adds document context that the user didn't explicitly state
+        decoded_input = html.unescape(query)  # Changed from original_input to query
         
         # Extended patterns to match various document reference formats
         # Including Hebrew: "מהמסמך" = "from document", 'הצעת מחיר - חברת ליידוס' etc
@@ -1315,30 +1350,84 @@ def handle_search_action(event):
                     doc1 = match.group(1).strip().rstrip('.,;:!? \t')
                     doc2 = match.group(2).strip().rstrip('.,;:!? \t')
                     logger.info(f"🔍 Pattern {i} matched (COMPARISON): '{doc1}' AND '{doc2}'")
-                    # CRITICAL: Don't set doc_name_in_query for comparison queries
-                    # This prevents the code from trying to filter to a single document
-                    # Instead, we'll search across ALL documents and let semantic search find both
                     doc_name_in_query = None
                     break
                 else:
-                    # For quoted patterns, group 1 is the content; for others, may be group 1 or 2
                     doc_name_in_query = match.group(1).strip()
                     logger.info(f"🔍 Pattern {i} matched: '{doc_name_in_query}'")
-                    # Remove trailing punctuation and file extensions
                     doc_name_in_query = doc_name_in_query.rstrip('.,;:!? \t')
                     if doc_name_in_query.endswith('.pdf'):
                         doc_name_in_query = doc_name_in_query[:-4]
                     logger.info(f"🔍 Extracted doc name: '{doc_name_in_query}'")
                     break
         
-        # CRITICAL FIX: If document name specified, search by document name to find the right document
-        if doc_name_in_query:
-            # Search by document name to find the right document
-            search_query = f"Document: {doc_name_in_query}"
-            logger.info(f"🔍 Searching by document name: '{search_query}'")
+        # FALLBACK: If no pattern matched, try to extract document-like pattern from query
+        if doc_name_in_query is None:
+            logger.info(f"🔍 FALLBACK: Trying to extract from: '{decoded_input}'")
+            doc_pattern = re.search(r'(\d+-\d+-[A-Za-z0-9-]+)', decoded_input)
+            if doc_pattern:
+                logger.info(f"🔍 FALLBACK: Pattern 1 matched: '{doc_pattern.group(1)}'")
+            else:
+                logger.info(f"🔍 FALLBACK: Pattern 1 failed, trying pattern 2")
+                doc_pattern = re.search(r'([A-Za-z0-9]+-[A-Za-z0-9-]+(?:-[A-Za-z0-9]+)*)', decoded_input)
+                if doc_pattern:
+                    logger.info(f"🔍 FALLBACK: Pattern 2 matched: '{doc_pattern.group(1)}'")
+            if doc_pattern:
+                doc_name_in_query = doc_pattern.group(1).strip().rstrip('.,;:!? \t')
+                if doc_name_in_query.endswith('.pdf'):
+                    doc_name_in_query = doc_name_in_query[:-4]
+                logger.info(f"🔍 Fallback extracted document name: '{doc_name_in_query}'")
+            else:
+                logger.info(f"🔍 FALLBACK: No pattern matched in query")
+        
+        # Decision based on signal strength
+        if image_signals >= 10:
+            # Strong visual command detected - IMAGES ONLY
+            wants_images = True
+            wants_text = False
+            logger.info(f"🖼️ Intent: IMAGES (signals: text={text_signals}, image={image_signals})")
+        elif text_signals > image_signals:
+            # CRITICAL FIX: When asking about a specific document, ALWAYS include text
+            if doc_name_in_query:
+                wants_text = True
+                wants_images = True  # Include images as supplementary
+                logger.info(f"📄 Intent: TEXT+IMAGES (doc-specific): text={text_signals}, image={image_signals}")
+            else:
+                wants_text = True
+                wants_images = False
+                logger.info(f"📄 Intent: TEXT ONLY: text={text_signals}, image={image_signals}")
         else:
-            search_query = query
-            logger.info(f"🔍 No document name found, searching by query: '{search_query}'")
+            # Equal or no strong signals = hybrid
+            wants_text = True
+            wants_images = True
+            logger.info(f"🔄 Intent: HYBRID (signals: text={text_signals}, image={image_signals})")
+        
+        # 2. Wide Retrieval with fuzzy matching
+        vector_start = time.time()
+        
+        # Check for specific image number request (e.g., "image 5", "איור מספר 5")
+        image_number_match = re.search(r'(?:image|picture|photo|diagram|תמונה|תמונות|איור|דיאגרמה)\s*(?:number|num|#|מספר)?\s*(\d+)', original_input)
+        requested_image_num = None
+        if image_number_match:
+            requested_image_num = int(image_number_match.group(1))
+            logger.info(f"🔢 Specific image number requested: {requested_image_num}")
+        
+        # Extract document name - try to match against actual document names in index
+        doc_filter = None
+        
+        # For specific image number requests, search MORE results to ensure we find it
+        # CRITICAL: When document specified, search MORE to get both text and images
+        if requested_image_num:
+            search_k = 100
+        elif doc_name_in_query:
+            search_k = 200  # Need more results to get text chunks for specific doc
+        else:
+            search_k = 50
+        
+        # CRITICAL FIX: Always search with the original query to get both text and images
+        # Document filtering happens AFTER the search
+        search_query = query
+        logger.info(f"🔍 Searching with query: '{search_query}'")
         
         raw_results = master_index.similarity_search_with_score(search_query, k=search_k)
         logger.info(f"⏱️ SEARCH: Vector search (k={search_k}) took {time.time() - vector_start:.3f}s, found {len(raw_results)} results")
@@ -1399,7 +1488,6 @@ def handle_search_action(event):
                     
                     # CRITICAL FIX: Also remove number prefixes like "25-1278700-"
                     # Pattern: digits-digits-rest
-                    import re
                     prefix_match = re.match(r'^\d+-\d+-(.+)$', normalized_source)
                     if prefix_match:
                         normalized_source = prefix_match.group(1)
@@ -1453,6 +1541,11 @@ def handle_search_action(event):
                     source_file = doc.metadata.get('source_file', source)  # Fallback to source
                     s3_key = doc.metadata.get('s3_key', source)  # Fallback to source
                     uploaded_name = doc.metadata.get('uploaded_name', '')
+                    doc_type = doc.metadata.get('type', 'unknown')
+                    
+                    # DEBUG: Log first few results to see what's being filtered
+                    if len(filtered) < 5:
+                        logger.info(f"🔍 Checking result: type={doc_type}, source='{source}', doc_filter='{doc_filter}'")
                     
                     # If uploaded_name is empty, try to extract from source
                     if not uploaded_name and source:
@@ -1465,6 +1558,8 @@ def handle_search_action(event):
                         s3_key.split('/')[-1].replace('.pdf', '') == doc_filter if s3_key else False or
                         uploaded_name == doc_filter):
                         filtered.append((doc, score))
+                        if len(filtered) <= 5:
+                            logger.info(f"✅ MATCH: type={doc_type}, source='{source}'")
                 
                 if filtered:
                     raw_results = filtered
@@ -1484,22 +1579,21 @@ def handle_search_action(event):
         stop_words = {'show', 'me', 'the', 'a', 'an', 'in', 'of', 'with', 'from', 'to', 'for', 'and', 'or', 'image', 'picture', 'photo', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their', 'about', 'tell', 'what', 'how', 'why', 'when', 'where', 'file', 'document', 'pdf'}
         query_terms = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
         
-        # Boost results where document name matches query terms
-        doc_name_boost = 0
-        for term in query_terms:
-            if term in ['project', 'chapter', 'section', 'document']:
-                continue  # Skip generic terms
-            # Check if term appears in any document metadata
-            doc_name_boost = 0.3  # Will apply per-result below
-        
         # Re-score results with fuzzy matching boost and document name matching
         fuzzy_results = []
         for doc, semantic_score in raw_results:
             content_lower = doc.page_content.lower()
             source = doc.metadata.get('source', '').lower()
+            is_text = doc.metadata.get('type') != 'image'
             
             # Calculate fuzzy match score for each query term
             fuzzy_boost = 0
+            
+            # CRITICAL: When specific document requested, MASSIVELY boost text chunks
+            if doc_filter and is_text:
+                fuzzy_boost += 10.0  # Huge boost for text when doc specified
+                logger.info(f"📄 Text chunk from requested doc: +10.0 boost")
+            
             for term in query_terms:
                 # VERY STRONG BOOST: Document name matches query term
                 if term in source:
@@ -1529,12 +1623,15 @@ def handle_search_action(event):
         text_candidates = []
         image_candidates = []
         for doc, score in raw_results:
-            if doc.metadata.get('type') == 'image':
-                desc = doc.page_content.lower()
-                s3_key = doc.metadata.get('s3_key', '')
-                
+            is_image = doc.metadata.get("type") == "image"
+            
+            if is_image:
                 # SKIP filtering if user requested a specific image number
                 if not requested_image_num:
+                    # Get image description for filtering
+                    img_desc = doc.metadata.get('description', '').lower()
+                    s3_key = doc.metadata.get('s3_key', '')
+                    
                     # Filter out tiny images (logos, icons < 10KB)
                     if s3_key:
                         try:
@@ -1556,16 +1653,19 @@ def handle_search_action(event):
                     
                     should_exclude = False
                     for pattern_group in exclude_patterns:
-                        if any(pattern in desc for pattern in pattern_group):
+                        if any(pattern in img_desc for pattern in pattern_group):
                             logger.info(f"Filtering out: {doc.metadata.get('source', '')} - matched: {pattern_group}")
                             should_exclude = True
                             break
                     
                     if should_exclude:
                         continue
-                    
+                
                 image_candidates.append((doc, score))
             else:
+                # Text chunk - boost if specific document requested
+                if doc_filter:
+                    score = score * 0.7  # Lower score = better match
                 text_candidates.append((doc, score))
         
         # 4. Select Best Results based on Intent
@@ -1756,7 +1856,6 @@ def handle_search_action(event):
                 logger.info(f"User requested ALL images, returning {num_images}")
             else:
                 # Check for explicit number request (e.g., "5 diagrams", "show 3 images")
-                import re
                 num_match = re.search(r'\b(\d+)\s*(?:image|diagram|picture|photo)', original_lower)
                 if num_match:
                     num_images = min(int(num_match.group(1)), 20)  # Max 20
@@ -1779,17 +1878,42 @@ def handle_search_action(event):
             final_results.extend(scored_images[:num_images])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - return top 5 most relevant chunks with FULL context
-            final_results.extend(text_candidates[:5])
-            logger.info(f"📄 TEXT ONLY: Selected top {len(text_candidates[:5])} text chunks (full context), skipped {len(image_candidates)} images")
-            
+            # PURE TEXT QUERY - return top 30 most relevant chunks with FULL context
+            # For document-specific queries, ensure we get text chunks even if scores are low
+            if doc_filter and len(text_candidates) > 0:
+                final_results.extend(text_candidates[:30])
+                logger.info(f"📄 TEXT ONLY (doc-specific): Selected {len(text_candidates[:30])} text chunks from {doc_filter}")
+            elif len(text_candidates) > 0:
+                final_results.extend(text_candidates[:30])
+                logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:30])} text chunks")
+            else:
+                logger.warning("⚠️ No text candidates found, falling back to hybrid")
+                final_results.extend(image_candidates[:3])
         else:
-            # HYBRID QUERY - balanced mix with full context
-            final_results.extend(text_candidates[:3])
-            final_results.extend(image_candidates[:2])
-            final_results.sort(key=lambda x: x[1])
+            # HYBRID MODE - return both text and images
+            # CRITICAL FIX: When specific document requested, prioritize TEXT heavily
+            if doc_filter:
+                # Return ALL text chunks from the document (user wants to know about it)
+                final_results.extend(text_candidates)  # All text from the document
+                # Add a few relevant images as supplementary
+                final_results.extend(image_candidates[:3])
+                logger.info(f"📄 HYBRID (doc-specific): Selected ALL {len(text_candidates)} text chunks + {len(image_candidates[:3])} images")
+            else:
+                # General query - balanced mix
+                final_results.extend(text_candidates[:30])
+                final_results.extend(image_candidates[:3])
+                logger.info(f"🔄 HYBRID: Selected {len(text_candidates[:30])} text + {len(image_candidates[:3])} images")
         
-        format_start = time.time()
+        # Log what we're about to format
+        logger.info(f"Final results count: {len(final_results)}")
+        if final_results:
+            text_count = sum(1 for doc, _ in final_results if doc.metadata.get('type') != 'image')
+            image_count = sum(1 for doc, _ in final_results if doc.metadata.get('type') == 'image')
+            logger.info(f"Result breakdown: {text_count} text chunks, {image_count} images")
+            for i, (doc, score) in enumerate(final_results[:5]):
+                content_preview = doc.page_content[:150].replace('\n', ' ')
+                logger.info(f"Result {i}: type={doc.metadata.get('type', 'text')}, score={score:.3f}, preview={content_preview}")
+        
         all_results = []
         for doc, score in final_results:
             source = doc.metadata.get('source', 'unknown')
@@ -1809,7 +1933,6 @@ def handle_search_action(event):
                 source_label = source
             
             all_results.append((raw_content, source_label))
-        logger.info(f"⏱️ SEARCH: Format results took {time.time() - format_start:.3f}s")
         logger.info(f"⏱️ SEARCH: TOTAL search took {time.time() - vector_start:.3f}s with {len(all_results)} results, best_score={final_results[0][1] if final_results else 'N/A'}")
         logger.info(f"Intent: wants_images={wants_images}, wants_text={wants_text} | Candidates: text={len(text_candidates)}, images={len(image_candidates)} | Final: {len(final_results)}")
         
@@ -1819,27 +1942,39 @@ def handle_search_action(event):
                 content_preview = doc.page_content[:100].replace('\n', ' ')
                 doc_type = doc.metadata.get('type', 'text')
                 logger.info(f"Result {i+1}: score={score:.3f}, type={doc_type}, content={content_preview}...")
+                # CRITICAL DEBUG: Check if "text" type actually contains text
+                if doc_type == 'text' and ('Image from' in doc.page_content or 'IMAGE_URL:' in doc.page_content):
+                    logger.error(f"🚨 BUG: Text chunk contains image data! Metadata: {doc.metadata}")
         
         if not all_results:
             result = "No relevant information found."
         else:
-            # [OLD BUGGY CODE REMOVED]
-            # if has_images:
-            #    ... only returned IMAGE_URLs ...
-            # else:
-            #    ... returned text ...
+            # CRITICAL FIX: Always include text chunks, separate images
+            # This ensures the agent gets both text content AND image references
+            text_parts = []
+            image_parts = []
             
-            # Return results based on intent - NO TRUNCATION, full context
-            result_parts = []
             for content, source in all_results:
                 clean_content = content.strip()
-                # For TEXT-ONLY queries, strip out IMAGE_URL lines
-                if wants_text and not wants_images:
-                    if 'IMAGE_URL:' not in clean_content:
-                        result_parts.append(f"[{source}] {clean_content}")
-                else:
-                    result_parts.append(f"[{source}] {clean_content}")
                 
+                # Check if this is an image result (contains IMAGE_URL marker)
+                if 'IMAGE_URL:' in clean_content:
+                    image_parts.append(f"[{source}] {clean_content}")
+                else:
+                    # This is text content - always include it
+                    text_parts.append(f"[{source}] {clean_content}")
+            
+            # Build result with text first, then images
+            result_parts = []
+            
+            # Always include text content if available
+            if text_parts:
+                result_parts.extend(text_parts)
+            
+            # Add images if user wants them
+            if wants_images and image_parts:
+                result_parts.extend(image_parts)
+            
             result = "\n\n".join(result_parts) if result_parts else "No relevant information found."
         
         # Calculate approximate token usage
@@ -2928,28 +3063,6 @@ def handle_agent_query_async(event):
         if not query or len(query) > 10000:
             return cors_response({"error": "Invalid query"}, 400)
         
-        # Check cache for similar question
-        cached = check_query_cache(query)
-        if cached:
-            logger.info(f"✅ CACHE HIT - Returning instant response")
-            # Generate unique query ID for frontend compatibility
-            query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-            # Write completed status immediately
-            s3_client = get_s3_client()
-            s3_client.put_object(
-                Bucket=BUCKET,
-                Key=f"agent-status/{query_id}.json",
-                Body=json.dumps({
-                    "status": "completed",
-                    "response": cached["response"],
-                    "images": cached.get("images", []),
-                    "sessionId": session_id,
-                    "cached": True
-                }),
-                ContentType="application/json"
-            )
-            return cors_response({"queryId": query_id, "status": "processing"})
-        
         # Generate unique query ID
         query_id = f"query_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         
@@ -2984,75 +3097,6 @@ def handle_agent_query_async(event):
         return cors_response({"error": "Failed to start query"}, 500)
 
 
-def normalize_query_for_cache(query):
-    """Normalize query for cache matching."""
-    import re
-    # Convert to lowercase
-    normalized = query.lower().strip()
-    # Remove extra whitespace
-    normalized = re.sub(r'\s+', ' ', normalized)
-    # Remove punctuation at end
-    normalized = normalized.rstrip('?.!,;:')
-    # Remove common filler words that don't change meaning
-    fillers = ['please', 'can you', 'could you', 'would you', 'tell me', 'show me']
-    for filler in fillers:
-        normalized = normalized.replace(filler, '')
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    return normalized
-
-def check_query_cache(query):
-    """Check if similar query exists in cache."""
-    try:
-        s3_client = get_s3_client()
-        normalized = normalize_query_for_cache(query)
-        query_hash = str(hash(normalized))
-        cache_key = f"query-cache/{query_hash}.json"
-        
-        logger.info(f"Cache check: normalized='{normalized}' hash={query_hash}")
-        
-        try:
-            obj = s3_client.get_object(Bucket=BUCKET, Key=cache_key)
-            cached = json.loads(obj['Body'].read().decode('utf-8'))
-            # Check if cache is less than 24 hours old
-            cache_age = time.time() - cached.get('timestamp', 0)
-            if cache_age < 86400:
-                logger.info(f"✅ CACHE HIT! Age: {cache_age:.0f}s")
-                return cached
-            else:
-                logger.info(f"Cache expired (age: {cache_age:.0f}s)")
-        except s3_client.exceptions.NoSuchKey:
-            logger.info("Cache miss - no matching query found")
-    except Exception as e:
-        logger.warning(f"Cache check failed: {e}")
-    return None
-
-def save_query_cache(query, response, images):
-    """Save query response to cache."""
-    try:
-        s3_client = get_s3_client()
-        normalized = normalize_query_for_cache(query)
-        query_hash = str(hash(normalized))
-        cache_key = f"query-cache/{query_hash}.json"
-        
-        logger.info(f"💾 Saving to cache: normalized='{normalized}' hash={query_hash}")
-        
-        s3_client.put_object(
-            Bucket=BUCKET,
-            Key=cache_key,
-            Body=json.dumps({
-                "query": query,
-                "normalized": normalized,
-                "response": response,
-                "images": images,
-                "timestamp": time.time()
-            }),
-            ContentType="application/json"
-        )
-        logger.info(f"✅ Cache saved successfully")
-    except Exception as e:
-        logger.warning(f"Cache save failed: {e}")
-
-
 def process_agent_query_background(query_id, query, session_id):
     """Process agent query in background and write result to S3."""
     s3_client = get_s3_client()
@@ -3076,6 +3120,17 @@ def process_agent_query_background(query_id, query, session_id):
         )
         time.sleep(0.5)  # Give frontend time to poll
         
+        # Load and compress history BEFORE sending to agent
+        history = load_session_history(session_id)
+        compressed_history = compress_history(history)
+        
+        # Build session attributes with compressed history
+        session_attributes = {}
+        if compressed_history:
+            # Format history for agent context
+            history_text = "\n".join([f"{m['role']}: {m['content']}" for m in compressed_history])
+            session_attributes['conversationHistory'] = history_text[:200000]  # Hard limit for safety
+        
         # Invoke agent with retry
         for attempt in range(3):
             try:
@@ -3084,7 +3139,8 @@ def process_agent_query_background(query_id, query, session_id):
                     agentAliasId=alias_id,
                     sessionId=session_id,
                     inputText=query,
-                    enableTrace=False
+                    enableTrace=False,
+                    sessionState={'sessionAttributes': session_attributes} if session_attributes else {}
                 )
                 break
             except Exception as e:
@@ -3125,9 +3181,6 @@ def process_agent_query_background(query_id, query, session_id):
                 except:
                     pass
         answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
-        
-        # Save to cache
-        save_query_cache(query, answer, images)
         
         # Write success to S3
         s3_client.put_object(
