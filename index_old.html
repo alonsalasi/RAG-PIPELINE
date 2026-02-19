@@ -1,0 +1,2029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Document Assistant - Secure</title>
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.6/dist/amazon-cognito-identity.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" crossorigin="anonymous"></script>
+  <style>
+    :root { --primary-color: #007bff; --secondary-color: #6c757d; --bg-light: #f8f9fa; --bg-white: #ffffff; --border-color: #dee2e6; --text-dark: #343a40; --text-light: #6c757d; --error-color: #dc3545; }
+    * { box-sizing: border-box; margin:0; padding:0; }
+    html, body { margin:0 !important; padding:0 !important; height:100vh; width:100vw; overflow:hidden; }
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; background-color:var(--bg-light); color:var(--text-dark); }
+    body.logged-in { display:flex; flex-direction:row; height:100vh; width:100vw; overflow:hidden; }
+    .sidebar { width:320px; min-width:320px; max-width:320px; background-color:var(--bg-white); border-right:1px solid var(--border-color); padding:20px; display:flex; flex-direction:column; overflow-y:auto; gap:20px; height:100vh; flex-shrink:0; }
+    .container { flex:1; display:flex; flex-direction:column; overflow:hidden; background-color:var(--bg-light); height:100vh; min-height:0; min-width:0; }
+    .sidebar h3 { margin:0; color:var(--text-dark); border-bottom:1px solid var(--border-color); padding-bottom:10px; font-size:1.1em; font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+    .upload-section { background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:12px; padding:20px; box-shadow:0 4px 6px rgba(0,0,0,.1);}
+    .upload-section h3 { color:white; border:none; margin-bottom:15px; font-size:1em;}
+    .upload-box { background:rgba(255,255,255,.95); border-radius:8px; padding:15px; border:2px dashed #667eea;}
+    .upload-box input[type="file"] { display:none;}
+    .upload-box label { display:block; padding:12px; background:white; border:1px solid var(--border-color); border-radius:6px; cursor:pointer; text-align:center; font-size:.85em; color:var(--text-light); margin-bottom:10px; transition:all .2s;}
+    .upload-box label:hover { background:var(--bg-light); border-color:var(--primary-color);}
+    .upload-box button { width:100%; padding:10px; background:#667eea; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:.9em;}
+    .upload-box button:hover { background:#5568d3;}
+    .upload-box button.cancel { background:#dc3545; margin-top:8px;}
+    .upload-box button.cancel:hover { background:#c82333;}
+    #upload-status { font-size:.8em; color:#333; margin-top:10px; font-weight:500;}
+    .progress-item { margin:8px 0; padding:8px; background:#f8f9fa; border-radius:6px; position:relative; }
+    .progress-name { font-size:.85em; margin-bottom:4px; color:#495057; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .progress-bar-bg { height:6px; background:#e9ecef; border-radius:3px; overflow:hidden;}
+    .progress-bar-fill { height:100%; background:linear-gradient(90deg, #667eea, #764ba2); transition:width .3s; border-radius:3px;}
+    .progress-status { font-size:.75em; color:#6c757d; margin-top:4px;}
+    .progress-item { position:relative; }
+    .progress-item .delete-btn { position:absolute; top:4px; right:4px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:12px; padding:4px 6px; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; z-index:10; }
+    .progress-item .delete-btn:hover { color:white; background:#dc3545; }
+    .progress-container { max-height:200px; overflow-y:auto; margin-top:10px;}
+    .progress-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .progress-header h4 { margin:0; font-size:.9em; color:#495057; }
+    .toggle-btn { background:none; border:none; cursor:pointer; font-size:1.2em; padding:0 4px; color:#6c757d; }
+    .toggle-btn:hover { color:#495057; }
+    .progress-container.collapsed { display:none; }
+    #file-list { list-style:none; padding:0; margin:0; flex-grow:1;}
+    #file-list li { padding:10px 5px; border-bottom:1px solid #eee; font-size:0.9em; color:var(--text-light); word-wrap:break-word; overflow-wrap:break-word; display:flex; justify-content:space-between; align-items:center;}
+    .delete-btn { background:none; border:none; color:var(--error-color); cursor:pointer; font-size:16px; padding:0 6px;}
+    .header { background-color:var(--primary-color); color:white; padding:16px 20px; text-align:center; font-size:1.2em; font-weight:600; box-shadow:0 2px 4px rgba(0,0,0,.05); z-index:10; display:flex; justify-content:space-between; align-items:center;}
+    .tab-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:0.9em; transition:all 0.3s; }
+    .tab-btn:hover { background:rgba(255,255,255,0.3); }
+    .tab-btn.active { background:white; color:var(--primary-color); font-weight:600; }
+    .autofill-stage { background:white; padding:30px; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+    .autofill-stage h3 { color:#333; margin-bottom:15px; font-size:1.3em; }
+    .autofill-stage input[type="file"] { padding:10px; border:2px dashed #dee2e6; border-radius:8px; width:100%; cursor:pointer; }
+    .autofill-stage input[type="file"]:hover { border-color:var(--primary-color); background:#f8f9fa; }
+    .user-info { font-size:0.8em; display:flex; gap:10px; align-items:center;}
+    .logout-btn { background:rgba(255,255,255,0.2); border:none; color:white; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em;}
+    .logout-btn:hover { background:rgba(255,255,255,0.3);}
+    .chat-log { flex:1; min-height:0; padding:20px; overflow-y:auto; background-color:#fdfdfd; height:0; }
+    .message { margin-bottom:15px; padding:12px 18px; border-radius:18px; max-width:80%; line-height:1.5; }
+    .user-message { background-color:var(--primary-color); color:white; align-self:flex-end; margin-left:auto; border-bottom-right-radius:4px;}
+    .assistant-message { background-color:var(--bg-white); border:1px solid var(--border-color); align-self:flex-start; border-bottom-left-radius:4px; unicode-bidi:plaintext; }
+    .assistant-message h1 { font-size:1.5em; margin:10px 0; border-bottom:2px solid #eee; padding-bottom:5px; }
+    .assistant-message h2 { font-size:1.3em; margin:10px 0; border-bottom:1px solid #eee; padding-bottom:5px; }
+    .assistant-message h3 { font-size:1.1em; margin:8px 0; font-weight:600; }
+    .assistant-message pre { background:#f5f5f5; padding:10px; border-radius:4px; overflow-x:auto; margin:10px 0; }
+    .assistant-message code { background:#f5f5f5; padding:2px 6px; border-radius:3px; font-family:monospace; font-size:0.9em; }
+    .assistant-message pre code { background:none; padding:0; }
+    .assistant-message ul, .assistant-message ol { margin:10px 0; padding-left:25px; }
+    .assistant-message li { margin:5px 0; }
+    .assistant-message strong { font-weight:600; }
+    .assistant-message em { font-style:italic; }
+    .assistant-message table { border-collapse:collapse; width:100%; margin:15px 0; }
+    .assistant-message table th { background:#f0f0f0; padding:10px; border:1px solid #ddd; font-weight:600; text-align:left; }
+    .assistant-message table td { padding:10px; border:1px solid #ddd; }
+    .assistant-message table tr:nth-child(even) { background:#f9f9f9; }
+    .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
+    .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
+    .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
+    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none; }
+    .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em; transition:transform 0.1s, opacity 0.1s;}
+    .btn:active { transform:scale(0.95); opacity:0.8; }
+    .btn:disabled { opacity:0.6; cursor:not-allowed; }
+    .files-section { flex-grow:1; display:flex; flex-direction:column;}
+    .files-section h3 { margin-bottom:10px;}
+    .file-actions { display:flex; gap:8px; margin-bottom:10px; align-items:center; }
+    .file-actions button { padding:6px 12px; font-size:0.85em; border:none; border-radius:4px; cursor:pointer; }
+    .file-actions .delete-selected { background:#dc3545; color:white; }
+    .file-actions .delete-selected:hover { background:#c82333; }
+    .file-actions .delete-selected:disabled { background:#ccc; cursor:not-allowed; }
+    .file-checkbox { margin-right:8px; cursor:pointer; width:16px; height:16px; }
+    .spinner { width:16px; height:16px; border:2px solid currentColor; border-bottom-color:transparent; border-radius:50%; display:inline-block; animation:spin 1s linear infinite;}
+    @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+    #login-screen, #change-password-screen, #mfa-screen, #totp-setup-screen { display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding:20px;}
+    .login-box { background:white; padding:50px 40px; border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,0.3); max-width:420px; width:100%; box-sizing:border-box;}
+    .login-box h2 { margin:0 0 30px 0; color:var(--text-dark); text-align:center; font-size:1.8em; font-weight:700;}
+    .login-box input { width:100%; padding:14px 16px; margin-bottom:16px; border:2px solid var(--border-color); border-radius:8px; font-size:1em; box-sizing:border-box; transition:border-color 0.3s;}
+    .login-box input:focus { outline:none; border-color:var(--primary-color);}
+    .login-box button { width:100%; padding:14px; background:var(--primary-color); color:white; border:none; border-radius:8px; cursor:pointer; font-size:1.05em; font-weight:600; margin-top:10px; transition:background 0.3s;}
+    .login-box button:hover { background:#0056b3;}
+    .login-box button:disabled { background:#ccc; cursor:not-allowed;}
+    .error-msg { color:var(--error-color); font-size:0.9em; margin-top:15px; text-align:center; padding:10px; background:#fff5f5; border-radius:6px; border:1px solid #ffdddd;}
+    .chat-history-sidebar { width:280px; background:#fff; border-left:1px solid #dee2e6; padding:15px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; transition:width 0.3s; }
+    .chat-history-sidebar.minimized { width:50px; padding:10px; }
+    .chat-history-sidebar.minimized .new-chat-btn, .chat-history-sidebar.minimized .chat-history-list, .chat-history-sidebar.minimized .chat-history-header span, .chat-history-sidebar.minimized .chat-history-toggle { display:none; }
+    .chat-history-header { font-weight:600; font-size:1.1em; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
+    .chat-history-toggle { background:none; border:none; cursor:pointer; font-size:1.2em; padding:0 4px; color:#6c757d; }
+    .chat-history-toggle:hover { color:#495057; }
+    .minimize-sidebar-btn { position:absolute; top:15px; right:15px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; cursor:pointer; padding:6px 10px; font-size:1.2em; color:#6c757d; transition:all 0.2s; }
+    .minimize-sidebar-btn:hover { background:#e9ecef; color:#495057; }
+    .chat-history-sidebar.minimized .minimize-sidebar-btn { position:static; margin:0 auto; }
+    .chat-history-list { display:flex; flex-direction:column; gap:10px; }
+    .chat-history-list.collapsed { display:none; }
+    .chat-item { padding:10px 12px; background:#f8f9fa; border-radius:8px; cursor:pointer; transition:all 0.2s; border:1px solid #e0e0e0; position:relative; }
+    .chat-item:hover { background:#e9ecef; transform:translateX(-2px); }
+    .chat-item.active { background:#007bff; color:white; border-color:#007bff; }
+    .chat-item-title { font-size:0.9em; font-weight:500; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:30px; }
+    .chat-item-time { font-size:0.75em; opacity:0.7; }
+    .chat-item-delete { position:absolute; top:8px; right:8px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:12px; padding:4px 6px; border-radius:4px; width:24px; height:24px; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
+    .chat-item-delete:hover { background:#dc3545; color:white; }
+    .chat-item.active .chat-item-delete { background:rgba(255,255,255,0.2); color:white; }
+    .chat-item.active .chat-item-delete:hover { background:rgba(255,255,255,0.3); }
+    .new-chat-btn { width:100%; padding:8px; background:#28a745; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; margin-bottom:10px; }
+    .new-chat-btn:hover { background:#218838; }
+    #app { display:none; height:100vh; width:100vw; overflow:hidden; }
+    #app[style*="display: flex"] { display:flex !important; flex-direction:row; }
+  </style>
+</head>
+<body style="margin:0!important;padding:0!important;">
+
+<div id="login-screen">
+  <div class="login-box">
+    <h2>&#128274; Secure Login</h2>
+    <input type="text" id="login-email" placeholder="Username" autocomplete="username" />
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+    <button id="login-btn">Sign In</button>
+    <div id="login-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="change-password-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128273; Change Password</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">You must change your temporary password</p>
+    <input type="password" id="new-password" placeholder="New Password" autocomplete="new-password" />
+    <input type="password" id="confirm-password" placeholder="Confirm Password" autocomplete="new-password" />
+    <button id="change-password-btn">Change Password</button>
+    <div id="change-password-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="mfa-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128274; Enter Verification Code</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">Enter the code from your authenticator app</p>
+    <input type="text" id="mfa-code" placeholder="Enter 6-digit code" autocomplete="off" maxlength="6" />
+    <button id="verify-mfa-btn">Verify</button>
+    <div id="mfa-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="totp-setup-screen" style="display:none;">
+  <div class="login-box">
+    <h2>&#128274; Setup Authenticator</h2>
+    <p style="text-align:center; color:#666; margin-bottom:20px;">Scan this QR code with your authenticator app</p>
+    <div id="qrcode" style="display:flex; justify-content:center; margin:20px 0;"></div>
+    <p style="text-align:center; font-size:0.85em; color:#666; margin:10px 0;">Or enter this code manually:</p>
+    <div style="background:#f5f5f5; padding:10px; border-radius:6px; margin:10px 0; word-break:break-all; text-align:center;"><strong id="secret-code" style="color:#333; font-size:0.9em;"></strong></div>
+    <input type="text" id="totp-verify-code" placeholder="Enter 6-digit code to verify" autocomplete="off" maxlength="6" />
+    <button id="verify-totp-setup-btn">Verify & Complete Setup</button>
+    <div id="totp-setup-error" class="error-msg" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="app">
+<div class="sidebar">
+  <div class="upload-section">
+    <h3>&#128228; Upload Document</h3>
+    <div class="upload-box">
+      <input type="file" id="file-input" accept=".pdf,.pptx,.docx,.xlsx,.jpg,.jpeg,.png,.tiff" multiple>
+      <label for="file-input" id="file-label">Click to select files...</label>
+      <button type="button" id="upload-button">Upload</button>
+      <button type="button" id="cancel-button" class="cancel" style="display:none;">Cancel Upload</button>
+      <div id="upload-status"></div>
+    </div>
+  </div>
+  
+  <div class="files-section">
+    <h3>
+      &#128218; Documents
+      <button id="refresh-btn" class="btn" style="background:#6c757d; padding:6px 12px; font-size:.85em;">&#128260;</button>
+    </h3>
+    <input type="text" id="file-search" placeholder="Search files..." style="width:100%; padding:8px; margin-bottom:8px; border:1px solid #dee2e6; border-radius:6px; font-size:0.9em;">
+    <select id="file-sort" style="width:100%; padding:8px; margin-bottom:8px; border:1px solid #dee2e6; border-radius:6px; font-size:0.9em;">
+      <option value="date-desc">Sort by: Newest First</option>
+      <option value="date-asc">Sort by: Oldest First</option>
+      <option value="name-asc">Sort by: Name (A-Z)</option>
+      <option value="name-desc">Sort by: Name (Z-A)</option>
+    </select>
+    <div class="file-actions">
+      <label style="display:flex; align-items:center; font-size:0.85em; color:#6c757d; cursor:pointer;">
+        <input type="checkbox" id="select-all" class="file-checkbox">
+        Select All
+      </label>
+      <button id="delete-selected" class="delete-selected" disabled>Delete Selected</button>
+    </div>
+    <ul id="file-list"></ul>
+    <div id="file-list-status"></div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="header">
+    <div style="display:flex;gap:20px;align-items:center;">
+      <button id="tab-chat" class="tab-btn active" onclick="switchTab('chat')">💬 Chat AI</button>
+      <button id="tab-autofill" class="tab-btn" onclick="switchTab('autofill')">📝 Document Auto-Fill</button>
+    </div>
+    <div class="user-info">
+      <span id="user-email"></span>
+      <button id="logout-btn" class="logout-btn">Logout</button>
+    </div>
+  </div>
+
+  <div id="chat-mode" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+    <div class="chat-log" id="chat-log"></div>
+    <div class="input-area">
+      <button id="clear-chat" class="btn" style="background:#6c757d;">Clear</button>
+      <input type="text" id="user-input" placeholder="Ask me anything about your documents...">
+      <button id="send-button" class="btn">Send</button>
+    </div>
+  </div>
+
+  <div id="autofill-mode" style="display:none;flex:1;padding:40px;overflow-y:auto;">
+    <div style="max-width:800px;margin:0 auto;">
+      <h2 style="margin-bottom:30px;color:#333;">📝 Document Auto-Fill</h2>
+      
+      <div id="stage-1" class="autofill-stage">
+        <h3>Step 1: Upload Source Document</h3>
+        <p style="color:#666;margin-bottom:20px;">Upload the document containing the data you want to extract (PDF, DOCX, XLSX, TXT)</p>
+        <input type="file" id="source-file" accept=".pdf,.docx,.xlsx,.txt" style="margin-bottom:15px;">
+        <button id="upload-source-btn" class="btn">Extract Data</button>
+        <div id="source-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+
+      <div id="stage-2" class="autofill-stage" style="display:none;margin-top:40px;">
+        <h3>Step 2: Upload Target Document</h3>
+        <p style="color:#666;margin-bottom:20px;">Upload the template document you want to fill (DOCX, XLSX, PPTX, TXT)</p>
+        <input type="file" id="target-file" accept=".docx,.xlsx,.pptx,.txt" style="margin-bottom:15px;">
+        <button id="upload-target-btn" class="btn">Match Fields</button>
+        <div id="target-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+
+      <div id="stage-3" class="autofill-stage" style="display:none;margin-top:40px;">
+        <h3>Step 3: Review & Confirm Matches</h3>
+        <div id="matches-container" style="margin:20px 0;"></div>
+        <button id="fill-document-btn" class="btn">Fill Document</button>
+        <div id="fill-status" style="margin-top:15px;color:#666;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="chat-history-sidebar" id="chat-history-sidebar">
+  <button class="minimize-sidebar-btn" onclick="toggleSidebar()" title="Minimize/Expand Sidebar">◀</button>
+  <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+  <div class="chat-history-header">
+    <span>💬 Chat History</span>
+    <button class="chat-history-toggle" onclick="toggleChatHistory()" title="Minimize/Expand">▼</button>
+  </div>
+  <div id="chat-list" class="chat-history-list"></div>
+</div>
+</div>
+
+<script>
+  const COGNITO_USER_POOL_ID = 'us-east-1_47wv9bVGN';
+  const COGNITO_CLIENT_ID = '6v0ae4nidnu8ija0gjlv85slck';
+  const COGNITO_REGION = 'us-east-1';
+  const API_GATEWAY_URL = 'https://04kv78x1th.execute-api.us-east-1.amazonaws.com/production';
+
+  const poolData = { UserPoolId: COGNITO_USER_POOL_ID, ClientId: COGNITO_CLIENT_ID };
+  const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+  let cognitoUser = null;
+  let idToken = null;
+
+  let sessionTimer = null;
+  
+  function startSessionTimer() {
+    if (sessionTimer) clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => {
+      alert('Your session has expired. Please login again.');
+      if (cognitoUser) cognitoUser.signOut();
+      location.reload();
+    }, 60 * 60 * 1000);
+  }
+  
+  function checkExistingSession() {
+    cognitoUser = userPool.getCurrentUser();
+    if (cognitoUser) {
+      // Check if session was created in this browser session
+      const sessionCreatedTime = sessionStorage.getItem('sessionCreatedTime');
+      const now = Date.now();
+      const maxSessionAge = 4 * 60 * 60 * 1000; // 4 hours
+      
+      // If no session timestamp or session is too old, force re-login with MFA
+      if (!sessionCreatedTime || (now - parseInt(sessionCreatedTime)) > maxSessionAge) {
+        cognitoUser.signOut();
+        return;
+      }
+      
+      cognitoUser.getSession((err, session) => {
+        if (!err && session.isValid()) {
+          idToken = session.getIdToken().getJwtToken();
+          const email = cognitoUser.getUsername();
+          document.getElementById('user-email').textContent = email;
+          document.body.classList.add('logged-in');
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('app').style.display = 'flex';
+          fetchUploadedFiles();
+          clearChat();
+          loadChatHistory();
+          startSessionTimer();
+        } else {
+          // Session invalid, force re-login
+          cognitoUser.signOut();
+        }
+      });
+    }
+  }
+  
+  // Wait for DOM to be ready before checking session
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkExistingSession);
+  } else {
+    checkExistingSession();
+  }
+
+  function performLogin() {
+    const email = document.getElementById('login-email').value;
+    const password = document.getElementById('login-password').value;
+    const errorDiv = document.getElementById('login-error');
+    
+    const authenticationData = { Username: email, Password: password };
+    const authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails(authenticationData);
+    const userData = { Username: email, Pool: userPool };
+    cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+    
+    cognitoUser.authenticateUser(authenticationDetails, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
+        document.getElementById('user-email').textContent = email;
+        document.body.classList.add('logged-in');
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        fetchUploadedFiles();
+        clearChat();
+        loadChatHistory();
+        startSessionTimer();
+      },
+      onFailure: (err) => {
+        errorDiv.textContent = err.message || 'Login failed';
+        errorDiv.style.display = 'block';
+      },
+      newPasswordRequired: (userAttributes, requiredAttributes) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('change-password-screen').style.display = 'flex';
+      },
+      mfaSetup: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('totp-setup-screen').style.display = 'flex';
+        
+        cognitoUser.associateSoftwareToken({
+          associateSecretCode: (secretCode) => {
+            const email = document.getElementById('login-email').value;
+            const issuer = 'AI Document Assistant';
+            const otpauth = `otpauth://totp/${issuer}:${email}?secret=${secretCode}&issuer=${issuer}`;
+            
+            document.getElementById('qrcode').innerHTML = '';
+            new QRCode(document.getElementById('qrcode'), {
+              text: otpauth,
+              width: 200,
+              height: 200
+            });
+            
+            document.getElementById('secret-code').textContent = secretCode;
+          },
+          onFailure: (err) => {
+            const errorDiv = document.getElementById('login-error');
+            errorDiv.textContent = 'MFA setup failed: ' + err.message;
+            errorDiv.style.display = 'block';
+          }
+        });
+      },
+      mfaRequired: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('mfa-screen').style.display = 'flex';
+      },
+      totpRequired: (challengeName, challengeParameters) => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('mfa-screen').style.display = 'flex';
+      }
+    });
+  }
+
+  document.getElementById('login-btn').addEventListener('click', performLogin);
+  document.getElementById('login-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') performLogin();
+  });
+
+  document.getElementById('change-password-btn').addEventListener('click', () => {
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+    const errorDiv = document.getElementById('change-password-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (newPassword !== confirmPassword) {
+      errorDiv.textContent = 'Passwords do not match';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    if (newPassword.length < 8) {
+      errorDiv.textContent = 'Password must be at least 8 characters';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        document.getElementById('change-password-screen').style.display = 'none';
+        document.getElementById('totp-setup-screen').style.display = 'flex';
+        
+        cognitoUser.associateSoftwareToken({
+          associateSecretCode: (secretCode) => {
+            const issuer = 'AI Document Assistant';
+            const otpauth = `otpauth://totp/${issuer}:${email}?secret=${secretCode}&issuer=${issuer}`;
+            
+            document.getElementById('qrcode').innerHTML = '';
+            new QRCode(document.getElementById('qrcode'), {
+              text: otpauth,
+              width: 200,
+              height: 200
+            });
+            
+            document.getElementById('secret-code').textContent = secretCode;
+          },
+          onFailure: (err) => {
+            errorDiv.textContent = 'MFA setup failed: ' + err.message;
+            errorDiv.style.display = 'block';
+          }
+        });
+      },
+      onFailure: (err) => {
+        errorDiv.innerHTML = '<strong>Password Change Failed</strong><br>' + err.message + '<br><br>If MFA is required, please contact your administrator to set up MFA before changing your password.';
+        errorDiv.style.display = 'block';
+      }
+    });
+  });
+
+  document.getElementById('confirm-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('change-password-btn').click();
+  });
+
+  document.getElementById('verify-mfa-btn').addEventListener('click', () => {
+    const code = document.getElementById('mfa-code').value;
+    const errorDiv = document.getElementById('mfa-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (!code) {
+      errorDiv.textContent = 'Please enter the verification code';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.sendMFACode(code, {
+      onSuccess: (result) => {
+        idToken = result.getIdToken().getJwtToken();
+        sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
+        document.getElementById('user-email').textContent = email;
+        document.body.classList.add('logged-in');
+        document.getElementById('mfa-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        fetchUploadedFiles();
+        clearChat();
+        loadChatHistory();
+        startSessionTimer();
+      },
+      onFailure: (err) => {
+        errorDiv.textContent = 'Invalid code: ' + err.message;
+        errorDiv.style.display = 'block';
+      }
+    }, 'SOFTWARE_TOKEN_MFA');
+  });
+
+  document.getElementById('mfa-code').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('verify-mfa-btn').click();
+  });
+
+  document.getElementById('verify-totp-setup-btn').addEventListener('click', () => {
+    const code = document.getElementById('totp-verify-code').value;
+    const errorDiv = document.getElementById('totp-setup-error');
+    const email = document.getElementById('login-email').value;
+    
+    if (!code) {
+      errorDiv.textContent = 'Please enter the verification code';
+      errorDiv.style.display = 'block';
+      return;
+    }
+    
+    cognitoUser.verifySoftwareToken(code, 'My TOTP Device', {
+      onSuccess: () => {
+        cognitoUser.setUserMfaPreference(null, { PreferredMfa: true, Enabled: true }, (err) => {
+          if (err) {
+            errorDiv.textContent = 'Failed to set MFA preference: ' + err.message;
+            errorDiv.style.display = 'block';
+            return;
+          }
+          
+          cognitoUser.getSession((err, session) => {
+            if (!err && session.isValid()) {
+              idToken = session.getIdToken().getJwtToken();
+              sessionStorage.setItem('sessionCreatedTime', Date.now().toString());
+              document.getElementById('user-email').textContent = email;
+              document.body.classList.add('logged-in');
+              document.getElementById('totp-setup-screen').style.display = 'none';
+              document.getElementById('app').style.display = 'flex';
+              fetchUploadedFiles();
+              clearChat();
+              loadChatHistory();
+              startSessionTimer();
+            } else {
+              errorDiv.textContent = 'Session error: ' + (err ? err.message : 'Unknown error');
+              errorDiv.style.display = 'block';
+            }
+          });
+        });
+      },
+      onFailure: (err) => {
+        if (err.message && err.message.includes('already been used')) {
+          errorDiv.textContent = 'Code already used. Wait 30 seconds for the next code.';
+        } else {
+          errorDiv.textContent = 'Invalid code: ' + err.message;
+        }
+        errorDiv.style.display = 'block';
+      }
+    });
+  });
+
+  document.getElementById('totp-verify-code').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') document.getElementById('verify-totp-setup-btn').click();
+  });
+
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    if (sessionTimer) clearTimeout(sessionTimer);
+    sessionStorage.removeItem('sessionCreatedTime');
+    cognitoUser = userPool.getCurrentUser();
+    if (cognitoUser) {
+      cognitoUser.signOut();
+    }
+    location.reload();
+  });
+
+  const CHAT_LOG = document.getElementById('chat-log');
+  const UPLOAD_STATUS = document.getElementById('upload-status');
+  const USER_INPUT = document.getElementById('user-input');
+  
+  // Auto-detect input direction
+  USER_INPUT.addEventListener('input', () => {
+    const text = USER_INPUT.value;
+    const hasHebrew = /[\u0590-\u05FF]/.test(text);
+    const hasArabic = /[\u0600-\u06FF]/.test(text);
+    if (hasHebrew || hasArabic) {
+      USER_INPUT.style.direction = 'rtl';
+      USER_INPUT.style.textAlign = 'right';
+    } else {
+      USER_INPUT.style.direction = 'ltr';
+      USER_INPUT.style.textAlign = 'left';
+    }
+  });
+  const FILE_LIST_UL = document.getElementById('file-list');
+  const FILE_LIST_STATUS = document.getElementById('file-list-status');
+  const SEND_BUTTON = document.getElementById('send-button');
+  const UPLOAD_BUTTON = document.getElementById('upload-button');
+  const CANCEL_BUTTON = document.getElementById('cancel-button');
+  const FILE_INPUT = document.getElementById('file-input');
+  const FILE_LABEL = document.getElementById('file-label');
+  const REFRESH_BTN = document.getElementById('refresh-btn');
+  const CLEAR_CHAT = document.getElementById('clear-chat');
+  
+  let uploadControllers = [];
+  let uploadedFiles = [];
+  let allFiles = [];
+  let currentSort = 'date-desc';
+  let selectedFiles = new Set();
+  
+  let sessionId = generateSessionId();
+  let currentChatId = `chat_${Date.now()}`;
+  let chatMessages = [];
+  
+  function generateSessionId() {
+    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  function getAuthHeaders() {
+    return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
+  }
+  
+  function handleAuthError(response) {
+    if (response.status === 401) {
+      alert('Your session has expired. Please login again.');
+      if (cognitoUser) cognitoUser.signOut();
+      sessionStorage.removeItem('sessionCreatedTime');
+      location.reload();
+      return true;
+    }
+    return false;
+  }
+
+  function appendMessage(role, content, sources=null, isError=false, images=null, skipTracking=false){
+    const div=document.createElement('div');
+    div.classList.add('message', `${role}-message`);
+    if(isError) div.classList.add('error');
+    
+    // Track messages for chat history (skip when loading from history)
+    if (!isError && !skipTracking) {
+      chatMessages.push({ role, content, timestamp: Date.now() });
+      if (chatMessages.length % 2 === 0) saveCurrentChat();
+    }
+    
+    // Use auto direction for mixed content
+    div.style.direction = 'auto';
+    div.style.textAlign = 'start';
+    
+    // Use textContent for plain text, then replace newlines with <br>
+    const textNode = document.createTextNode(content);
+    const tempDiv = document.createElement('div');
+    tempDiv.appendChild(textNode);
+    div.innerHTML = tempDiv.innerHTML.replace(/\n/g,'<br>');
+    
+    if(images && images.length){
+      const imgContainer = document.createElement('div');
+      imgContainer.style.marginTop = '15px';
+      imgContainer.style.display = 'grid';
+      imgContainer.style.gridTemplateColumns = 'repeat(auto-fit, minmax(280px, 1fr))';
+      imgContainer.style.gap = '20px';
+      
+      images.forEach((imgUrl, index) => {
+        const imgWrapper = document.createElement('div');
+        imgWrapper.style.position = 'relative';
+        imgWrapper.style.border = '1px solid #e0e0e0';
+        imgWrapper.style.borderRadius = '12px';
+        imgWrapper.style.overflow = 'hidden';
+        imgWrapper.style.backgroundColor = '#fafafa';
+        imgWrapper.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+        imgWrapper.style.transition = 'transform 0.2s, box-shadow 0.2s';
+        imgWrapper.style.cursor = 'pointer';
+        
+        // Add hover effect
+        imgWrapper.onmouseenter = () => {
+          imgWrapper.style.transform = 'translateY(-2px)';
+          imgWrapper.style.boxShadow = '0 8px 20px rgba(0,0,0,0.15)';
+        };
+        imgWrapper.onmouseleave = () => {
+          imgWrapper.style.transform = 'translateY(0)';
+          imgWrapper.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+        };
+        
+        // Extract image number from URL (e.g., image_17.png -> Image #17)
+        let brandName = 'Image';
+        const imageMatch = imgUrl.match(/image[_-](\d+)\./i);
+        if (imageMatch) {
+          brandName = `Image #${imageMatch[1]}`;
+        } else if (imgUrl.includes('Cherry')) {
+          brandName = 'Chery';
+        } else if (imgUrl.includes('Hyundai')) {
+          brandName = 'Hyundai';
+        } else if (images.length > 1) {
+          brandName = `Image ${index + 1}`;
+        }
+        
+        // Create header with brand name
+        const header = document.createElement('div');
+        header.style.padding = '12px 16px';
+        header.style.backgroundColor = '#fff';
+        header.style.borderBottom = '1px solid #e0e0e0';
+        header.style.fontWeight = '600';
+        header.style.fontSize = '14px';
+        header.style.color = '#333';
+        header.style.textAlign = 'center';
+        header.textContent = brandName;
+        
+        const img = document.createElement('img');
+        img.src = imgUrl;
+        img.style.width = '100%';
+        img.style.height = 'auto';
+        img.style.display = 'block';
+        img.style.maxHeight = '300px';
+        img.style.objectFit = 'contain';
+        img.style.backgroundColor = '#fff';
+        
+        imgWrapper.onclick = () => window.open(imgUrl, '_blank');
+        
+        // Add loading state
+        const loadingDiv = document.createElement('div');
+        loadingDiv.style.padding = '40px';
+        loadingDiv.style.textAlign = 'center';
+        loadingDiv.style.color = '#666';
+        loadingDiv.innerHTML = '<div class="spinner" style="margin:0 auto 10px;"></div>Loading image...';
+        
+        img.onload = () => {
+          if (loadingDiv.parentNode) {
+            imgWrapper.removeChild(loadingDiv);
+          }
+        };
+        img.onerror = () => {
+          imgWrapper.innerHTML = `
+            <div style="padding:12px 16px;background:#fff;border-bottom:1px solid #e0e0e0;font-weight:600;font-size:14px;color:#333;text-align:center;">${brandName}</div>
+            <div style="padding:40px;text-align:center;color:#999;background:#f9f9f9;">
+              <div style="font-size:24px;margin-bottom:8px;">&#128247;</div>
+              <div>Image failed to load</div>
+            </div>
+          `;
+        };
+        
+        imgWrapper.appendChild(header);
+        imgWrapper.appendChild(loadingDiv);
+        imgWrapper.appendChild(img);
+        imgContainer.appendChild(imgWrapper);
+      });
+      div.appendChild(imgContainer);
+    }
+    
+    if(sources && sources.length){
+      const c=document.createElement('div'); c.className='citation';
+      const unique = Array.from(new Set(sources.map(s => String(s).split('/').pop())));
+      c.textContent = 'Sources: '+unique.join(', ');
+      div.appendChild(c);
+    }
+    CHAT_LOG.appendChild(div);
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+  }
+
+  function showLoading(el, text){ el.innerHTML = `<span class="spinner"></span> <span>${text}</span>`; }
+
+  async function fetchUploadedFiles(){
+    showLoading(FILE_LIST_STATUS,'Loading files...');
+    try{
+      const res = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      renderFileList(data.filenames || []);
+    }catch(e){
+      console.error(e);
+      FILE_LIST_STATUS.textContent='Error loading files.';
+      renderFileList([]);
+    }
+  }
+
+  async function handleQuerySubmission(){
+    const query = USER_INPUT.value.trim();
+    if(!query) return;
+    appendMessage('user', query);
+    USER_INPUT.value='';
+    const responseDiv = document.createElement('div');
+    responseDiv.className='message assistant-message';
+    responseDiv.innerHTML = '<span class="spinner"></span> Thinking...';
+    CHAT_LOG.appendChild(responseDiv);
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+    
+    try{
+      // Start query
+      const startRes = await fetch(`${API_GATEWAY_URL}/agent-query`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({query, sessionId})
+      });
+      
+      if(!startRes.ok) throw new Error('Failed to start query');
+      const {queryId} = await startRes.json();
+      
+      // Poll for status with adaptive intervals
+      let elapsedTime = 0;
+      const startTime = Date.now();
+      const maxTime = 180000; // 180 seconds max (3 minutes)
+      let currentMessage = 'Thinking...';
+      
+      // Update timer display every second
+      const timerInterval = setInterval(() => {
+        elapsedTime = Date.now() - startTime;
+        if(elapsedTime >= maxTime || !responseDiv.parentNode) {
+          clearInterval(timerInterval);
+        } else {
+          responseDiv.innerHTML = `<span class="spinner"></span> ${currentMessage} (${Math.floor(elapsedTime/1000)}s)`;
+        }
+      }, 1000);
+      
+      while(elapsedTime < maxTime) {
+        // Adaptive polling intervals
+        let pollInterval;
+        if(elapsedTime < 10000) pollInterval = 3000;        // 0-10s: poll every 3s
+        else if(elapsedTime < 30000) pollInterval = 5000;   // 10-30s: poll every 5s
+        else if(elapsedTime < 60000) pollInterval = 10000;  // 30-60s: poll every 10s
+        else pollInterval = 15000;                          // 60-90s: poll every 15s
+        
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        elapsedTime = Date.now() - startTime;
+        
+        const statusRes = await fetch(`${API_GATEWAY_URL}/agent-status?queryId=${queryId}`, {
+          headers: getAuthHeaders()
+        });
+        
+        if(!statusRes.ok) {
+          if(statusRes.status === 404) {
+            currentMessage = 'Thinking...';
+            continue;
+          }
+          clearInterval(timerInterval);
+          throw new Error('Status check failed');
+        }
+        
+        const status = await statusRes.json();
+        
+        // Update status message if available
+        if(status.message && status.status === 'processing') {
+          currentMessage = status.message;
+        } else if(status.status === 'processing') {
+          currentMessage = 'Thinking...';
+        }
+        
+        if(status.status === 'completed') {
+          clearInterval(timerInterval);
+          if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+          
+          const finalDiv = document.createElement('div');
+          finalDiv.className = 'message assistant-message';
+          
+          // Parse response for IMAGE_URL markers and convert to actual images
+          let responseText = status.response;
+          const imageUrls = [];
+          
+          // Extract IMAGE_URL markers
+          const imageUrlPattern = /IMAGE_URL:([^\n|]+)/g;
+          let match;
+          while ((match = imageUrlPattern.exec(responseText)) !== null) {
+            imageUrls.push(match[1].trim());
+          }
+          
+          // Remove IMAGE_URL markers from text
+          responseText = responseText.replace(/IMAGE_URL:[^\n]+\n?/g, '');
+          responseText = responseText.replace(/images\/[^\n]+\.(?:jpg|jpeg|png|gif)[^\n]*\n?/g, '');
+          responseText = responseText.replace(/\n{3,}/g, '\n\n').trim();
+          
+          // Use marked to parse markdown
+          finalDiv.innerHTML = marked.parse(responseText || ' ');
+          
+          // Detect Hebrew and apply RTL
+          const hebrewChars = (responseText.match(/[\u0590-\u05FF]/g) || []).length;
+          const totalChars = responseText.replace(/\s/g, '').length;
+          const hebrewRatio = totalChars > 0 ? hebrewChars / totalChars : 0;
+          
+          if (hebrewRatio > 0.3) {
+            finalDiv.style.direction = 'rtl';
+            finalDiv.style.textAlign = 'right';
+          } else {
+            finalDiv.style.direction = 'ltr';
+            finalDiv.style.textAlign = 'left';
+          }
+          
+          // Add images from status.images OR extracted IMAGE_URLs
+          const allImages = status.images || [];
+          
+          // If we found IMAGE_URL markers, generate presigned URLs
+          if(imageUrls.length > 0 && allImages.length === 0) {
+            // Request presigned URLs from backend
+            Promise.all(imageUrls.map(async (s3Key) => {
+              try {
+                const res = await fetch(`${API_GATEWAY_URL}/get-image?key=${encodeURIComponent(s3Key)}`, {
+                  headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                return data.url;
+              } catch(e) {
+                console.error('Failed to get image URL:', e);
+                return null;
+              }
+            })).then(urls => {
+              const validUrls = urls.filter(u => u);
+              if(validUrls.length > 0) {
+                addImagesToMessage(finalDiv, validUrls);
+              }
+            });
+          } else if(allImages.length > 0) {
+            addImagesToMessage(finalDiv, allImages);
+          }
+          
+          CHAT_LOG.appendChild(finalDiv);
+
+          // Save assistant response to chat history
+          chatMessages.push({ role: 'assistant', content: responseText, timestamp: Date.now() });
+          saveCurrentChat();
+
+          CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+          break;
+        } else if(status.status === 'failed') {
+          clearInterval(timerInterval);
+          if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+          appendMessage('assistant', 'Error: ' + (status.error || 'Query failed'), null, true);
+          break;
+        }
+      }
+      
+      clearInterval(timerInterval);
+      if(elapsedTime >= maxTime) {
+        if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv);
+        appendMessage('assistant', 'Query took too long (>3 minutes). The system may be overloaded. Please try again.', null, true);
+      }
+      
+    }catch(e){
+      try { if(responseDiv.parentNode) CHAT_LOG.removeChild(responseDiv); } catch(err) {}
+      appendMessage('assistant', 'Error: ' + e.message, null, true);
+    }
+    CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
+  }
+  
+  function clearChat() {
+    CHAT_LOG.innerHTML = '';
+    sessionId = generateSessionId();
+    chatMessages = [];
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.', null, false, null, true);
+  }
+
+  function addImagesToMessage(messageDiv, imageUrls) {
+    const imgContainer = document.createElement('div');
+    imgContainer.style.cssText = 'margin-top:15px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;';
+    
+    imageUrls.forEach(imgUrl => {
+      const imgWrapper = document.createElement('div');
+      imgWrapper.style.cssText = 'border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fafafa;box-shadow:0 4px 12px rgba(0,0,0,0.1);cursor:pointer;';
+      
+      const img = document.createElement('img');
+      img.src = imgUrl;
+      img.style.cssText = 'width:100%;height:auto;display:block;max-height:300px;object-fit:contain;background:#fff;';
+      img.onclick = () => window.open(imgUrl, '_blank');
+      
+      imgWrapper.appendChild(img);
+      imgContainer.appendChild(imgWrapper);
+    });
+    messageDiv.appendChild(imgContainer);
+  }
+
+  function renderFileList(filenames, searchTerm = '', sortBy = currentSort){
+    FILE_LIST_UL.innerHTML = '';
+    allFiles = filenames || [];
+    currentSort = sortBy;
+    if(filenames && filenames.length){
+      // Parse files with metadata
+      let fileObjects = filenames.map(fullName => {
+        const baseName = fullName.replace('.json', '');
+        const parts = baseName.split('_');
+        const timestamp = parts[0];
+        const ts = parseInt(timestamp);
+        // Use timestamp if valid, otherwise use current time
+        const date = (!isNaN(ts) && ts > 1000000000 && ts < 9999999999) ? new Date(ts * 1000) : new Date();
+        let clean = fullName.includes('_') ? fullName.split('_').slice(1).join('_').replace('.json', '') : fullName.replace('.json', '');
+        // Decode HTML entities
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = clean;
+        clean = textarea.value;
+        // Use valid timestamp or fallback to 0 for sorting
+        const sortTimestamp = (!isNaN(ts) && ts > 1000000000 && ts < 9999999999) ? ts : 0;
+        return { fullName, clean, date, timestamp: sortTimestamp };
+      });
+      
+      // Filter by search
+      let filteredFiles = searchTerm ? 
+        fileObjects.filter(f => f.clean.toLowerCase().includes(searchTerm.toLowerCase())) : 
+        fileObjects;
+      
+      // Sort
+      if (sortBy === 'date-desc') {
+        filteredFiles.sort((a, b) => b.timestamp - a.timestamp);
+      } else if (sortBy === 'date-asc') {
+        filteredFiles.sort((a, b) => a.timestamp - b.timestamp);
+      } else if (sortBy === 'name-asc') {
+        filteredFiles.sort((a, b) => a.clean.localeCompare(b.clean, undefined, {numeric: true, sensitivity: 'base'}));
+      } else if (sortBy === 'name-desc') {
+        filteredFiles.sort((a, b) => b.clean.localeCompare(a.clean, undefined, {numeric: true, sensitivity: 'base'}));
+      }
+      
+      if (filteredFiles.length === 0) {
+        FILE_LIST_STATUS.textContent = searchTerm ? `No files matching "${searchTerm}"` : 'No documents uploaded yet.';
+        return;
+      }
+      
+      // Group files
+      const filesByDate = {};
+      filteredFiles.forEach(fileObj => {
+        const dateKey = sortBy.startsWith('date') ? 
+          fileObj.date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 
+          'All Files';
+        
+        if (!filesByDate[dateKey]) {
+          filesByDate[dateKey] = [];
+        }
+        filesByDate[dateKey].push(fileObj);
+      });
+      
+      // Sort date groups
+      const sortedDates = Object.keys(filesByDate).sort((a, b) => {
+        if (a === 'All Files' || b === 'All Files') return 0;
+        const dateA = filesByDate[a][0].date;
+        const dateB = filesByDate[b][0].date;
+        return sortBy === 'date-asc' ? dateA - dateB : dateB - dateA;
+      });
+      
+      // Render tree structure
+      sortedDates.forEach(dateKey => {
+        const files = filesByDate[dateKey];
+        
+        const fileContainer = document.createElement('ul');
+        fileContainer.style.cssText = sortBy.startsWith('name') ? 'list-style:none; padding-left:0; margin:0;' : 'list-style:none; padding-left:20px; margin:0;';
+        
+        let dateHeader = null;
+        if (sortBy.startsWith('date')) {
+          dateHeader = document.createElement('li');
+          dateHeader.style.cssText = 'background:#f0f0f0; font-weight:600; cursor:pointer; padding:8px 5px; border-bottom:1px solid #ddd; user-select:none;';
+          dateHeader.innerHTML = `<span style="display:inline-block; width:20px;">▼</span>${dateKey} (${files.length})`;
+          
+          dateHeader.onclick = () => {
+            const isCollapsed = fileContainer.style.display === 'none';
+            fileContainer.style.display = isCollapsed ? 'block' : 'none';
+            dateHeader.querySelector('span').textContent = isCollapsed ? '▼' : '▶';
+          };
+        }
+        
+        // Add files under this date
+        files.forEach(({ fullName, clean }) => {
+          const li = document.createElement('li');
+          li.style.cssText = 'padding:8px 5px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;';
+          
+          const leftDiv = document.createElement('div');
+          leftDiv.style.cssText = 'display:flex; align-items:center; flex:1;';
+          
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'file-checkbox';
+          checkbox.dataset.filename = fullName;
+          checkbox.checked = selectedFiles.has(fullName);
+          checkbox.onchange = () => {
+            if (checkbox.checked) {
+              selectedFiles.add(fullName);
+            } else {
+              selectedFiles.delete(fullName);
+            }
+            updateDeleteButton();
+            updateSelectAllCheckbox();
+          };
+          
+          const span = document.createElement('span');
+          span.textContent = clean;
+          span.style.cssText = 'font-size:0.9em; color:#6c757d; word-wrap:break-word; overflow-wrap:break-word; flex:1;';
+          
+          leftDiv.appendChild(checkbox);
+          leftDiv.appendChild(span);
+          
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'delete-btn';
+          deleteBtn.innerHTML = '🗑️';
+          deleteBtn.title = 'Delete file';
+          deleteBtn.style.marginLeft = '4px';
+          deleteBtn.onclick = async () => {
+            if (!confirm(`Delete ${clean}?`)) return;
+            deleteBtn.disabled = true;
+            deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+            console.log('Deleting file:', fullName);
+            try {
+              const url = `${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fullName)}`;
+              console.log('DELETE URL:', url);
+              const res = await fetch(url, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+              });
+              console.log('DELETE response status:', res.status);
+              
+              // Handle 503 timeout - check if file was actually deleted
+              if (res.status === 503) {
+                console.log('503 timeout - checking if file was deleted...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const checkRes = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
+                const checkData = await checkRes.json();
+                const fileStillExists = (checkData.filenames || []).includes(fullName);
+                
+                if (!fileStillExists) {
+                  deleteBtn.innerHTML = '✓';
+                  deleteBtn.style.color = '#28a745';
+                  setTimeout(() => fetchUploadedFiles(), 1000);
+                } else {
+                  deleteBtn.innerHTML = '✗';
+                  deleteBtn.disabled = false;
+                  alert('✗ Deletion timed out and file still exists.\n\nPlease try again.');
+                }
+                return;
+              }
+              
+              const data = await res.json();
+              console.log('DELETE response data:', data);
+              if (res.ok && data.success) {
+                deleteBtn.innerHTML = '✓';
+                deleteBtn.style.color = '#28a745';
+                selectedFiles.delete(fullName);
+                updateDeleteButton();
+                setTimeout(() => fetchUploadedFiles(), 500);
+              } else {
+                console.error('Delete failed:', data);
+                deleteBtn.innerHTML = '✗';
+                deleteBtn.disabled = false;
+                alert('Failed to delete file: ' + (data.error || data.message || 'Unknown error'));
+              }
+            } catch (e) {
+              console.log('Delete request failed, checking if file was deleted...', e);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              try {
+                const checkRes = await fetch(`${API_GATEWAY_URL}/list-files`, { headers: getAuthHeaders() });
+                const checkData = await checkRes.json();
+                const fileStillExists = (checkData.filenames || []).includes(fullName);
+                
+                if (!fileStillExists) {
+                  deleteBtn.innerHTML = '✓';
+                  deleteBtn.style.color = '#28a745';
+                  setTimeout(() => fetchUploadedFiles(), 1000);
+                } else {
+                  deleteBtn.innerHTML = '✗';
+                  deleteBtn.disabled = false;
+                  alert('✗ Failed to delete file.\n\nPlease try again or contact support if the issue persists.');
+                }
+              } catch (checkError) {
+                deleteBtn.innerHTML = '✗';
+                deleteBtn.disabled = false;
+                alert('✗ Network error while verifying deletion.\n\nPlease refresh the page to see if the file was deleted.');
+              }
+            }
+          };
+          
+          const viewBtn = document.createElement('button');
+          viewBtn.className = 'delete-btn';
+          viewBtn.innerHTML = '👁️';
+          viewBtn.title = 'View file';
+          viewBtn.style.color = '#007bff';
+          viewBtn.onclick = async () => {
+            viewBtn.disabled = true;
+            viewBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+            try {
+              const res = await fetch(`${API_GATEWAY_URL}/view-file?fileName=${encodeURIComponent(fullName)}`, {
+                headers: getAuthHeaders()
+              });
+              const data = await res.json();
+              if (res.ok && data.url) {
+                window.open(data.url, '_blank');
+              } else {
+                alert('Failed to open file: ' + (data.error || 'Unknown error'));
+              }
+            } catch (e) {
+              alert('Failed to open file: ' + e.message);
+            } finally {
+              viewBtn.disabled = false;
+              viewBtn.innerHTML = '👁️';
+            }
+          };
+          
+          li.appendChild(leftDiv);
+          li.appendChild(viewBtn);
+          li.appendChild(deleteBtn);
+          fileContainer.appendChild(li);
+        });
+        
+        if (dateHeader) {
+          FILE_LIST_UL.appendChild(dateHeader);
+        }
+        FILE_LIST_UL.appendChild(fileContainer);
+      });
+      
+      const totalCount = filenames.length;
+      const displayCount = filteredFiles.length;
+      FILE_LIST_STATUS.textContent = searchTerm ? 
+        `Showing ${displayCount} of ${totalCount} document(s)` : 
+        `${totalCount} document(s) available.`;
+    } else {
+      FILE_LIST_STATUS.textContent = 'No documents uploaded yet.';
+    }
+  }
+
+  FILE_INPUT.addEventListener('change', () => {
+    const files = FILE_INPUT.files;
+    if (files.length) {
+      FILE_LABEL.textContent = `${files.length} file(s) selected`;
+    } else {
+      FILE_LABEL.textContent = 'Click to select files...';
+    }
+  });
+
+  async function pollForProcessing(fileName, updateProgress, controller, progressId) {
+    const maxAttempts = 480;
+    const pollInterval = 1500; // Poll faster (1.5s) for more responsive updates
+    let lastProgressUpdate = Date.now();
+    let lastProgress = 60; // Start from 60 (after "Waiting for processor")
+    const stuckThreshold = 120000; // 2 minutes without progress = stuck
+    
+    for (let i = 0; i < maxAttempts; i++) {
+      if (controller.signal.aborted) {
+        await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        }).catch(() => {});
+        updateProgress(0, '✗ Cancelled');
+        return false;
+      }
+      
+      try {
+        const res = await fetch(`${API_GATEWAY_URL}/processing-status?fileName=${encodeURIComponent(fileName)}`, {
+          headers: getAuthHeaders()
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          const { status, progress: serverProgress, message } = data;
+          console.log(`[Poll ${i}] Status: ${status}, Progress: ${serverProgress}, Message: ${message}`);
+          
+          if (status === 'completed') {
+            console.log(`[Poll ${i}] File completed!`);
+            updateProgress(100, '✓ Complete - Ready to query!');
+            fetchUploadedFiles();
+            setTimeout(() => {
+              const item = document.getElementById(progressId);
+              if (item && item.parentNode) {
+                item.remove();
+              }
+            }, 3000);
+            return true;
+          } else if (status === 'failed') {
+            updateProgress(0, `✗ ${message || 'Processing failed'}`);
+            const item = document.getElementById(progressId);
+            if (item) {
+              item.querySelector('.progress-status').style.color = '#dc3545';
+              item.querySelector('.progress-bar-fill').style.background = '#dc3545';
+              const deleteBtn = item.querySelector('.delete-btn');
+              if (deleteBtn) {
+                deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+                deleteBtn.title = 'Remove from list';
+              }
+            }
+            return false;
+          } else if (status === 'not_found') {
+            if (i > 40) {
+              updateProgress(0, '✗ Processing failed to start');
+              const item = document.getElementById(progressId);
+              if (item) {
+                item.querySelector('.progress-status').style.color = '#dc3545';
+                item.querySelector('.progress-bar-fill').style.background = '#dc3545';
+                const deleteBtn = item.querySelector('.delete-btn');
+                if (deleteBtn) {
+                  deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+                  deleteBtn.title = 'Remove from list';
+                }
+              }
+              return false;
+            }
+            updateProgress(50, 'Starting document processor...');
+          } else if (status === 'processing') {
+            const currentProgress = Math.max(serverProgress || 50, lastProgress);
+            const currentMessage = message || 'Processing document...';
+            console.log(`[Poll ${i}] Processing - ${currentProgress}% - ${currentMessage}`);
+            
+            if (currentProgress > lastProgress) {
+              lastProgress = currentProgress;
+              lastProgressUpdate = Date.now();
+            } else if (Date.now() - lastProgressUpdate > stuckThreshold) {
+              updateProgress(currentProgress, '⚠ Processing appears stuck - may have timed out');
+              const item = document.getElementById(progressId);
+              if (item) {
+                item.querySelector('.progress-status').style.color = '#ff9800';
+              }
+            }
+            updateProgress(currentProgress, currentMessage);
+          } else {
+            const fallbackProgress = 50 + Math.min(45, (i / maxAttempts) * 45);
+            updateProgress(fallbackProgress, message || `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
+          }
+        } else {
+          // HTTP error - show elapsed time
+          const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
+          updateProgress(progress, `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      } catch (e) {
+        console.error('Poll error:', e);
+        const progress = 50 + Math.min(45, (i / maxAttempts) * 45);
+        updateProgress(progress, `Processing... (${Math.floor(i * 1.5 / 60)}m ${Math.floor((i * 1.5) % 60)}s)`);
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      }
+    }
+    
+    updateProgress(95, '⚠ Processing timeout - check logs');
+    const item = document.getElementById(progressId);
+    if (item) {
+      item.querySelector('.progress-status').style.color = '#ff9800';
+      item.querySelector('.progress-bar-fill').style.background = '#ff9800';
+      const deleteBtn = item.querySelector('.delete-btn');
+      if (deleteBtn) {
+        deleteBtn.onclick = () => { if (item.parentNode) item.remove(); };
+        deleteBtn.title = 'Remove from list';
+      }
+    }
+    return false;
+  }
+
+  UPLOAD_BUTTON.addEventListener('click', async () => {
+    const files = FILE_INPUT.files;
+    if (!files.length) {
+      UPLOAD_STATUS.textContent = 'Please select files first';
+      return;
+    }
+    
+    // Create or get progress container
+    let progressContainer = document.getElementById('progress-container');
+    if (!progressContainer) {
+      UPLOAD_STATUS.innerHTML = '<div class="progress-header"><h4>Upload Progress</h4><button class="toggle-btn" onclick="toggleProgress()" title="Minimize/Expand">▼</button></div><div class="progress-container" id="progress-container"></div><div id="batch-summary" style="padding:10px;background:#f8f9fa;border-top:1px solid #dee2e6;font-size:0.85em;color:#495057;"></div>';
+      progressContainer = document.getElementById('progress-container');
+    }
+    
+    UPLOAD_BUTTON.disabled = true;
+    CANCEL_BUTTON.style.display = 'block';
+    
+    // Don't reset - append to existing uploads
+    const startIndex = uploadControllers.length;
+    const batchId = Date.now();
+    const batchStats = { total: files.length, completed: 0, failed: 0, batchId };
+    
+    function updateBatchSummary() {
+      const summaryDiv = document.getElementById('batch-summary');
+      if (summaryDiv) {
+        const parts = [];
+        parts.push(`✓ Completed: ${batchStats.completed}/${batchStats.total}`);
+        if (batchStats.failed > 0) {
+          parts.push(`<span style="color:#dc3545;">✗ Failed: ${batchStats.failed}</span>`);
+        }
+        summaryDiv.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+      }
+    }
+    
+    updateBatchSummary();
+    
+    const uploadPromises = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const progressId = `progress-${startIndex + i}`;
+      const controller = new AbortController();
+      uploadControllers.push(controller);
+      
+      const progressItem = document.createElement('div');
+      progressItem.className = 'progress-item';
+      progressItem.id = progressId;
+      progressItem.innerHTML = `
+        <div class="progress-name">${file.name}</div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:0%"></div></div>
+        <div class="progress-status">Preparing...</div>
+        <button class="delete-btn" onclick="cancelSingleFile('${progressId}', '${file.name.replace(/'/g, "\\'")}')">✖</button>
+      `;
+      progressContainer.appendChild(progressItem);
+      
+      const uploadFile = async (file, progressId, controller) => {
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+        try {
+          const updateProgress = (percent, status) => {
+            const item = document.getElementById(progressId);
+            if (item) {
+              item.querySelector('.progress-bar-fill').style.width = percent + '%';
+              item.querySelector('.progress-status').textContent = status;
+            }
+          };
+          
+          if (controller.signal.aborted) {
+            // Create cancellation marker before throwing
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(10, 'Getting upload URL...');
+          const urlRes = await fetch(`${API_GATEWAY_URL}/upload`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ fileName: file.name }),
+            signal: controller.signal
+          });
+          
+          if (!urlRes.ok) {
+            const errorData = await urlRes.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to get upload URL');
+          }
+          const { signedUrl } = await urlRes.json();
+          
+          if (controller.signal.aborted) {
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(30, 'Uploading to S3...');
+          const contentTypeMap = {
+            'pdf': 'application/pdf',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'tiff': 'image/tiff'
+          };
+          const fileExt = file.name.split('.').pop().toLowerCase();
+          const contentType = contentTypeMap[fileExt] || 'application/octet-stream';
+          
+          const uploadRes = await fetch(signedUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': contentType },
+            body: file,
+            mode: 'cors',
+            signal: controller.signal
+          });
+          
+          if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status}`);
+          uploadedFiles.push(file.name);
+          
+          if (controller.signal.aborted) {
+            await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE',
+              headers: getAuthHeaders()
+            }).catch(() => {});
+            throw new Error('Cancelled');
+          }
+          
+          updateProgress(60, 'Checking processing status...');
+          console.log(`[${file.name}] Checking if already processed...`);
+          
+          // Check if already completed before polling
+          try {
+            const checkRes = await fetch(`${API_GATEWAY_URL}/processing-status?fileName=${encodeURIComponent(file.name)}`, {
+              headers: getAuthHeaders()
+            });
+            if (checkRes.ok) {
+              const checkData = await checkRes.json();
+              if (checkData.status === 'completed') {
+                console.log(`[${file.name}] Already completed!`);
+                updateProgress(100, '✓ Complete - Ready to query!');
+                fetchUploadedFiles();
+                setTimeout(() => {
+                  const item = document.getElementById(progressId);
+                  if (item && item.parentNode) item.remove();
+                }, 3000);
+                batchStats.completed++;
+                updateBatchSummary();
+                return;
+              }
+            }
+          } catch (e) {
+            console.log(`[${file.name}] Check failed, will start polling:`, e);
+          }
+          
+          console.log(`[${file.name}] Waiting 5 seconds before polling...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          console.log(`[${file.name}] Starting to poll for processing status...`);
+          const success = await pollForProcessing(file.name, updateProgress, controller, progressId);
+          console.log(`[${file.name}] Polling finished. Success: ${success}`);
+          if (success) {
+            batchStats.completed++;
+          } else {
+            batchStats.failed++;
+          }
+          updateBatchSummary();
+        } catch (e) {
+          batchStats.failed++;
+          updateBatchSummary();
+          const item = document.getElementById(progressId);
+          if (item) {
+            item.querySelector('.progress-status').textContent = '✗ ' + e.message;
+            item.querySelector('.progress-status').style.color = '#dc3545';
+            item.querySelector('.progress-bar-fill').style.background = '#dc3545';
+            // Remove cancel button, add manual delete button
+            const cancelBtn = item.querySelector('.delete-btn');
+            if (cancelBtn) {
+              cancelBtn.onclick = () => {
+                if (item.parentNode) item.remove();
+              };
+              cancelBtn.title = 'Remove from list';
+            }
+          }
+          if (e.name !== 'AbortError' && e.message !== 'Cancelled') throw e;
+        }
+      };
+      
+      uploadPromises.push(uploadFile(file, progressId, controller));
+    }
+    
+    try {
+      await Promise.all(uploadPromises);
+      FILE_INPUT.value = '';
+      FILE_LABEL.textContent = 'Click to select files...';
+      
+      // Clear failed count from summary after batch completes
+      setTimeout(() => {
+        const summaryDiv = document.getElementById('batch-summary');
+        if (summaryDiv && batchStats.completed + batchStats.failed >= batchStats.total) {
+          summaryDiv.innerHTML = `✓ Batch complete: ${batchStats.completed}/${batchStats.total} successful`;
+          setTimeout(() => {
+            if (summaryDiv) summaryDiv.innerHTML = '';
+          }, 5000);
+        }
+        fetchUploadedFiles();
+      }, 2000);
+    } catch (e) {
+      console.error('Upload error:', e);
+    } finally {
+      UPLOAD_BUTTON.disabled = false;
+      // Hide cancel button when batch is complete
+      setTimeout(() => {
+        const allDone = batchStats.completed + batchStats.failed >= batchStats.total;
+        if (allDone) {
+          CANCEL_BUTTON.style.display = 'none';
+        }
+      }, 1000);
+    }
+  });
+  
+  window.cancelSingleFile = async (progressId, fileName) => {
+    const index = parseInt(progressId.replace('progress-', ''));
+    if (index >= uploadControllers.length) return;
+    const controller = uploadControllers[index];
+    
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+      
+      try {
+        await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+      } catch (e) {
+        console.error('Failed to cancel:', fileName, e);
+      }
+      
+      const item = document.getElementById(progressId);
+      if (item) {
+        item.querySelector('.progress-status').textContent = '✗ Cancelled';
+        item.querySelector('.progress-status').style.color = '#dc3545';
+        item.querySelector('.delete-btn').remove();
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+          if (item && item.parentNode) {
+            item.remove();
+          }
+        }, 3000);
+      }
+    }
+  };
+  
+  CANCEL_BUTTON.addEventListener('click', async () => {
+    if (!confirm('Cancel all active uploads?')) return;
+    
+    CANCEL_BUTTON.disabled = true;
+    CANCEL_BUTTON.textContent = 'Cancelling...';
+    
+    // Abort all active controllers
+    const cancelPromises = uploadControllers.map(async (controller, index) => {
+      if (controller && !controller.signal.aborted) {
+        controller.abort();
+        // Try to get filename from progress item
+        const progressItem = document.getElementById(`progress-${index}`);
+        if (progressItem) {
+          const fileName = progressItem.querySelector('.progress-name')?.textContent;
+          if (fileName) {
+            try {
+              await fetch(`${API_GATEWAY_URL}/cancel-upload?fileName=${encodeURIComponent(fileName)}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+              });
+            } catch (e) {
+              console.error('Failed to cancel:', fileName, e);
+            }
+          }
+        }
+      }
+    });
+    
+    await Promise.all(cancelPromises);
+    
+    CANCEL_BUTTON.textContent = 'Cancel Upload';
+    CANCEL_BUTTON.disabled = false;
+    FILE_INPUT.value = '';
+    FILE_LABEL.textContent = 'Click to select files...';
+  });
+
+  window.toggleProgress = () => {
+    const container = document.getElementById('progress-container');
+    const btn = document.querySelector('.toggle-btn');
+    if (container && btn) {
+      container.classList.toggle('collapsed');
+      btn.textContent = container.classList.contains('collapsed') ? '▶' : '▼';
+    }
+  };
+
+  SEND_BUTTON.addEventListener('click', handleQuerySubmission);
+  USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
+  
+  REFRESH_BTN.addEventListener('click', async () => {
+    if (REFRESH_BTN.disabled) return;
+    REFRESH_BTN.disabled = true;
+    const originalHTML = REFRESH_BTN.innerHTML;
+    REFRESH_BTN.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+    try {
+      await fetchUploadedFiles();
+    } catch (e) {
+      console.error('Refresh failed:', e);
+      FILE_LIST_STATUS.textContent = 'Failed to refresh. Please try again.';
+    } finally {
+      REFRESH_BTN.innerHTML = originalHTML;
+      REFRESH_BTN.disabled = false;
+    }
+  });
+  
+  CLEAR_CHAT.addEventListener('click', clearChat);
+  
+  // ===================================================================
+  // DOCUMENT AUTO-FILL FUNCTIONALITY
+  // ===================================================================
+  let autofillSessionId = null;
+  let extractedData = {};
+  let fieldMappings = {};
+
+  window.switchTab = (tab) => {
+    const chatMode = document.getElementById('chat-mode');
+    const autofillMode = document.getElementById('autofill-mode');
+    const chatTab = document.getElementById('tab-chat');
+    const autofillTab = document.getElementById('tab-autofill');
+
+    if (tab === 'chat') {
+      chatMode.style.display = 'flex';
+      autofillMode.style.display = 'none';
+      chatTab.classList.add('active');
+      autofillTab.classList.remove('active');
+    } else {
+      chatMode.style.display = 'none';
+      autofillMode.style.display = 'block';
+      chatTab.classList.remove('active');
+      autofillTab.classList.add('active');
+    }
+  };
+
+  document.getElementById('upload-source-btn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('source-file');
+    const file = fileInput.files[0];
+    const statusDiv = document.getElementById('source-status');
+    const uploadBtn = document.getElementById('upload-source-btn');
+    
+    if (!file) {
+      statusDiv.textContent = 'Please select a file first';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    // Check if file is empty
+    if (file.size === 0) {
+      statusDiv.innerHTML = '<div style="color:#dc3545;">✗ File is empty</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please select a file with content.</div>';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Extracting data...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take 10-30 seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      console.log('Reading file:', file.name, 'size:', file.size);
+      
+      // Read file as ArrayBuffer and convert to base64
+      const arrayBuffer = await file.arrayBuffer();
+      console.log('ArrayBuffer size:', arrayBuffer.byteLength);
+      
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Data = btoa(binary);
+      console.log('Base64 length:', base64Data.length);
+      
+      const payload = {
+        sessionId: autofillSessionId || `autofill_${Date.now()}`,
+        fileData: base64Data,
+        filename: file.name
+      };
+      console.log('Payload keys:', Object.keys(payload));
+      console.log('Sending request to:', `${API_GATEWAY_URL}/autofill/extract-source`);
+      
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/extract-source`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(payload)
+      });
+
+      console.log('Response status:', res.status);
+      const data = await res.json();
+      console.log('Response data:', data);
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      autofillSessionId = data.sessionId;
+      
+      // Wait for parsing to complete
+      statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div>Waiting for parsing...</div></div>';
+      
+      // Poll for completion (wait up to 30 seconds)
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        const checkRes = await fetch(`${API_GATEWAY_URL}/autofill/extract-source`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sessionId: autofillSessionId, checkStatus: true })
+        });
+        
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          if (checkData.status === 'ready') {
+            statusDiv.textContent = `✓ Extracted data from ${file.name}`;
+            statusDiv.style.color = '#28a745';
+            break;
+          }
+        }
+      }
+      
+      document.getElementById('stage-2').style.display = 'block';
+    } catch (err) {
+      console.error('Extract error:', err);
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${err.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('upload-target-btn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('target-file');
+    const file = fileInput.files[0];
+    const statusDiv = document.getElementById('target-status');
+    const uploadBtn = document.getElementById('upload-target-btn');
+    
+    if (!file) {
+      statusDiv.textContent = 'Please select a file first';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    if (file.size === 0) {
+      statusDiv.innerHTML = '<div style="color:#dc3545;">✗ File is empty</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please select a file with content.</div>';
+      statusDiv.style.color = '#dc3545';
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Uploading and parsing...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take 10-30 seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Data = btoa(binary);
+      
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/match-fields`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          sessionId: autofillSessionId,
+          fileData: base64Data,
+          filename: file.name
+        })
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      // Wait for target parsing (5 seconds should be enough for small files)
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      statusDiv.textContent = `✓ Target document ready`;
+      statusDiv.style.color = '#28a745';
+      
+      document.getElementById('stage-3').style.display = 'block';
+    } catch (err) {
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${err.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  function renderMatches(matches) {
+    const container = document.getElementById('matches-container');
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Ready to fill document with extracted data</div>';
+  }
+
+  document.getElementById('fill-document-btn').addEventListener('click', async () => {
+    const statusDiv = document.getElementById('fill-status');
+    const fillBtn = document.getElementById('fill-document-btn');
+    
+    fillBtn.disabled = true;
+    statusDiv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;"><span class="spinner"></span><div><div>Filling document...</div><div style="font-size:0.85em;color:#999;margin-top:4px;">This may take a few seconds</div></div></div>';
+    statusDiv.style.color = '#666';
+
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/autofill/fill-document`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ sessionId: autofillSessionId })
+      });
+
+      console.log('Fill response status:', res.status);
+      const data = await res.json();
+      console.log('Fill response data:', data);
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+      
+      if (!data.downloadUrl || !data.filename) {
+        console.error('Missing downloadUrl or filename:', data);
+        throw new Error('Server returned incomplete data');
+      }
+      
+      statusDiv.innerHTML = `✓ Document filled! <a href="${data.downloadUrl}" download="${data.filename}" style="color:#007bff;text-decoration:underline;font-weight:600;">Download ${data.filename}</a>`;
+      statusDiv.style.color = '#28a745';
+    } catch (e) {
+      console.error('Fill error:', e);
+      statusDiv.innerHTML = `<div style="color:#dc3545;">✗ ${e.message}</div><div style="font-size:0.85em;color:#666;margin-top:8px;">Please try again or contact support if the issue persists.</div>`;
+      statusDiv.style.color = '#dc3545';
+    } finally {
+      fillBtn.disabled = false;
+    }
+  });
+  
+  document.getElementById('file-search').addEventListener('input', (e) => {
+    renderFileList(allFiles, e.target.value, currentSort);
+  });
+  
+  document.getElementById('file-sort').addEventListener('change', (e) => {
+    const searchTerm = document.getElementById('file-search').value;
+    renderFileList(allFiles, searchTerm, e.target.value);
+  });
+  
+  function updateDeleteButton() {
+    const deleteBtn = document.getElementById('delete-selected');
+    deleteBtn.disabled = selectedFiles.size === 0;
+    deleteBtn.textContent = selectedFiles.size > 0 ? `Delete Selected (${selectedFiles.size})` : 'Delete Selected';
+  }
+  
+  function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('select-all');
+    const allCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+    const checkedCount = Array.from(allCheckboxes).filter(cb => cb.checked).length;
+    selectAllCheckbox.checked = allCheckboxes.length > 0 && checkedCount === allCheckboxes.length;
+    selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < allCheckboxes.length;
+  }
+  
+  document.getElementById('select-all').addEventListener('change', (e) => {
+    const checkboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+    checkboxes.forEach(cb => {
+      cb.checked = e.target.checked;
+      if (e.target.checked) {
+        selectedFiles.add(cb.dataset.filename);
+      } else {
+        selectedFiles.delete(cb.dataset.filename);
+      }
+    });
+    updateDeleteButton();
+  });
+  
+  document.getElementById('delete-selected').addEventListener('click', async () => {
+    if (selectedFiles.size === 0) return;
+    
+    if (!confirm(`Delete ${selectedFiles.size} selected file(s)?`)) return;
+    
+    const deleteBtn = document.getElementById('delete-selected');
+    deleteBtn.disabled = true;
+    
+    const filesToDelete = Array.from(selectedFiles);
+    const total = filesToDelete.length;
+    let completed = 0;
+    
+    for (const fileName of filesToDelete) {
+      deleteBtn.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> Deleting ${completed + 1}/${total}...`;
+      
+      try {
+        const res = await fetch(`${API_GATEWAY_URL}/delete-file?fileName=${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+        
+        const data = await res.json();
+        if (res.ok && data.success) {
+          selectedFiles.delete(fileName);
+        }
+      } catch (e) {
+        console.error('Delete failed:', fileName, e);
+      }
+      
+      completed++;
+    }
+    
+    deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> Rebuilding index...';
+    
+    try {
+      await fetch(`${API_GATEWAY_URL}/batch-delete`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ fileNames: [] })
+      });
+    } catch (e) {
+      console.error('Index rebuild failed:', e);
+    }
+    
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = 'Delete Selected';
+    updateDeleteButton();
+    fetchUploadedFiles();
+  });
+  
+  // Chat History Functions
+  async function saveCurrentChat() {
+    if (chatMessages.length === 0) return;
+    // Find first user message for title
+    const firstUserMsg = chatMessages.find(m => m.role === 'user');
+    const title = firstUserMsg ? firstUserMsg.content.substring(0, 50) : 'New Chat';
+    const chatData = { id: currentChatId, messages: chatMessages, timestamp: Date.now(), title };
+    try {
+      await fetch(`${API_GATEWAY_URL}/save-chat`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(chatData) });
+      loadChatHistory();
+    } catch (e) { console.error('Save chat failed:', e); }
+  }
+  
+  async function loadChatHistory() {
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/list-chats`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      renderChatHistory(data.chats || []);
+    } catch (e) { console.error('Load chats failed:', e); }
+  }
+  
+  function renderChatHistory(chats) {
+    const chatList = document.getElementById('chat-list');
+    chatList.innerHTML = chats.map(chat => `<div class="chat-item ${chat.id === currentChatId ? 'active' : ''}" onclick="loadChat('${chat.id}')"><div class="chat-item-title">${chat.title}</div><div class="chat-item-time">${new Date(chat.timestamp).toLocaleDateString()}</div><button class="chat-item-delete" onclick="event.stopPropagation();deleteChat('${chat.id}')" title="Delete chat">✖</button></div>`).join('');
+  }
+  
+  window.toggleChatHistory = () => {
+    const chatList = document.getElementById('chat-list');
+    const toggleBtn = document.querySelector('.chat-history-toggle');
+    if (chatList && toggleBtn) {
+      chatList.classList.toggle('collapsed');
+      toggleBtn.textContent = chatList.classList.contains('collapsed') ? '▶' : '▼';
+    }
+  };
+  
+  window.toggleSidebar = () => {
+    const sidebar = document.getElementById('chat-history-sidebar');
+    const btn = document.querySelector('.minimize-sidebar-btn');
+    if (sidebar && btn) {
+      sidebar.classList.toggle('minimized');
+      btn.textContent = sidebar.classList.contains('minimized') ? '▶' : '◀';
+      btn.title = sidebar.classList.contains('minimized') ? 'Expand Sidebar' : 'Minimize Sidebar';
+    }
+  };
+  
+  window.loadChat = async (chatId) => {
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/get-chat?chatId=${chatId}`, { headers: getAuthHeaders() });
+      const chat = await res.json();
+      if (!chat) return;
+      currentChatId = chatId;
+      chatMessages = chat.messages;
+      CHAT_LOG.innerHTML = '';
+      chatMessages.forEach(msg => appendMessage(msg.role, msg.content, null, false, null, true));
+      loadChatHistory();
+    } catch (e) { console.error('Load chat failed:', e); }
+  };
+  
+  window.deleteChat = async (chatId) => {
+    if (!confirm('Delete this chat?')) return;
+    try {
+      await fetch(`${API_GATEWAY_URL}/delete-chat?chatId=${chatId}`, { method: 'DELETE', headers: getAuthHeaders() });
+      if (currentChatId === chatId) newChat();
+      loadChatHistory();
+    } catch (e) { console.error('Delete chat failed:', e); }
+  };
+  
+  window.newChat = () => {
+    currentChatId = `chat_${Date.now()}`;
+    chatMessages = [];
+    CHAT_LOG.innerHTML = '';
+    sessionId = generateSessionId();
+    appendMessage('assistant', 'Hello! I\'m your conversational AI assistant. I can remember our conversation and help analyze your documents in Hebrew, English, and Turkish.', null, false, null, true);
+    loadChatHistory();
+  };
+</script>
+</body>
+</html>

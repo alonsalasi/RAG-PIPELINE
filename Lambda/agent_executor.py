@@ -661,8 +661,17 @@ def handle_delete_file(filename):
         except Exception as e:
             logger.warning(f"Could not delete processed | Key: {processed_key} | Error: {type(e).__name__}")
         
+        # Extract base filename (remove timestamp prefix and .json extension)
+        base_filename = filename
+        if '_' in filename:
+            parts = filename.split('_', 1)
+            if parts[0].isdigit():
+                base_filename = parts[1]
+        if base_filename.endswith('.json'):
+            base_filename = base_filename[:-5]
+        
         # Delete uploads (limit search)
-        upload_objects = list_all_s3_objects(BUCKET, f"uploads/{filename}", max_keys=100)
+        upload_objects = list_all_s3_objects(BUCKET, f"uploads/{base_filename}", max_keys=100)
         logger.info(f"Found {len(upload_objects)} upload objects")
         for obj in upload_objects:
             try:
@@ -670,24 +679,46 @@ def handle_delete_file(filename):
             except Exception as e:
                 logger.warning(f"Delete upload failed | Key: {obj['Key']} | Error: {type(e).__name__}")
         
-        # Delete images
-        image_objects = list_all_s3_objects(BUCKET, f"images/{filename}/", max_keys=500)
+        # Delete images (use base_filename without timestamp)
+        image_objects = list_all_s3_objects(BUCKET, f"images/{base_filename}/", max_keys=500)
         image_keys = [obj["Key"] for obj in image_objects]
         if image_keys:
             deleted_count = batch_delete_s3_objects(BUCKET, image_keys)
-            logger.info(f"Deleted images | Count: {deleted_count} | File: {filename}")
+            logger.info(f"Deleted images | Count: {deleted_count} | File: {base_filename}")
         
-        # Delete vector store data
-        vector_objects = list_all_s3_objects(BUCKET, f"vector_store/{filename}/", max_keys=100)
+        # Delete vector store data (use base_filename without timestamp)
+        vector_objects = list_all_s3_objects(BUCKET, f"vector_store/{base_filename}/", max_keys=100)
         vector_keys = [obj["Key"] for obj in vector_objects]
         if vector_keys:
             deleted_count = batch_delete_s3_objects(BUCKET, vector_keys)
-            logger.info(f"Deleted vector objects | Count: {deleted_count} | File: {filename}")
+            logger.info(f"Deleted vector objects | Count: {deleted_count} | File: {base_filename}")
         
-        # Clear FAISS cache
+        # Delete progress and error markers
+        try:
+            s3_client.delete_object(Bucket=BUCKET, Key=f"progress/{base_filename}.json")
+            s3_client.delete_object(Bucket=BUCKET, Key=f"errors/{base_filename}.txt")
+            s3_client.delete_object(Bucket=BUCKET, Key=f"cancelled/{base_filename}.txt")
+            logger.info(f"Deleted progress/error markers | File: {base_filename}")
+        except Exception as e:
+            logger.warning(f"Could not delete markers | Error: {type(e).__name__}")
+        
+        # Start async master index rebuild (don't wait)
+        try:
+            logger.info(f"Starting async master index rebuild after deletion | File: {base_filename}")
+            import threading
+            rebuild_thread = threading.Thread(target=rebuild_master_index)
+            rebuild_thread.start()
+            logger.info(f"Async rebuild started in background")
+        except Exception as e:
+            logger.warning(f"Failed to start async rebuild | Error: {type(e).__name__}")
+        
+        # Clear FAISS cache and query cache
         if filename in _faiss_cache:
             del _faiss_cache[filename]
             logger.info(f"Cleared FAISS cache | File: {sanitize_for_logging(filename)}")
+        if "master_index" in _faiss_cache:
+            del _faiss_cache["master_index"]
+            logger.info("Cleared master index cache")
         
         logger.info(f"Delete operation complete | File: {filename}")
         return cors_response({"message": f"Successfully deleted {filename}"})
