@@ -29,6 +29,10 @@ resource "aws_cognito_user_pool" "agent_users" {
 
   auto_verified_attributes = ["email"]
   
+  email_configuration {
+    email_sending_account = "COGNITO_DEFAULT"
+  }
+  
   username_configuration {
     case_sensitive = false
   }

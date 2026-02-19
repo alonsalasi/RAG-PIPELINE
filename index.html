@@ -73,6 +73,9 @@
     .assistant-message table th { background:#f0f0f0; padding:10px; border:1px solid #ddd; font-weight:600; text-align:left; }
     .assistant-message table td { padding:10px; border:1px solid #ddd; }
     .assistant-message table tr:nth-child(even) { background:#f9f9f9; }
+    .export-btn { background:#28a745; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.85em; margin-top:10px; margin-right:8px; }
+    .export-btn:hover { background:#218838; }
+    .export-btn:disabled { background:#ccc; cursor:not-allowed; }
     .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
     .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
     .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
@@ -99,28 +102,29 @@
     .login-box button:hover { background:#0056b3;}
     .login-box button:disabled { background:#ccc; cursor:not-allowed;}
     .error-msg { color:var(--error-color); font-size:0.9em; margin-top:15px; text-align:center; padding:10px; background:#fff5f5; border-radius:6px; border:1px solid #ffdddd;}
-    .chat-history-sidebar { width:280px; background:#fff; border-left:1px solid #dee2e6; padding:15px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; transition:width 0.3s; }
+    .chat-history-sidebar { width:280px; background:#fff; border-left:1px solid #dee2e6; padding:15px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; transition:width 0.3s; box-shadow:-2px 0 8px rgba(0,0,0,0.05); }
     .chat-history-sidebar.minimized { width:50px; padding:10px; }
-    .chat-history-sidebar.minimized .new-chat-btn, .chat-history-sidebar.minimized .chat-history-list, .chat-history-sidebar.minimized .chat-history-header span, .chat-history-sidebar.minimized .chat-history-toggle { display:none; }
-    .chat-history-header { font-weight:600; font-size:1.1em; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
-    .chat-history-toggle { background:none; border:none; cursor:pointer; font-size:1.2em; padding:0 4px; color:#6c757d; }
-    .chat-history-toggle:hover { color:#495057; }
-    .minimize-sidebar-btn { position:absolute; top:15px; right:15px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; cursor:pointer; padding:6px 10px; font-size:1.2em; color:#6c757d; transition:all 0.2s; }
-    .minimize-sidebar-btn:hover { background:#e9ecef; color:#495057; }
+    .chat-history-sidebar.minimized .new-chat-btn, .chat-history-sidebar.minimized .chat-history-list, .chat-history-sidebar.minimized .chat-history-header span, .chat-history-sidebar.minimized .clear-all-btn { display:none; }
+    .chat-history-header { font-weight:600; font-size:1.1em; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; color:#333; }
+    .minimize-sidebar-btn { background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border:none; border-radius:50%; cursor:pointer; padding:8px; font-size:1em; color:white; transition:all 0.3s; width:36px; height:36px; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(102,126,234,0.3); }
+    .minimize-sidebar-btn:hover { transform:scale(1.1); box-shadow:0 4px 12px rgba(102,126,234,0.5); }
     .chat-history-sidebar.minimized .minimize-sidebar-btn { position:static; margin:0 auto; }
     .chat-history-list { display:flex; flex-direction:column; gap:10px; }
-    .chat-history-list.collapsed { display:none; }
-    .chat-item { padding:10px 12px; background:#f8f9fa; border-radius:8px; cursor:pointer; transition:all 0.2s; border:1px solid #e0e0e0; position:relative; }
-    .chat-item:hover { background:#e9ecef; transform:translateX(-2px); }
-    .chat-item.active { background:#007bff; color:white; border-color:#007bff; }
+    .chat-item { padding:12px; background:linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius:12px; cursor:pointer; transition:all 0.3s; border:2px solid transparent; position:relative; box-shadow:0 2px 4px rgba(0,0,0,0.05); }
+    .chat-item:hover { background:linear-gradient(135deg, #e9ecef 0%, #dee2e6 100%); transform:translateY(-2px); box-shadow:0 4px 8px rgba(0,0,0,0.1); border-color:#667eea; }
+    .chat-item.active { background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); color:white; border-color:#667eea; box-shadow:0 4px 12px rgba(102,126,234,0.4); }
     .chat-item-title { font-size:0.9em; font-weight:500; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:30px; }
     .chat-item-time { font-size:0.75em; opacity:0.7; }
-    .chat-item-delete { position:absolute; top:8px; right:8px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:12px; padding:4px 6px; border-radius:4px; width:24px; height:24px; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
-    .chat-item-delete:hover { background:#dc3545; color:white; }
+    .chat-item-delete { position:absolute; top:8px; right:8px; background:rgba(220,53,69,0.1); border:none; color:#dc3545; cursor:pointer; font-size:14px; padding:4px; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
+    .chat-item-delete:hover { background:#dc3545; color:white; transform:scale(1.1); }
+    .chat-item-delete.deleting { background:#ffc107; color:white; pointer-events:none; }
     .chat-item.active .chat-item-delete { background:rgba(255,255,255,0.2); color:white; }
-    .chat-item.active .chat-item-delete:hover { background:rgba(255,255,255,0.3); }
-    .new-chat-btn { width:100%; padding:8px; background:#28a745; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; margin-bottom:10px; }
-    .new-chat-btn:hover { background:#218838; }
+    .chat-item.active .chat-item-delete:hover { background:rgba(255,255,255,0.3); transform:scale(1.1); }
+    .new-chat-btn { width:100%; padding:10px; background:linear-gradient(135deg, #28a745 0%, #20c997 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; margin-bottom:10px; transition:all 0.3s; box-shadow:0 2px 8px rgba(40,167,69,0.3); }
+    .new-chat-btn:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(40,167,69,0.5); }
+    .clear-all-btn { width:100%; padding:8px; background:linear-gradient(135deg, #dc3545 0%, #c82333 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; margin-top:10px; font-size:0.9em; transition:all 0.3s; box-shadow:0 2px 8px rgba(220,53,69,0.3); }
+    .clear-all-btn:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(220,53,69,0.5); }
+    .clear-all-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; }
     #app { display:none; height:100vh; width:100vw; overflow:hidden; }
     #app[style*="display: flex"] { display:flex !important; flex-direction:row; }
   </style>
@@ -261,12 +265,12 @@
 
 <div class="chat-history-sidebar" id="chat-history-sidebar">
   <button class="minimize-sidebar-btn" onclick="toggleSidebar()" title="Minimize/Expand Sidebar">◀</button>
-  <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+  <button class="new-chat-btn" onclick="newChat()">✨ New Chat</button>
   <div class="chat-history-header">
     <span>💬 Chat History</span>
-    <button class="chat-history-toggle" onclick="toggleChatHistory()" title="Minimize/Expand">▼</button>
   </div>
   <div id="chat-list" class="chat-history-list"></div>
+  <button class="clear-all-btn" onclick="clearAllChats()" id="clear-all-btn">🗑️ Clear All Chats</button>
 </div>
 </div>
 
@@ -637,6 +641,39 @@
     tempDiv.appendChild(textNode);
     div.innerHTML = tempDiv.innerHTML.replace(/\n/g,'<br>');
     
+    // Add export button for assistant messages (not errors)
+    if (role === 'assistant' && !isError && !skipTracking) {
+      const exportContainer = document.createElement('div');
+      exportContainer.style.marginTop = '10px';
+      
+      // Detect content type
+      const hasTable = /\|.*\|.*\|/.test(content);
+      const hasList = /(^|\n)[\*\-\d]+[\.\)]\s/.test(content);
+      
+      // Add appropriate export buttons
+      if (hasTable) {
+        const excelBtn = document.createElement('button');
+        excelBtn.className = 'export-btn';
+        excelBtn.innerHTML = '📊 Export to Excel';
+        excelBtn.onclick = () => exportDocument(content, 'excel', 'Table Export');
+        exportContainer.appendChild(excelBtn);
+      }
+      
+      const wordBtn = document.createElement('button');
+      wordBtn.className = 'export-btn';
+      wordBtn.innerHTML = '📄 Export to Word';
+      wordBtn.onclick = () => exportDocument(content, 'word', 'Document Export');
+      exportContainer.appendChild(wordBtn);
+      
+      const pptBtn = document.createElement('button');
+      pptBtn.className = 'export-btn';
+      pptBtn.innerHTML = '📽️ Export to PowerPoint';
+      pptBtn.onclick = () => exportDocument(content, 'powerpoint', 'Presentation');
+      exportContainer.appendChild(pptBtn);
+      
+      div.appendChild(exportContainer);
+    }
+    
     if(images && images.length){
       const imgContainer = document.createElement('div');
       imgContainer.style.marginTop = '15px';
@@ -740,6 +777,50 @@
     CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
   }
 
+  
+  async function exportDocument(text, format, title) {
+    try {
+      // Find the button that was clicked and disable it
+      const buttons = document.querySelectorAll('.export-btn');
+      buttons.forEach(btn => btn.disabled = true);
+      
+      const res = await fetch(`${API_GATEWAY_URL}/export-document`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ text, format, title })
+      });
+      
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Export failed');
+      }
+      
+      const data = await res.json();
+      
+      // Create temporary link and trigger download
+      const link = document.createElement('a');
+      link.href = data.downloadUrl;
+      link.download = data.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Show success message
+      const statusDiv = document.createElement('div');
+      statusDiv.style.cssText = 'position:fixed; top:20px; right:20px; background:#28a745; color:white; padding:15px 20px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.2); z-index:9999;';
+      statusDiv.textContent = `✓ ${data.filename} downloaded successfully!`;
+      document.body.appendChild(statusDiv);
+      setTimeout(() => document.body.removeChild(statusDiv), 3000);
+      
+    } catch (e) {
+      alert('Export failed: ' + e.message);
+    } finally {
+      // Re-enable buttons
+      const buttons = document.querySelectorAll('.export-btn');
+      buttons.forEach(btn => btn.disabled = false);
+    }
+  }
+  
   function showLoading(el, text){ el.innerHTML = `<span class="spinner"></span> <span>${text}</span>`; }
 
   async function fetchUploadedFiles(){
@@ -832,6 +913,14 @@
           
           const finalDiv = document.createElement('div');
           finalDiv.className = 'message assistant-message';
+          
+          // Show cache indicator if response was cached
+          if(status.cached) {
+            const cacheIndicator = document.createElement('div');
+            cacheIndicator.style.cssText = 'background:#e7f3ff; border-left:3px solid #007bff; padding:8px 12px; margin-bottom:10px; border-radius:4px; font-size:0.85em; color:#0056b3;';
+            cacheIndicator.innerHTML = `⚡ Cached response (${Math.round(status.similarity * 100)}% similar) - Instant delivery!`;
+            finalDiv.appendChild(cacheIndicator);
+          }
           
           // Parse response for IMAGE_URL markers and convert to actual images
           let responseText = status.response;
@@ -1973,23 +2062,20 @@
   function renderChatHistory(chats) {
     const chatList = document.getElementById('chat-list');
     chatList.innerHTML = chats.map(chat => `<div class="chat-item ${chat.id === currentChatId ? 'active' : ''}" onclick="loadChat('${chat.id}')"><div class="chat-item-title">${chat.title}</div><div class="chat-item-time">${new Date(chat.timestamp).toLocaleDateString()}</div><button class="chat-item-delete" onclick="event.stopPropagation();deleteChat('${chat.id}')" title="Delete chat">✖</button></div>`).join('');
-  }
-  
-  window.toggleChatHistory = () => {
-    const chatList = document.getElementById('chat-list');
-    const toggleBtn = document.querySelector('.chat-history-toggle');
-    if (chatList && toggleBtn) {
-      chatList.classList.toggle('collapsed');
-      toggleBtn.textContent = chatList.classList.contains('collapsed') ? '▶' : '▼';
+    
+    // Update clear all button state
+    const clearAllBtn = document.getElementById('clear-all-btn');
+    if (clearAllBtn) {
+      clearAllBtn.disabled = chats.length === 0;
     }
-  };
+  }
   
   window.toggleSidebar = () => {
     const sidebar = document.getElementById('chat-history-sidebar');
     const btn = document.querySelector('.minimize-sidebar-btn');
     if (sidebar && btn) {
       sidebar.classList.toggle('minimized');
-      btn.textContent = sidebar.classList.contains('minimized') ? '▶' : '◀';
+      btn.innerHTML = sidebar.classList.contains('minimized') ? '▶' : '◀';
       btn.title = sidebar.classList.contains('minimized') ? 'Expand Sidebar' : 'Minimize Sidebar';
     }
   };
@@ -2009,11 +2095,55 @@
   
   window.deleteChat = async (chatId) => {
     if (!confirm('Delete this chat?')) return;
+    
+    // Find the delete button and show spinner
+    const deleteBtn = event.target;
+    const originalHTML = deleteBtn.innerHTML;
+    deleteBtn.classList.add('deleting');
+    deleteBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+    
     try {
       await fetch(`${API_GATEWAY_URL}/delete-chat?chatId=${chatId}`, { method: 'DELETE', headers: getAuthHeaders() });
       if (currentChatId === chatId) newChat();
       loadChatHistory();
-    } catch (e) { console.error('Delete chat failed:', e); }
+    } catch (e) {
+      console.error('Delete chat failed:', e);
+      deleteBtn.innerHTML = originalHTML;
+      deleteBtn.classList.remove('deleting');
+    }
+  };
+  
+  window.clearAllChats = async () => {
+    if (!confirm('Delete ALL chat history? This cannot be undone.')) return;
+    
+    const clearAllBtn = document.getElementById('clear-all-btn');
+    const originalHTML = clearAllBtn.innerHTML;
+    clearAllBtn.disabled = true;
+    clearAllBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> Clearing...';
+    
+    try {
+      const res = await fetch(`${API_GATEWAY_URL}/list-chats`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      const chats = data.chats || [];
+      
+      // Delete all chats
+      for (const chat of chats) {
+        try {
+          await fetch(`${API_GATEWAY_URL}/delete-chat?chatId=${chat.id}`, { method: 'DELETE', headers: getAuthHeaders() });
+        } catch (e) {
+          console.error('Failed to delete chat:', chat.id, e);
+        }
+      }
+      
+      newChat();
+      loadChatHistory();
+    } catch (e) {
+      console.error('Clear all failed:', e);
+      alert('Failed to clear all chats. Please try again.');
+    } finally {
+      clearAllBtn.innerHTML = originalHTML;
+      clearAllBtn.disabled = false;
+    }
   };
   
   window.newChat = () => {

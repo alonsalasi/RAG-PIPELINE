@@ -77,6 +77,36 @@ resource "aws_s3_bucket_lifecycle_configuration" "rag_documents_lifecycle" {
       days = 3
     }
   }
+
+  rule {
+    id     = "exports-cleanup"
+    status = "Enabled"
+
+    filter {
+      prefix = "exports/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+
+  rule {
+    id     = "query-cache-cleanup"
+    status = "Enabled"
+
+    filter {
+      prefix = "query-cache/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "rag_documents_block" {

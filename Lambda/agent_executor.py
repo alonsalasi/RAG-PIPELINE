@@ -3070,6 +3070,8 @@ def lambda_handler(event, context):
             return handle_get_chat(event)
         elif path == "/delete-chat" and method == "DELETE":
             return handle_delete_chat(event)
+        elif path == "/export-document" and method == "POST":
+            return handle_export_document(event)
         else:
             logger.error(f"Unhandled route | Path: {path} | Method: {method}")
             return cors_response({"error": f"Unhandled route: {path}"}, 404)
@@ -3130,10 +3132,38 @@ def handle_agent_query_async(event):
 
 def process_agent_query_background(query_id, query, session_id):
     """Process agent query in background and write result to S3."""
+    from semantic_cache import SemanticCache
+    
     s3_client = get_s3_client()
     status_key = f"agent-status/{query_id}.json"
     
     try:
+        # Initialize semantic cache
+        cache = SemanticCache(s3_client, BUCKET, threshold=0.85)
+        
+        # Check cache first
+        cached_result = cache.search_similar(query, session_id)
+        if cached_result:
+            logger.info(f"Cache HIT: similarity={cached_result['similarity']:.2f}, saved tokens")
+            
+            # Return cached response immediately
+            s3_client.put_object(
+                Bucket=BUCKET,
+                Key=status_key,
+                Body=json.dumps({
+                    "status": "completed",
+                    "response": cached_result['response'],
+                    "images": cached_result['images'],
+                    "sessionId": session_id,
+                    "cached": True,
+                    "similarity": cached_result['similarity']
+                }),
+                ContentType="application/json"
+            )
+            return
+        
+        logger.info("Cache MISS: generating new response")
+        
         agent_id = os.getenv("BEDROCK_AGENT_ID")
         alias_id = os.getenv("BEDROCK_AGENT_ALIAS_ID")
         
@@ -3149,7 +3179,7 @@ def process_agent_query_background(query_id, query, session_id):
             Body=json.dumps({"status": "processing", "message": "Searching documents..."}),
             ContentType="application/json"
         )
-        time.sleep(0.5)  # Give frontend time to poll
+        time.sleep(0.5)
         
         # Load and compress history BEFORE sending to agent
         history = load_session_history(session_id)
@@ -3158,9 +3188,8 @@ def process_agent_query_background(query_id, query, session_id):
         # Build session attributes with compressed history
         session_attributes = {}
         if compressed_history:
-            # Format history for agent context
             history_text = "\n".join([f"{m['role']}: {m['content']}" for m in compressed_history])
-            session_attributes['conversationHistory'] = history_text[:200000]  # Hard limit for safety
+            session_attributes['conversationHistory'] = history_text[:200000]
         
         # Invoke agent with retry
         for attempt in range(3):
@@ -3180,7 +3209,6 @@ def process_agent_query_background(query_id, query, session_id):
                     continue
                 raise
         
-        
         # Update status: Generating
         s3_client.put_object(
             Bucket=BUCKET,
@@ -3195,7 +3223,7 @@ def process_agent_query_background(query_id, query, session_id):
             if 'chunk' in event and 'bytes' in event['chunk']:
                 answer += event['chunk']['bytes'].decode('utf-8')
         
-        # Extract images - ALWAYS check for images to complement answers
+        # Extract images
         images = []
         import re, html
         matches = re.findall(r'IMAGE_URL:([^\n|]+)', answer)
@@ -3213,6 +3241,10 @@ def process_agent_query_background(query_id, query, session_id):
                     pass
         answer = re.sub(r'IMAGE_URL:[^\n]+\n?', '', answer).strip()
         
+        # Store in cache for future queries
+        cache.store(query, answer, images, session_id)
+        logger.info("Response cached for future queries")
+        
         # Write success to S3
         s3_client.put_object(
             Bucket=BUCKET,
@@ -3221,7 +3253,8 @@ def process_agent_query_background(query_id, query, session_id):
                 "status": "completed",
                 "response": answer,
                 "images": images,
-                "sessionId": session_id
+                "sessionId": session_id,
+                "cached": False
             }),
             ContentType="application/json"
         )
@@ -3428,6 +3461,76 @@ def handle_delete_chat(event):
         return cors_response({"success": True})
     except Exception as e:
         logger.error(f"Delete chat failed: {e}")
+        return cors_response({"error": str(e)}, 500)
+
+
+def handle_export_document(event):
+    """Export agent response to Excel, Word, or PowerPoint."""
+    try:
+        from document_exporter import export_to_excel, export_to_word, export_to_powerpoint, detect_content_type
+        
+        body_str = event.get("body", "{}")
+        body = json.loads(body_str) if body_str else {}
+        
+        text = body.get("text", "")
+        format_type = body.get("format", "auto")  # auto, excel, word, powerpoint
+        title = body.get("title", "Export")
+        
+        if not text:
+            return cors_response({"error": "Text content required"}, 400)
+        
+        # Auto-detect format if not specified
+        if format_type == "auto":
+            content_type = detect_content_type(text)
+            if content_type['has_table']:
+                format_type = "excel"
+            elif "presentation" in text.lower() or "slides" in text.lower():
+                format_type = "powerpoint"
+            else:
+                format_type = "word"
+        
+        # Generate document
+        if format_type == "excel":
+            file_bytes = export_to_excel(text, title)
+            filename = f"{title}.xlsx"
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif format_type == "word":
+            file_bytes = export_to_word(text, title)
+            filename = f"{title}.docx"
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif format_type == "powerpoint":
+            file_bytes = export_to_powerpoint(text, title)
+            filename = f"{title}.pptx"
+            content_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        else:
+            return cors_response({"error": "Invalid format type"}, 400)
+        
+        # Upload to S3
+        s3_client = get_s3_client()
+        export_key = f"exports/{int(time.time())}_{filename}"
+        s3_client.put_object(
+            Bucket=BUCKET,
+            Key=export_key,
+            Body=file_bytes.getvalue(),
+            ContentType=content_type
+        )
+        
+        # Generate presigned URL
+        download_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': BUCKET, 'Key': export_key},
+            ExpiresIn=3600
+        )
+        
+        logger.info(f"Document exported: {filename} ({format_type})")
+        return cors_response({
+            "downloadUrl": download_url,
+            "filename": filename,
+            "format": format_type
+        })
+        
+    except Exception as e:
+        logger.error(f"Export failed: {e}", exc_info=True)
         return cors_response({"error": str(e)}, 500)
 
 
