@@ -16,6 +16,12 @@ resource "aws_cloudtrail" "agent_audit" {
     }
   }
 
+  # Additional event selector for all management events (required for EventBridge)
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+  }
+
   depends_on = [
     aws_s3_bucket_policy.audit_logs_policy
   ]

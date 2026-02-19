@@ -11,6 +11,8 @@ resource "null_resource" "build_and_push_agent_image" {
     parser_hash       = filemd5("${path.module}/Lambda/document_parser.py")
     matcher_hash      = filemd5("${path.module}/Lambda/field_matcher.py")
     filler_hash       = filemd5("${path.module}/Lambda/document_filler.py")
+    exporter_hash     = filemd5("${path.module}/Lambda/document_exporter.py")
+    cache_hash        = filemd5("${path.module}/Lambda/semantic_cache.py")
     repo_url          = aws_ecr_repository.agent_lambda_repo.repository_url
     rebuild_trigger   = "2025-03-15-skip-rebuild"
   }
