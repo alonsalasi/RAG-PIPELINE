@@ -985,7 +985,7 @@ def handle_get_upload_url_api(event):
         if not file_name.lower().endswith(allowed_extensions):
             return cors_response({"error": "Only PDF, PPTX, DOCX, XLSX, JPG, JPEG, PNG, and TIFF files are allowed"}, 400)
         
-        # Check if file already exists in uploads/
+        # Check if file already exists in uploads/ AND was successfully processed
         s3_client = get_s3_client()
         base_name_no_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
         try:
@@ -995,7 +995,21 @@ def handle_get_upload_url_api(event):
                     existing_file = obj['Key'].replace('uploads/', '')
                     existing_no_ext = existing_file.rsplit('.', 1)[0] if '.' in existing_file else existing_file
                     if existing_no_ext == base_name_no_ext:
-                        return cors_response({"error": f"File '{file_name}' already exists. Please delete it first or rename your file."}, 409)
+                        # Only block re-upload if the file was actually processed successfully
+                        try:
+                            s3_client.head_object(Bucket=BUCKET, Key=f"processed/{base_name_no_ext}.json")
+                            # File exists in processed/ - it's a true duplicate
+                            return cors_response({"error": f"File '{file_name}' already exists. Please delete it first or rename your file."}, 409)
+                        except Exception:
+                            # File in uploads/ but NOT in processed/ - previous ingestion failed
+                            # Clean up the stale upload so the new one can proceed
+                            logger.warning(f"Stale upload found for {base_name_no_ext}, cleaning up for re-upload")
+                            try:
+                                s3_client.delete_object(Bucket=BUCKET, Key=obj['Key'])
+                                s3_client.delete_object(Bucket=BUCKET, Key=f"progress/{base_name_no_ext}.json")
+                                s3_client.delete_object(Bucket=BUCKET, Key=f"errors/{base_name_no_ext}.txt")
+                            except Exception as cleanup_err:
+                                logger.warning(f"Cleanup error: {type(cleanup_err).__name__}")
         except Exception as e:
             logger.error(f"Error checking duplicates: {type(e).__name__}")
         
@@ -2580,8 +2594,46 @@ def handle_processing_status(event):
         except Exception as e:
             logger.error(f"Error checking cancellation: {type(e).__name__}")
         
-        # Check for progress updates FIRST (more current than processed marker)
+        # Check if processing is complete FIRST — most reliable signal
         try:
+            logger.info(f"Checking: s3://{BUCKET}/processed/{base_name}.json")
+            processed_obj = s3_client.get_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
+            try:
+                processed_data = json.loads(processed_obj['Body'].read().decode('utf-8'))
+            except (json.JSONDecodeError, KeyError, TypeError) as json_err:
+                logger.error(f"Failed to parse processed marker: {json_err}")
+                return cors_response({"status": "completed", "progress": 100, "message": "Processing complete"})
+            logger.info(f"Found completion marker: {base_name}")
+            return cors_response({"status": "completed", "progress": 100, "message": "Processing complete", "data": processed_data})
+        except s3_client.exceptions.NoSuchKey:
+            logger.info(f"Processed marker not found")
+        except Exception as e:
+            logger.error(f"Error checking processed: {type(e).__name__}")
+
+        # Check for progress updates — aggregate parallel worker files if present
+        try:
+            # Look for per-worker progress files
+            worker_resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=f"progress/{base_name}_worker_")
+            worker_objects = worker_resp.get('Contents', [])
+
+            if worker_objects:
+                # Aggregate worker progress
+                total_pages_done = 0
+                total_pages = 0
+                worker_count = len(worker_objects)
+                for obj in worker_objects:
+                    try:
+                        w = json.loads(s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])['Body'].read())
+                        total_pages_done += w.get('pages_done', 0)
+                        total_pages += w.get('total_pages', 0)
+                    except:
+                        pass
+                if total_pages > 0:
+                    pct = 10 + int((total_pages_done / total_pages) * 75)
+                    msg = f"OCR: {total_pages_done}/{total_pages} pages across {worker_count} parallel workers..."
+                    return cors_response({"status": "processing", "progress": min(pct, 85), "message": msg})
+
+            # Fall back to single progress file
             progress_obj = s3_client.get_object(Bucket=BUCKET, Key=f"progress/{base_name}.json")
             progress_data = json.loads(progress_obj['Body'].read().decode('utf-8'))
             logger.info(f"Found progress marker: {progress_data}")
@@ -2594,32 +2646,6 @@ def handle_processing_status(event):
             logger.info(f"Progress marker not found")
         except Exception as e:
             logger.error(f"Error checking progress: {type(e).__name__}")
-        
-        # Check if processing is complete
-        try:
-            logger.info(f"Checking: s3://{BUCKET}/processed/{base_name}.json")
-            processed_obj = s3_client.get_object(Bucket=BUCKET, Key=f"processed/{base_name}.json")
-            try:
-                processed_data = json.loads(processed_obj['Body'].read().decode('utf-8'))
-            except (json.JSONDecodeError, KeyError, TypeError) as json_err:
-                logger.error(f"Failed to parse processed marker: {json_err}")
-                # File exists but is corrupted - treat as completed anyway
-                return cors_response({
-                    "status": "completed",
-                    "progress": 100,
-                    "message": "Processing complete"
-                })
-            logger.info(f"Found completion marker: {base_name}")
-            return cors_response({
-                "status": "completed",
-                "progress": 100,
-                "message": "Processing complete",
-                "data": processed_data
-            })
-        except s3_client.exceptions.NoSuchKey:
-            logger.info(f"Processed marker not found")
-        except Exception as e:
-            logger.error(f"Error checking processed: {type(e).__name__}")
         
         # Check if file exists in uploads (fallback)
         try:
@@ -3113,7 +3139,7 @@ def handle_agent_query_async(event):
         # Invoke Lambda async to process query
         lambda_client = boto3.client('lambda')
         lambda_client.invoke(
-            FunctionName=os.getenv('AWS_LAMBDA_FUNCTION_NAME'),
+            FunctionName=os.getenv('AGENT_LAMBDA_NAME', os.getenv('AWS_LAMBDA_FUNCTION_NAME')),
             InvocationType='Event',
             Payload=json.dumps({
                 "action": "process_agent_query",

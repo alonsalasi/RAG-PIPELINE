@@ -59,6 +59,7 @@ resource "aws_lambda_function" "agent_executor" {
       USER_POOL_ID             = aws_cognito_user_pool.agent_users.id
       CLIENT_ID                = aws_cognito_user_pool_client.agent_client.id
       INGESTION_LAMBDA_NAME    = aws_lambda_function.ingestion_worker.function_name
+      AGENT_LAMBDA_NAME         = "${var.project_name}-agent-executor"
     }
   }
 

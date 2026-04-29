@@ -113,31 +113,21 @@ def preprocess_for_tables(image):
     binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
     return Image.fromarray(binary)
 
-def enhanced_ocr(page_image, lang='eng+heb+ara'):
-    """Retry OCR with table-optimized settings only if actual table detected."""
+def ocr_page(page_image, lang='eng+heb+ara'):
+    """Run OCR once, returning (text, confidence). Applies table preprocessing if needed."""
     import pytesseract
-    
-    # Check if page has actual table structure
-    has_table = detect_actual_tables(page_image)
-    
-    if has_table:
-        # Use table preprocessing
-        processed_image = preprocess_for_tables(page_image)
-        config = '--psm 6 --oem 1'
-        logger.info("Table detected, using table-optimized OCR")
-    else:
-        # Regular text processing without table optimization
-        processed_image = page_image
-        config = '--psm 6 --oem 1'
-        logger.info("No table detected, using standard OCR")
-    
-    ocr_text = pytesseract.image_to_string(processed_image, lang=lang, config=config)
-    ocr_data = pytesseract.image_to_data(processed_image, lang=lang, config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
-    
-    confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
+    config = '--psm 6 --oem 1'
+    if detect_actual_tables(page_image):
+        page_image = preprocess_for_tables(page_image)
+    ocr_data = pytesseract.image_to_data(page_image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+    confidences = [int(c) for c in ocr_data['conf'] if c != '-1' and str(c).isdigit()]
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-    
-    return ocr_text, avg_confidence
+    words = [ocr_data['text'][i] for i in range(len(ocr_data['text'])) if int(ocr_data['conf'][i]) > 0]
+    return ' '.join(words), avg_confidence
+
+def enhanced_ocr(page_image, lang='eng+heb+ara'):
+    """Kept for compatibility — delegates to ocr_page."""
+    return ocr_page(page_image, lang)
 
 def extract_images_from_pdf(pdf_path, base_name):
     """Extract embedded images from PDF pages, skipping headers/footers and duplicates."""
@@ -243,6 +233,21 @@ def update_progress(base_name, progress, message, status="processing"):
     except Exception as e:
         logger.warning(f"Failed to update progress: {e}")
 
+def write_worker_progress(base_name, invocation_id, total_invocations, pages_done, total_pages):
+    """Write per-worker progress so the status endpoint can aggregate them."""
+    if not base_name or total_invocations <= 1:
+        return
+    try:
+        get_s3_client().put_object(
+            Bucket=BUCKET,
+            Key=f"progress/{base_name}_worker_{invocation_id}.json",
+            Body=json.dumps({"pages_done": pages_done, "total_pages": total_pages, "timestamp": int(time.time())}),
+            ContentType="application/json"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write worker progress: {e}")
+
+
 def check_cancelled(base_name):
     """Check if processing was cancelled."""
     if not base_name or not isinstance(base_name, str):
@@ -279,29 +284,21 @@ def get_page_count(local_path, file_ext):
         return 0
     return 0
 
-def invoke_lambda_for_range(s3_bucket, s3_key, start_page, end_page, invocation_id):
-    """Invoke Lambda to process a specific page range."""
-    lambda_client = boto3.client('lambda')
-    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
-    
+def invoke_lambda_for_range(s3_bucket, s3_key, start_page, end_page, invocation_id, total_invocations):
+    """Invoke a worker Lambda for a specific page range."""
+    function_name = os.environ.get('INGESTION_LAMBDA_NAME', os.environ.get('AWS_LAMBDA_FUNCTION_NAME'))
     payload = {
-        "Records": [{
-            "s3": {
-                "bucket": {"name": s3_bucket},
-                "object": {"key": s3_key}
-            }
-        }],
+        "Records": [{"s3": {"bucket": {"name": s3_bucket}, "object": {"key": s3_key}}}],
         "page_range": {"start": start_page, "end": end_page},
         "invocation_id": invocation_id,
-        "total_invocations": 3
+        "total_invocations": total_invocations
     }
-    
-    lambda_client.invoke(
+    boto3.client('lambda').invoke(
         FunctionName=function_name,
         InvocationType='Event',
         Payload=json.dumps(payload)
     )
-    logger.info(f"Invoked Lambda for pages {start_page}-{end_page} (invocation {invocation_id})")
+    logger.info(f"Spawned worker {invocation_id}/{total_invocations} for pages {start_page}-{end_page}")
 
 def process_message(record):
     start_time = time.time()
@@ -430,30 +427,24 @@ def process_message(record):
             # ---- Check if document needs parallel processing ----
             file_ext = s3_key.lower().split('.')[-1]
             
-            # Only coordinator (invocation_id=0) checks for splitting
-            if invocation_id == 0 and not page_range:
-                page_count = get_page_count(local_path, file_ext)
-                logger.info(f"Document has {page_count} pages/units")
-                
-                if page_count > 40:
-                    logger.info(f"Large document detected ({page_count} pages), splitting into 3 parallel invocations")
-                    update_progress(base_name, 5, f"Large document ({page_count} pages) - processing in parallel...")
-                    
-                    # Split into 3 equal chunks
-                    chunk_size = (page_count + 2) // 3
-                    ranges = [
-                        (1, min(chunk_size, page_count)),
-                        (chunk_size + 1, min(chunk_size * 2, page_count)),
-                        (chunk_size * 2 + 1, page_count)
-                    ]
-                    
-                    # Invoke 3 Lambda functions in parallel
-                    for idx, (start, end) in enumerate(ranges, 1):
-                        invoke_lambda_for_range(s3_bucket, s3_key, start, end, idx)
-                    
-                    logger.info(f"Spawned 3 parallel invocations for {base_name}")
-                    update_progress(base_name, 10, "Processing in parallel (3 workers)...")
-                    return  # Coordinator exits, workers continue
+            # Coordinator: split PDFs >10 pages into parallel workers
+            if invocation_id == 0 and not page_range and file_ext == 'pdf':
+                from pypdf import PdfReader as _PR
+                _page_count = len(_PR(local_path).pages)
+                if _page_count > 10:
+                    num_workers = min(5, max(1, _page_count // 10))
+                    pages_per_worker = (_page_count + num_workers - 1) // num_workers
+                    ranges = []
+                    for w in range(num_workers):
+                        s = w * pages_per_worker + 1
+                        e = min(s + pages_per_worker - 1, _page_count)
+                        if s <= _page_count:
+                            ranges.append((s, e))
+                    logger.info(f"Splitting {_page_count} pages into {len(ranges)} parallel workers: {ranges}")
+                    update_progress(base_name, 5, f"Processing {_page_count} pages with {len(ranges)} parallel workers...")
+                    for idx, (s, e) in enumerate(ranges, 1):
+                        invoke_lambda_for_range(s3_bucket, s3_key, s, e, idx, len(ranges))
+                    return  # coordinator exits, workers do the real work
             
             # ---- Document Processing ----
             full_text = ""
@@ -657,202 +648,71 @@ def process_message(record):
                         start_page = 1
                         end_page = total_pdf_pages
                     
-                    # If PDF is too large (>60 pages) AND no page range specified, process in chunks
-                    if total_pdf_pages > 60 and not page_range:
-                        logger.info(f"Large PDF detected ({total_pdf_pages} pages), processing in chunks")
-                        update_progress(base_name, 10, f"Processing large PDF ({total_pdf_pages} pages) in chunks...")
+                    logger.info(f"Processing PDF pages {start_page}-{end_page}")
+                    update_progress(base_name, 10, f"Processing pages {start_page}-{end_page}...")
+                    
+                    # Extract embedded images from the page range
+                    embedded_images = extract_images_from_pdf(local_path, base_name)
+                    # Filter images to page range
+                    if page_range:
+                        embedded_images = [img for img in embedded_images if start_page <= img['page'] <= end_page]
+                    
+                    # Process embedded images
+                    for img_info in embedded_images:
+                        img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
+                        img_key = f"images/{base_name}/{img_name}"
+                        diagram_type = None
+                        is_logo = False
+                        ocr_kw = []
                         
-                        # Split into chunks of 30 pages for better memory management
-                        chunk_size = 30
-                        num_chunks = (total_pdf_pages + chunk_size - 1) // chunk_size
-                        
-                        all_text_parts = []
-                        all_images = []
-                        
-                        for chunk_idx in range(num_chunks):
-                            start_page = chunk_idx * chunk_size
-                            end_page = min(start_page + chunk_size, total_pdf_pages)
+                        try:
+                            analysis = analyze_image(img_info['data'])
+                            diagram_type = analysis.get('diagram_type')
+                            is_logo = analysis.get('is_logo_or_banner', False)
+                            ocr_kw = analysis.get('ocr_keywords', [])
                             
-                            chunk_progress = 10 + int((chunk_idx / num_chunks) * 70)
-                            update_progress(base_name, chunk_progress, f"Processing pages {start_page+1}-{end_page} of {total_pdf_pages}...")
-                            logger.info(f"Processing chunk {chunk_idx+1}/{num_chunks}: pages {start_page+1}-{end_page}")
+                            desc_parts = [f"Page {img_info['page']}"]
+                            if diagram_type:
+                                desc_parts.append(f"Type: {diagram_type}")
+                            if analysis.get('objects'):
+                                desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
+                            if analysis.get('colors'):
+                                desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
                             
-                            # Convert only this chunk's pages
-                            chunk_images = convert_from_path(local_path, dpi=150, first_page=start_page+1, last_page=end_page)
-                            
-                            for page_num, page_image in enumerate(chunk_images, start=start_page+1):
-                                # Update progress for each page
-                                page_progress = 10 + int(((page_num - 1) / total_pdf_pages) * 70)
-                                update_progress(base_name, page_progress, f"OCR processing page {page_num}/{total_pdf_pages}...")
-                                logger.info(f"Progress update: {page_progress}% - Page {page_num}/{total_pdf_pages}")
-                                
-                                # Check cancellation every 5 pages
-                                if page_num % 5 == 0:
-                                    check_cancelled(base_name)
-                                
-                                try:
-                                    import pytesseract
-                                    # Detect if page has actual table
-                                    has_table = detect_actual_tables(page_image)
-                                    config = '--psm 6 --oem 1'
-                                    logger.info(f"Page {page_num}: {'Table detected' if has_table else 'No table detected'}")
-                                    
-                                    ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config=config)
-                                    ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
-                                    confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
-                                    
-                                    avg_confidence = 0
-                                    if confidences:
-                                        avg_confidence = sum(confidences) / len(confidences)
-                                        logger.info(f"Page {page_num} OCR confidence: {avg_confidence:.1f}%")
-                                    
-                                    if avg_confidence < 70 and avg_confidence > 0:
-                                        logger.info(f"Page {page_num}: Low confidence ({avg_confidence:.1f}%), retrying with PSM 6")
-                                        ocr_text, avg_confidence = enhanced_ocr(page_image)
-                                        logger.info(f"Page {page_num}: PSM 6 confidence: {avg_confidence:.1f}%")
-                                    
-                                    logger.info(f"Page {page_num}: Final confidence {avg_confidence:.1f}%")
-                                    
-                                    if ocr_text.strip():
-                                        all_text_parts.append(f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n")
-                                        logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                                    else:
-                                        logger.warning(f"Page {page_num}: OCR returned no text (possible blank page or image-only)")
-                                except Exception as ocr_e:
-                                    logger.error(f"Page {page_num} OCR failed: {ocr_e}", exc_info=True)
-                                
-                                page_image.close()
+                            description = f"Image from {base_name}. {'. '.join(desc_parts)}"
+                        except:
+                            description = f"Image from {base_name}, page {img_info['page']}"
                         
-                        full_text = ''.join(all_text_parts)
-                        logger.info(f"Chunked processing complete | Total pages: {total_pdf_pages} | Text: {len(full_text)} chars")
-                        
-                        # Extract images from full PDF (images are quick)
-                        embedded_images = extract_images_from_pdf(local_path, base_name)
-                        for img_info in embedded_images:
-                            img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
-                            img_key = f"images/{base_name}/{img_name}"
-                            diagram_type = None
-                            is_logo = False
-                            ocr_kw = []
-                            try:
-                                analysis = analyze_image(img_info['data'])
-                                diagram_type = analysis.get('diagram_type')
-                                is_logo = analysis.get('is_logo_or_banner', False)
-                                ocr_kw = analysis.get('ocr_keywords', [])
-                                desc_parts = [f"Page {img_info['page']}"]
-                                if diagram_type:
-                                    desc_parts.append(f"Type: {diagram_type}")
-                                if analysis['objects']:
-                                    desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                                if analysis['colors']:
-                                    desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
-                                
-                                # Add OCR text from image
-                                try:
-                                    import pytesseract
-                                    img_pil = Image.open(io.BytesIO(img_info['data']))
-                                    img_text = pytesseract.image_to_string(img_pil, lang='eng+heb+ara', config='--psm 3 --oem 1')
-                                    if img_text.strip():
-                                        desc_parts.append(f"Text: {img_text.strip()[:50]}")
-                                except:
-                                    pass
-                                
-                                description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                                logger.info(f"Analyzed image page {img_info['page']}: diagram_type={diagram_type}")
-                            except:
-                                description = f"Image from {base_name}, page {img_info['page']}"
-                            
-                            s3_client.put_object(Bucket=BUCKET, Key=img_key, Body=img_info['data'], ContentType='image/jpeg')
-                            image_metadata.append({
-                                'page': img_info['page'],
-                                'image_name': img_name,
-                                's3_key': img_key,
-                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': description,
-                                'diagram_type': diagram_type,
-                                'is_logo_or_banner': is_logo,
-                                'ocr_keywords': ocr_kw
-                            })
-                    else:
-                        logger.info(f"Processing PDF pages {start_page}-{end_page}")
-                        update_progress(base_name, 10, f"Processing pages {start_page}-{end_page}...")
-                        
-                        # Extract embedded images from the page range
-                        embedded_images = extract_images_from_pdf(local_path, base_name)
-                        # Filter images to page range
-                        if page_range:
-                            embedded_images = [img for img in embedded_images if start_page <= img['page'] <= end_page]
-                        
-                        # Process embedded images
-                        for img_info in embedded_images:
-                            img_name = f"{base_name}_page{img_info['page']}_img{img_info['index']}.{img_info['ext']}"
-                            img_key = f"images/{base_name}/{img_name}"
-                            diagram_type = None
-                            is_logo = False
-                            ocr_kw = []
-                            
-                            try:
-                                analysis = analyze_image(img_info['data'])
-                                diagram_type = analysis.get('diagram_type')
-                                is_logo = analysis.get('is_logo_or_banner', False)
-                                ocr_kw = analysis.get('ocr_keywords', [])
-                                
-                                desc_parts = [f"Page {img_info['page']}"]
-                                if diagram_type:
-                                    desc_parts.append(f"Type: {diagram_type}")
-                                if analysis.get('objects'):
-                                    desc_parts.append(f"Objects: {', '.join(analysis['objects'])}")
-                                if analysis.get('colors'):
-                                    desc_parts.append(f"Colors: {', '.join(analysis['colors'])}")
-                                
-                                description = f"Image from {base_name}. {'. '.join(desc_parts)}"
-                            except:
-                                description = f"Image from {base_name}, page {img_info['page']}"
-                            
-                            s3_client.put_object(Bucket=BUCKET, Key=img_key, Body=img_info['data'], ContentType='image/jpeg')
-                            image_metadata.append({
-                                'page': img_info['page'],
-                                'image_name': img_name,
-                                's3_key': img_key,
-                                'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
-                                'description': description,
-                                'diagram_type': diagram_type,
-                                'is_logo_or_banner': is_logo,
-                                'ocr_keywords': ocr_kw
-                            })
-                        
-                        # Convert only the specified page range
-                        chunk_images = convert_from_path(local_path, dpi=150, first_page=start_page, last_page=end_page)
-                        
-                        # Process OCR for the page range
-                        for page_num, page_image in enumerate(chunk_images, start=start_page):
+                        s3_client.put_object(Bucket=BUCKET, Key=img_key, Body=img_info['data'], ContentType='image/jpeg')
+                        image_metadata.append({
+                            'page': img_info['page'],
+                            'image_name': img_name,
+                            's3_key': img_key,
+                            'url': f"https://{BUCKET}.s3.amazonaws.com/{img_key}",
+                            'description': description,
+                            'diagram_type': diagram_type,
+                            'is_logo_or_banner': is_logo,
+                            'ocr_keywords': ocr_kw
+                        })
+                    
+                    # Convert only the specified page range
+                    chunk_images = convert_from_path(local_path, dpi=150, first_page=start_page, last_page=end_page)
+                    
+                    # Process OCR for the page range
+                    for page_num, page_image in enumerate(chunk_images, start=start_page):
+                        if page_num % 5 == 0:
                             ocr_progress = 30 + int(((page_num - start_page) / (end_page - start_page + 1)) * 40)
                             update_progress(base_name, ocr_progress, f"OCR processing page {page_num}/{end_page}...")
-                            
-                            if page_num % 5 == 0:
-                                check_cancelled(base_name)
-                            
-                            try:
-                                import pytesseract
-                                has_table = detect_actual_tables(page_image)
-                                config = '--psm 6 --oem 1'
-                                
-                                ocr_text = pytesseract.image_to_string(page_image, lang='eng+heb+ara', config=config)
-                                ocr_data = pytesseract.image_to_data(page_image, lang='eng+heb+ara', config='--psm 6 --oem 1', output_type=pytesseract.Output.DICT)
-                                confidences = [int(conf) for conf in ocr_data['conf'] if conf != '-1' and str(conf).isdigit()]
-                                
-                                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-                                
-                                if avg_confidence < 70 and avg_confidence > 0:
-                                    ocr_text, avg_confidence = enhanced_ocr(page_image)
-                                
-                                if ocr_text.strip():
-                                    full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
-                                    logger.info(f"Page {page_num} OCR: {len(ocr_text)} chars")
-                            except Exception as ocr_e:
-                                logger.error(f"Page {page_num} OCR failed: {ocr_e}")
-                            
-                            page_image.close()
+                            check_cancelled(base_name)
+                        try:
+                            ocr_text, avg_confidence = ocr_page(page_image)
+                            logger.info(f"Page {page_num}: {avg_confidence:.1f}% confidence, {len(ocr_text)} chars")
+                            write_worker_progress(base_name, invocation_id, total_invocations, page_num - start_page + 1, end_page - start_page + 1)
+                            if ocr_text.strip():
+                                full_text += f"\n[PAGE {page_num} TEXT]:\n{ocr_text}\n"
+                        except Exception as ocr_e:
+                            logger.error(f"Page {page_num} OCR failed: {ocr_e}")
+                        page_image.close()
                     
                 except Exception as e:
                     logger.error(f"PDF processing failed: {e}")
@@ -1224,6 +1084,16 @@ def process_message(record):
             total_time = time.time() - start_time
             logger.info(f"Processing complete | File: {base_name} | Total time: {total_time:.2f}s | Marker: {marker_key}")
             update_progress(base_name, 100, "Complete!", "completed")
+            # Clean up per-worker progress files
+            if total_invocations > 1:
+                try:
+                    s3 = get_s3_client()
+                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"progress/{base_name}_worker_")
+                    keys = [{'Key': o['Key']} for o in resp.get('Contents', [])]
+                    if keys:
+                        s3.delete_objects(Bucket=BUCKET, Delete={'Objects': keys, 'Quiet': True})
+                except Exception:
+                    pass
 
     except ProcessingCancelled as e:
         logger.info(f"Processing cancelled | File: {base_name} | Time: {time.time() - start_time:.2f}s")

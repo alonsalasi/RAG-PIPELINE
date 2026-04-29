@@ -1,0 +1,65 @@
+﻿{
+    "events": [
+        {
+            "timestamp": 1777464608881,
+            "message": "INIT_REPORT Init Duration: 9999.67 ms\tPhase: init\tStatus: timeout\n",
+            "ingestionTime": 1777464608967
+        },
+        {
+            "timestamp": 1777464612198,
+            "message": "[INFO]\t2026-04-29T12:10:12.197Z\t\tEmbeddings client initialized: cohere.embed-multilingual-v3\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613036,
+            "message": "[INFO]\t2026-04-29T12:10:13.035Z\t\tPreloaded master index: 55 vectors in 3.19s\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613038,
+            "message": "START RequestId: 66700835-2ace-48b1-b05e-a57e078d2aeb Version: $LATEST\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613038,
+            "message": "[INFO]\t2026-04-29T12:10:13.038Z\t66700835-2ace-48b1-b05e-a57e078d2aeb\tLambda triggered | RequestId: b6cf63aa-8cdb-4b50-9ebe-7264a658478e | Event: {\"version\": \"0\", \"id\": \"2f90fa5e-9676-69ce-c23c-863756030c5e\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-29T12:09:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613038,
+            "message": "[INFO]\t2026-04-29T12:10:13.038Z\t66700835-2ace-48b1-b05e-a57e078d2aeb\tWarmup ping received\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613040,
+            "message": "END RequestId: 66700835-2ace-48b1-b05e-a57e078d2aeb\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464613040,
+            "message": "REPORT RequestId: 66700835-2ace-48b1-b05e-a57e078d2aeb\tDuration: 4128.04 ms\tBilled Duration: 4129 ms\tMemory Size: 3008 MB\tMax Memory Used: 173 MB\t\nXRAY TraceId: 1-69f1f516-1015179a1a9159917a65dbbf\tSegmentId: 9c0de925194a859e\tSampled: true\t\n",
+            "ingestionTime": 1777464621220
+        },
+        {
+            "timestamp": 1777464629834,
+            "message": "START RequestId: 89a3c4cd-f924-4dd7-a93d-41ef5e35ba76 Version: $LATEST\n",
+            "ingestionTime": 1777464638858
+        },
+        {
+            "timestamp": 1777464629835,
+            "message": "[INFO]\t2026-04-29T12:10:29.835Z\t89a3c4cd-f924-4dd7-a93d-41ef5e35ba76\tLambda triggered | RequestId: 1ce3cb40-5be6-4142-9e19-79a30f36b2f1 | Event: {\"version\": \"1.0\", \"resource\": \"/upload\", \"path\": \"/production/upload\", \"httpMethod\": \"POST\", \"headers\": {\"Content-Length\": \"83\", \"Content-Type\": \"application/json\", \"Host\": \"04kv78x1th.execute-api.us-east-1.amazonaws.com\", \"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36\", \"X-Amzn-Trace-Id\": \"Root=1-69f1f535-6b87d8763a16b50d397d5578\", \"X-Forwarded-For\": \"5.29.23.129\", \"X-Forwarded-Port\": \"443\", \"X-Forwarded-Proto\": \"h\n",
+            "ingestionTime": 1777464638858
+        },
+        {
+            "timestamp": 1777464629835,
+            "message": "[INFO]\t2026-04-29T12:10:29.835Z\t89a3c4cd-f924-4dd7-a93d-41ef5e35ba76\tAPI Gateway request | Method: POST | Path: /production/upload\n",
+            "ingestionTime": 1777464638858
+        },
+        {
+            "timestamp": 1777464629835,
+            "message": "[INFO]\t2026-04-29T12:10:29.835Z\t89a3c4cd-f924-4dd7-a93d-41ef5e35ba76\tPath normalized | Original: /production/upload | Cleaned: /upload\n",
+            "ingestionTime": 1777464638858
+        },
+        {
+            "timestamp": 1777464629995,
+            "message": 

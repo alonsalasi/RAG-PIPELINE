@@ -1,0 +1,216 @@
+{
+    "events": [
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860638255,
+            "message": "START RequestId: 9e8df3da-600a-4059-b60a-ca63680929dd Version: $LATEST\n",
+            "ingestionTime": 1776860647281,
+            "eventId": "39625316347023249725580122285173524671043396875476992000"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860638257,
+            "message": "[INFO]\t2026-04-22T12:23:58.255Z\t9e8df3da-600a-4059-b60a-ca63680929dd\tLambda triggered | RequestId: 1f85bd98-04a9-45bc-9801-02a5948d0212 | Event: {\"version\": \"0\", \"id\": \"5fa17103-aa11-b623-1bbd-a93917423b8b\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:23:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776860647281,
+            "eventId": "39625316347067851215977183531456596107588693598488952833"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860638257,
+            "message": "[INFO]\t2026-04-22T12:23:58.256Z\t9e8df3da-600a-4059-b60a-ca63680929dd\tWarmup ping received\n",
+            "ingestionTime": 1776860647281,
+            "eventId": "39625316347067851215977183531456596107588693598488952834"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860638257,
+            "message": "END RequestId: 9e8df3da-600a-4059-b60a-ca63680929dd\n",
+            "ingestionTime": 1776860647281,
+            "eventId": "39625316347067851215977183531456596107588693598488952835"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860638257,
+            "message": "REPORT RequestId: 9e8df3da-600a-4059-b60a-ca63680929dd\tDuration: 1.61 ms\tBilled Duration: 2 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8bdde-125c6de40d618fe154aba6dd\tSegmentId: 50b920dbbaeb2e2f\tSampled: true\t\n",
+            "ingestionTime": 1776860647281,
+            "eventId": "39625316347067851215977183531456596107588693598488952836"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860758230,
+            "message": "START RequestId: ed045bd1-fec8-4e5d-8795-e6444f55c0af Version: $LATEST\n",
+            "ingestionTime": 1776860767260,
+            "eventId": "39625319022555154919291633835966917363338193380414586880"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860758232,
+            "message": "[INFO]\t2026-04-22T12:25:58.231Z\ted045bd1-fec8-4e5d-8795-e6444f55c0af\tLambda triggered | RequestId: f41ec625-15f5-4bac-8cbb-784b08641ee3 | Event: {\"version\": \"0\", \"id\": \"a0af9db4-4a71-599f-11de-5c5c72f6c14b\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:25:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776860767260,
+            "eventId": "39625319022599756409688695082249988799883490103426547713"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860758232,
+            "message": "[INFO]\t2026-04-22T12:25:58.231Z\ted045bd1-fec8-4e5d-8795-e6444f55c0af\tWarmup ping received\n",
+            "ingestionTime": 1776860767260,
+            "eventId": "39625319022599756409688695082249988799883490103426547714"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860758233,
+            "message": "END RequestId: ed045bd1-fec8-4e5d-8795-e6444f55c0af\n",
+            "ingestionTime": 1776860767260,
+            "eventId": "39625319022622057154887225705391524518156138464932528131"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860758233,
+            "message": "REPORT RequestId: ed045bd1-fec8-4e5d-8795-e6444f55c0af\tDuration: 1.60 ms\tBilled Duration: 2 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8be56-036d7671669ce524226c1c97\tSegmentId: bdd04dffd235035f\tSampled: true\t\n",
+            "ingestionTime": 1776860767260,
+            "eventId": "39625319022622057154887225705391524518156138464932528132"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860878360,
+            "message": "START RequestId: 3caa2689-376b-4a46-a10a-20ad61c287b0 Version: $LATEST\n",
+            "ingestionTime": 1776860887387,
+            "eventId": "39625321701543675618775391973877064201294030048419905536"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860878361,
+            "message": "[INFO]\t2026-04-22T12:27:58.360Z\t3caa2689-376b-4a46-a10a-20ad61c287b0\tLambda triggered | RequestId: bc6a8706-9593-4b2e-bae3-cb788d4571ed | Event: {\"version\": \"0\", \"id\": \"7c7c689e-c075-6a81-5bc2-cffa455b7af4\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:27:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776860887387,
+            "eventId": "39625321701565976363973922597018599919566678409925885953"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860878361,
+            "message": "[INFO]\t2026-04-22T12:27:58.360Z\t3caa2689-376b-4a46-a10a-20ad61c287b0\tWarmup ping received\n",
+            "ingestionTime": 1776860887387,
+            "eventId": "39625321701565976363973922597018599919566678409925885954"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860878361,
+            "message": "END RequestId: 3caa2689-376b-4a46-a10a-20ad61c287b0\n",
+            "ingestionTime": 1776860887387,
+            "eventId": "39625321701565976363973922597018599919566678409925885955"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860878361,
+            "message": "REPORT RequestId: 3caa2689-376b-4a46-a10a-20ad61c287b0\tDuration: 1.30 ms\tBilled Duration: 2 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8bece-7e6d1a7419ef84c6670c85d2\tSegmentId: e72aa4ebb5afcfba\tSampled: true\t\n",
+            "ingestionTime": 1776860887387,
+            "eventId": "39625321701565976363973922597018599919566678409925885956"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860998231,
+            "message": "START RequestId: 0edf829f-7a3b-4ae4-b75a-26f90f8a29c3 Version: $LATEST\n",
+            "ingestionTime": 1776861007263,
+            "eventId": "39625324374756303311839718717826801909436297576973139968"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860998232,
+            "message": "[INFO]\t2026-04-22T12:29:58.231Z\t0edf829f-7a3b-4ae4-b75a-26f90f8a29c3\tLambda triggered | RequestId: 97b23d2e-bd6e-4677-9e78-1b1598e22289 | Event: {\"version\": \"0\", \"id\": \"ad974f0a-4914-9462-55ae-5692fdef5c56\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:29:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776861007263,
+            "eventId": "39625324374778604057038249340968337627708945938479120385"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860998232,
+            "message": "[INFO]\t2026-04-22T12:29:58.232Z\t0edf829f-7a3b-4ae4-b75a-26f90f8a29c3\tWarmup ping received\n",
+            "ingestionTime": 1776861007263,
+            "eventId": "39625324374778604057038249340968337627708945938479120386"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860998233,
+            "message": "END RequestId: 0edf829f-7a3b-4ae4-b75a-26f90f8a29c3\n",
+            "ingestionTime": 1776861007263,
+            "eventId": "39625324374800904802236779964109873345981594299985100803"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776860998233,
+            "message": "REPORT RequestId: 0edf829f-7a3b-4ae4-b75a-26f90f8a29c3\tDuration: 1.26 ms\tBilled Duration: 2 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8bf46-733469d13640896a6e640647\tSegmentId: 6e05a5a3d698211d\tSampled: true\t\n",
+            "ingestionTime": 1776861007263,
+            "eventId": "39625324374800904802236779964109873345981594299985100804"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861118373,
+            "message": "START RequestId: 0cba3506-7f49-40a0-bbff-76ef2eca31ad Version: $LATEST\n",
+            "ingestionTime": 1776861127410,
+            "eventId": "39625327054012432953705844333459702090728378696296824832"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861118375,
+            "message": "[INFO]\t2026-04-22T12:31:58.374Z\t0cba3506-7f49-40a0-bbff-76ef2eca31ad\tLambda triggered | RequestId: 2976eb14-26ab-4d37-b6dc-3ee9628313fc | Event: {\"version\": \"0\", \"id\": \"3a229cde-c472-12c4-d464-09f6bd26185c\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:31:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776861127410,
+            "eventId": "39625327054057034444102905579742773527273675419308785665"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861118375,
+            "message": "[INFO]\t2026-04-22T12:31:58.374Z\t0cba3506-7f49-40a0-bbff-76ef2eca31ad\tWarmup ping received\n",
+            "ingestionTime": 1776861127410,
+            "eventId": "39625327054057034444102905579742773527273675419308785666"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861118376,
+            "message": "END RequestId: 0cba3506-7f49-40a0-bbff-76ef2eca31ad\n",
+            "ingestionTime": 1776861127410,
+            "eventId": "39625327054079335189301436202884309245546323780814766083"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861118376,
+            "message": "REPORT RequestId: 0cba3506-7f49-40a0-bbff-76ef2eca31ad\tDuration: 2.08 ms\tBilled Duration: 3 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8bfbe-4346cec640c3b8a01d6c1006\tSegmentId: f11e8f408a128012\tSampled: true\t\n",
+            "ingestionTime": 1776861127410,
+            "eventId": "39625327054079335189301436202884309245546323780814766084"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861238318,
+            "message": "START RequestId: 0a9d61a3-898f-4a4b-a7d8-c74fa7fa3f59 Version: $LATEST\n",
+            "ingestionTime": 1776861247347,
+            "eventId": "39625329728875315791461437189956555183244504522923114496"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861238319,
+            "message": "[INFO]\t2026-04-22T12:33:58.319Z\t0a9d61a3-898f-4a4b-a7d8-c74fa7fa3f59\tLambda triggered | RequestId: 3e4da28b-eb84-45cd-b7a5-b0682edb432e | Event: {\"version\": \"0\", \"id\": \"5c9ffcb2-9b4f-5dfd-cb6c-a8bd89c5895d\", \"detail-type\": \"Scheduled Event\", \"source\": \"aws.events\", \"account\": \"656008069461\", \"time\": \"2026-04-22T12:33:18Z\", \"region\": \"us-east-1\", \"resources\": [\"arn:aws:events:us-east-1:656008069461:rule/pdfquery-lambda-warmup\"], \"detail\": {}}\n",
+            "ingestionTime": 1776861247347,
+            "eventId": "39625329728897616536659967813098090901517152884429094913"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861238319,
+            "message": "[INFO]\t2026-04-22T12:33:58.319Z\t0a9d61a3-898f-4a4b-a7d8-c74fa7fa3f59\tWarmup ping received\n",
+            "ingestionTime": 1776861247347,
+            "eventId": "39625329728897616536659967813098090901517152884429094914"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861238320,
+            "message": "END RequestId: 0a9d61a3-898f-4a4b-a7d8-c74fa7fa3f59\n",
+            "ingestionTime": 1776861247347,
+            "eventId": "39625329728919917281858498436239626619789801245935075331"
+        },
+        {
+            "logStreamName": "2026/04/22/[$LATEST]15215b2f6b1a4b62807190a2dc9e74d0",
+            "timestamp": 1776861238320,
+            "message": "REPORT RequestId: 0a9d61a3-898f-4a4b-a7d8-c74fa7fa3f59\tDuration: 1.46 ms\tBilled Duration: 2 ms\tMemory Size: 3008 MB\tMax Memory Used: 259 MB\t\nXRAY TraceId: 1-69e8c036-03b6881b2d3a24942219e280\tSegmentId: ddb68083ff408973\tSampled: true\t\n",
+            "ingestionTime": 1776861247347,
+            "eventId": "39625329728919917281858498436239626619789801245935075332"
+        }
+    ],
+    "searchedLogStreams": [],
+    "nextToken": "Bxkq6kVGFtq2y_MoigeqscPOdhXVbhiVtLoAmXb5jColPgaJeI9m9i-gsOw5mu2hpb6uOpw0sF8t9UxXsRF2ESIu--ZN9cpPM1XZ8QHmZfht9VQb1dma9_lc1DDhAvxqya0Z0UnIOXbdWaXWisLXDg9p5hmmohRrT7ZDr6Ze1wLZmbMrg9j2WCWf-1Sguntpti_NjYB-Qekx3sbEPHOeYc47SQb6r_qA1ChCI4zZUcnE9W4SdMSo_CagYCw7rUqZasOGtKRj9J_twJUTL7keiOoY56U8yS6nIJdTZ4FG3xz-TGYVN_IqHa9hbsNgOBEqkMNQNxm-WAvirOUfHOWe-O7lpOUv9g-zOxJD8DboA80"
+}

@@ -10,6 +10,7 @@ COPY agent_executor.py ${LAMBDA_TASK_ROOT}
 COPY document_parser.py ${LAMBDA_TASK_ROOT}
 COPY field_matcher.py ${LAMBDA_TASK_ROOT}
 COPY document_filler.py ${LAMBDA_TASK_ROOT}
+COPY semantic_cache.py ${LAMBDA_TASK_ROOT}
 
 # Set the CMD to your handler
 CMD ["agent_executor.lambda_handler"]

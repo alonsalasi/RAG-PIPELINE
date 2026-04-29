@@ -43,11 +43,12 @@ resource "aws_lambda_function" "ingestion_worker" {
 
   environment {
     variables = {
-      S3_BUCKET        = aws_s3_bucket.rag_documents.bucket
-      MAX_PARALLEL_OCR = 4
-      DPI              = 150
-      PROJECT_NAME     = var.project_name
-      FORCE_UPDATE     = "2026-02-09-parser-fix"
+      S3_BUCKET             = aws_s3_bucket.rag_documents.bucket
+      MAX_PARALLEL_OCR      = 4
+      DPI                   = 150
+      PROJECT_NAME          = var.project_name
+      FORCE_UPDATE          = "2026-04-29-parallel-ocr"
+      INGESTION_LAMBDA_NAME = "${var.project_name}-ingestion-worker"
     }
   }
 

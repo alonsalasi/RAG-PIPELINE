@@ -1,0 +1,11 @@
+{
+    "events": [
+        {
+            "timestamp": 1777464993506,
+            "message": "START RequestId: e56ff4ac-ee21-5608-8c63-96c716e85a2d Version: $LATEST\n",
+            "ingestionTime": 1777464996098
+        },
+        {
+            "timestamp": 1777464993507,
+            "message": 
+'charmap' codec can't encode character '\U0001f680' in position 73: character maps to <undefined>
