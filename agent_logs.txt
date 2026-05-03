@@ -1,0 +1,2 @@
+
+'charmap' codec can't encode character '\U0001f50d' in position 69: character maps to <undefined>

@@ -911,7 +911,8 @@ def process_message(record):
                             try:
                                 proc_obj = s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])
                                 metadata = json.loads(proc_obj['Body'].read().decode('utf-8'))
-                                source = metadata.get('source_file', '').split('/')[-1].replace('.pdf', '')
+                                sf = metadata.get('source_file', '').split('/')[-1]
+                                source = sf.rsplit('.', 1)[0] if '.' in sf else sf
                                 full_text = metadata.get('full_text', '')
                                 if full_text:
                                     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)

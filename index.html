@@ -78,8 +78,8 @@
     .export-btn:disabled { background:#ccc; cursor:not-allowed; }
     .message.error { background-color:#fff5f5; border-color:var(--error-color); color:var(--error-color);}
     .citation { font-size:.8em; color:var(--text-light); margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);}
-    .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:center; gap:10px;}
-    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none; }
+    .input-area { padding:15px 20px; border-top:1px solid var(--border-color); background-color:var(--bg-white); box-shadow:0 -2px 5px rgba(0,0,0,.03); z-index:5; display:flex; align-items:flex-end; gap:10px;}
+    #user-input { flex-grow:1; padding:12px 15px; border:1px solid var(--border-color); border-radius:20px; font-size:1em; outline:none; resize:none; overflow-y:hidden; min-height:46px; max-height:200px; line-height:1.5; font-family:inherit; display:block; }
     .btn { background-color:var(--primary-color); color:white; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:1em; transition:transform 0.1s, opacity 0.1s;}
     .btn:active { transform:scale(0.95); opacity:0.8; }
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
@@ -228,7 +228,7 @@
     <div class="chat-log" id="chat-log"></div>
     <div class="input-area">
       <button id="clear-chat" class="btn" style="background:#6c757d;">Clear</button>
-      <input type="text" id="user-input" placeholder="Ask me anything about your documents...">
+      <textarea id="user-input" placeholder="Ask me anything about your documents..." rows="1"></textarea>
       <button id="send-button" class="btn">Send</button>
     </div>
   </div>
@@ -568,7 +568,7 @@
   const UPLOAD_STATUS = document.getElementById('upload-status');
   const USER_INPUT = document.getElementById('user-input');
   
-  // Auto-detect input direction
+  // Auto-detect input direction + auto-resize
   USER_INPUT.addEventListener('input', () => {
     const text = USER_INPUT.value;
     const hasHebrew = /[\u0590-\u05FF]/.test(text);
@@ -580,6 +580,9 @@
       USER_INPUT.style.direction = 'ltr';
       USER_INPUT.style.textAlign = 'left';
     }
+    // Auto-resize
+    USER_INPUT.style.height = 'auto';
+    USER_INPUT.style.height = Math.min(USER_INPUT.scrollHeight, 200) + 'px';
   });
   const FILE_LIST_UL = document.getElementById('file-list');
   const FILE_LIST_STATUS = document.getElementById('file-list-status');
@@ -841,6 +844,7 @@
     if(!query) return;
     appendMessage('user', query);
     USER_INPUT.value='';
+    USER_INPUT.style.height = 'auto';
     const responseDiv = document.createElement('div');
     responseDiv.className='message assistant-message';
     responseDiv.innerHTML = '<span class="spinner"></span> Thinking...';
@@ -986,6 +990,12 @@
           // Save assistant response to chat history
           chatMessages.push({ role: 'assistant', content: responseText, timestamp: Date.now() });
           saveCurrentChat();
+
+          // Update sessionId in case Bedrock reset the session due to context limit
+          if (status.sessionId && status.sessionId !== sessionId) {
+            console.log('Session reset by server:', status.sessionId);
+            sessionId = status.sessionId;
+          }
 
           CHAT_LOG.scrollTop = CHAT_LOG.scrollHeight;
           break;
@@ -1198,7 +1208,7 @@
                 deleteBtn.style.color = '#28a745';
                 selectedFiles.delete(fullName);
                 updateDeleteButton();
-                setTimeout(() => fetchUploadedFiles(), 500);
+                setTimeout(() => fetchUploadedFiles(), 2000);
               } else {
                 console.error('Delete failed:', data);
                 deleteBtn.innerHTML = '✗';
@@ -1705,7 +1715,12 @@
   };
 
   SEND_BUTTON.addEventListener('click', handleQuerySubmission);
-  USER_INPUT.addEventListener('keypress', e => { if(e.key==='Enter') handleQuerySubmission(); });
+  USER_INPUT.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleQuerySubmission();
+    }
+  });
   
   REFRESH_BTN.addEventListener('click', async () => {
     if (REFRESH_BTN.disabled) return;

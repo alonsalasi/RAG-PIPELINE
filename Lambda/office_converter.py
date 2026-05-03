@@ -65,10 +65,21 @@ def extract_docx(file_path):
         doc = DocxDocument(file_path)
         seen_rIds = set()  # Track relationship IDs instead of blobs to avoid missing images
         
-        # Extract text from paragraphs
+        # Extract text from paragraphs AND tables in document order
         for para in doc.paragraphs:
             if para.text.strip():
                 text_content.append(para.text.strip())
+        
+        # Extract text from tables (many Hebrew/formal docs store content in tables)
+        for table in doc.tables:
+            for row in table.rows:
+                row_texts = []
+                for cell in row.cells:
+                    cell_text = cell.text.strip()
+                    if cell_text:
+                        row_texts.append(cell_text)
+                if row_texts:
+                    text_content.append(' | '.join(row_texts))
         
         # Extract images in document order by walking through all elements
         import re
@@ -156,10 +167,8 @@ def extract_docx(file_path):
                                                     })
                                         except Exception as e:
                                             logger.warning(f"Failed to extract image from header: {e}")
-                except:
-                    pass
-            
-            for footer in [section.footer, section.first_page_footer, section.even_page_footer]:
+                except Exception:
+                    pass  # header may not exist on this section
                 try:
                     for para in footer.paragraphs:
                         for run in para.runs:
@@ -185,8 +194,8 @@ def extract_docx(file_path):
                                                     })
                                         except Exception as e:
                                             logger.warning(f"Failed to extract image from footer: {e}")
-                except:
-                    pass
+                except Exception:
+                    pass  # footer may not exist on this section
         
         full_text = "\n\n".join(text_content)
         logger.info(f"DOCX: Extracted {len(doc.paragraphs)} paragraphs, {len(images)} images, {len(full_text)} chars")

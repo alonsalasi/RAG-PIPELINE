@@ -5,10 +5,19 @@ import os
 import time
 import uuid
 import re
-from urllib.parse import unquote_plus
-from decimal import Decimal
+import html
+import traceback
+import threading
+import concurrent.futures
+import shutil
+import tempfile
+from datetime import datetime
+from difflib import SequenceMatcher
+from urllib.parse import unquote_plus, unquote
 from functools import wraps
 import contextvars
+import base64
+import io
 
 # -----------------------------------------------------------
 # Logging with Correlation ID
@@ -150,11 +159,13 @@ if not BUCKET:
     logger.error("S3_BUCKET environment variable not configured")
     raise ValueError("S3_BUCKET environment variable must be set")
 
-# Track index timestamp to detect updates
+# Index timestamp check throttle — only hit S3 once per 60s per warm container
+_index_last_checked = 0
+INDEX_CHECK_INTERVAL = 60  # seconds
 _index_s3_timestamp = None
 
 # Session history management with compression
-MAX_HISTORY_TOKENS = 100000  # Max tokens for conversation history (50% of 200K limit)
+MAX_HISTORY_TOKENS = 20000  # Keep history small — Bedrock Agent has its own native memory
 MIN_RECENT_PAIRS = 5  # Always keep last 5 Q&A pairs uncompressed
 
 def estimate_tokens(text):
@@ -331,7 +342,6 @@ def rebuild_master_index():
     try:
         from langchain_community.vectorstores import FAISS
         from langchain.docstore.document import Document
-        import tempfile
         
         logger.info(" Rebuilding master index...")
         
@@ -343,7 +353,7 @@ def rebuild_master_index():
                 s3_client = get_s3_client()
                 s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
                 s3_client.delete_object(Bucket=BUCKET, Key="vector_store/master/index.pkl")
-            except:
+            except Exception:
                 pass
             # Clear cache
             if "master_index" in _faiss_cache:
@@ -366,7 +376,10 @@ def rebuild_master_index():
                 
                 source_file = metadata.get('source_file', '')
                 # Use string split instead of os.path.basename to preserve Hebrew/Unicode
-                base_name = source_file.split('/')[-1].replace('.pdf', '')
+                base_name = source_file.split('/')[-1]
+                # Strip any file extension (.pdf, .docx, .pptx, etc.)
+                if '.' in base_name:
+                    base_name = base_name.rsplit('.', 1)[0]
                 
                 # Get rich document context
                 context_prefix = get_document_context(metadata, base_name)
@@ -405,20 +418,12 @@ def rebuild_master_index():
                 
                 # Add image documents with surrounding text context
                 images = metadata.get('images', [])
-                # Filter out small images BEFORE numbering
+                # Filter out small images using stored file_size metadata (avoids S3 head_object per image)
                 filtered_images = []
                 for img_meta in images:
-                    s3_key = img_meta.get('s3_key', '')
-                    # Skip tiny images (same logic as search)
-                    if s3_key:
-                        try:
-                            s3_obj = s3_client.head_object(Bucket=BUCKET, Key=s3_key)
-                            file_size = s3_obj.get('ContentLength', 0)
-                            if file_size < 10000:  # 10KB minimum
-                                continue
-                        except:
-                            pass
-                    filtered_images.append(img_meta)
+                    file_size = img_meta.get('file_size', img_meta.get('size', 99999))
+                    if file_size >= 10000:
+                        filtered_images.append(img_meta)
                 
                 # Now number the filtered images
                 for idx, img_meta in enumerate(filtered_images, 1):
@@ -497,10 +502,8 @@ def rebuild_master_index():
 def preload_master_index(force_reload=False):
     """Preload master FAISS index with automatic update detection."""
     from langchain_community.vectorstores import FAISS
-    import shutil
-    from datetime import datetime
     
-    global _index_s3_timestamp
+    global _index_s3_timestamp, _index_last_checked
     cache_key = "master_index"
     cache_dir = "/tmp/master_index"
     s3_client = get_s3_client()
@@ -550,7 +553,6 @@ def preload_master_index(force_reload=False):
     
     start_time = time.time()
     # Download files in parallel for faster startup
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future1 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.faiss", index_file)
         future2 = executor.submit(s3_client.download_file, BUCKET, "vector_store/master/index.pkl", pkl_file)
@@ -564,7 +566,7 @@ def preload_master_index(force_reload=False):
     try:
         s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
         _index_s3_timestamp = s3_obj['LastModified'].timestamp()
-    except:
+    except Exception:
         _index_s3_timestamp = time.time()
     
     logger.info(f"Preloaded master index: {master_index.index.ntotal} vectors in {time.time() - start_time:.2f}s")
@@ -705,7 +707,6 @@ def handle_delete_file(filename):
         # Start async master index rebuild (don't wait)
         try:
             logger.info(f"Starting async master index rebuild after deletion | File: {base_filename}")
-            import threading
             rebuild_thread = threading.Thread(target=rebuild_master_index)
             rebuild_thread.start()
             logger.info(f"Async rebuild started in background")
@@ -736,23 +737,23 @@ def handle_delete_file(filename):
 def optimized_search(query, top_k=30):
     """Intelligent search using semantic similarity."""
     try:
-        # CRITICAL: Always check for index updates before searching
-        # This ensures we don't miss recently uploaded files
-        global _index_s3_timestamp
+        global _index_s3_timestamp, _index_last_checked
         s3_client = get_s3_client()
-        try:
-            s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
-            s3_last_modified = s3_obj['LastModified'].timestamp()
-            
-            # If our cached timestamp is older than S3, force reload
-            if _index_s3_timestamp is None or s3_last_modified > _index_s3_timestamp:
-                logger.info(f"Index update detected before search, reloading...")
-                cache_key = "master_index"
-                if cache_key in _faiss_cache:
-                    del _faiss_cache[cache_key]
-                preload_master_index()
-        except Exception as check_err:
-            logger.warning(f"Could not check index timestamp: {type(check_err).__name__}")
+        now = time.time()
+        # Only check S3 for index updates at most once per INDEX_CHECK_INTERVAL seconds
+        if now - _index_last_checked >= INDEX_CHECK_INTERVAL:
+            try:
+                s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
+                s3_last_modified = s3_obj['LastModified'].timestamp()
+                _index_last_checked = now
+                if _index_s3_timestamp is None or s3_last_modified > _index_s3_timestamp:
+                    logger.info("Index update detected before search, reloading...")
+                    cache_key = "master_index"
+                    if cache_key in _faiss_cache:
+                        del _faiss_cache[cache_key]
+                    preload_master_index()
+            except Exception as check_err:
+                logger.warning(f"Could not check index timestamp: {type(check_err).__name__}")
         
         # Use cached index first
         cache_key = "master_index"
@@ -773,7 +774,7 @@ def optimized_search(query, top_k=30):
                 try:
                     s3_obj = s3_client.head_object(Bucket=BUCKET, Key="vector_store/master/index.faiss")
                     _index_s3_timestamp = s3_obj['LastModified'].timestamp()
-                except:
+                except Exception:
                     _index_s3_timestamp = time.time()
                     
                 logger.info("Loaded index from disk cache")
@@ -951,15 +952,6 @@ def lambda_handler(event, context):
     except Exception as e:
         logger.error(f"Unhandled error in lambda_handler: {sanitize_for_logging(str(e))}")
         return cors_response({"error": "Internal server error"}, 500)
-        for item in response.get("Contents", []):
-            key = item["Key"]
-            if key.lower().endswith(".pdf"):
-                files.append(os.path.basename(key))
-        logger.info(f" Listed {len(files)} processed PDFs.")
-        return cors_response({"files": files})
-    except Exception as e:
-        logger.error(f" Failed to list files: {type(e).__name__}")
-        return cors_response({"error": "Failed to list files"}, 500)
 
 
 # -----------------------------------------------------------
@@ -1046,7 +1038,6 @@ def handle_get_upload_url_api(event):
 def handle_list_files_api(event):
     """API Gateway handler for listing files."""
     try:
-        import html
         s3_client = get_s3_client()
         
         response = s3_client.list_objects_v2(Bucket=BUCKET, Prefix="processed/")
@@ -1081,7 +1072,7 @@ def handle_list_files_api(event):
                         if upload_base == base_name:
                             upload_date = upload_obj["LastModified"]
                             break
-            except:
+            except Exception:
                 pass
             
             upload_ts = int(upload_date.timestamp())
@@ -1106,7 +1097,6 @@ def handle_batch_delete_api(event):
 def handle_delete_file_api(event):
     """API Gateway handler for deleting files."""
     try:
-        from urllib.parse import unquote
         params = event.get("queryStringParameters") or {}
         display_name = unquote(params.get("fileName", ""))
         
@@ -1127,29 +1117,68 @@ def handle_delete_file_api(event):
                 base_name = parts[1]
                 logger.info(f"Stripped timestamp prefix, using base_name: {sanitize_for_logging(base_name)}")
         
-        # Collect all keys to delete (need to handle both with and without timestamp prefix)
-        keys_to_delete = [
-            f"processed/{display_name}",  # Original name with timestamp
-            f"processed/{base_name}.json",  # Without timestamp
-            f"progress/{display_name.replace('.json', '.json')}",  # With timestamp
-            f"progress/{base_name}.json"  # Without timestamp
+        # Find the actual processed/ key by listing (timestamp in key may differ from upload_ts)
+        s3_client = get_s3_client()
+        processed_keys = []
+        try:
+            proc_resp = s3_client.list_objects_v2(Bucket=BUCKET, Prefix=f"processed/")
+            for obj in proc_resp.get('Contents', []):
+                key = obj['Key']
+                if not key.endswith('.json'):
+                    continue
+                key_base = key[len('processed/'):][:-5]  # strip prefix and .json
+                # Strip timestamp prefix from key_base for comparison
+                if '_' in key_base:
+                    parts = key_base.split('_', 1)
+                    if parts[0].isdigit():
+                        key_base_stripped = parts[1]
+                    else:
+                        key_base_stripped = key_base
+                else:
+                    key_base_stripped = key_base
+                if key_base_stripped == base_name or key_base == base_name:
+                    processed_keys.append(key)
+                    logger.info(f"Found processed key: {key}")
+        except Exception as e:
+            logger.error(f"Failed to list processed/: {e}")
+
+        # Collect all keys to delete
+        keys_to_delete = list(processed_keys) or [
+            f"processed/{display_name}.json",
+            f"processed/{base_name}.json",
+        ]
+        keys_to_delete += [
+            f"progress/{display_name}.json",
+            f"progress/{base_name}.json"
         ]
         
-        # Collect uploaded files (original documents)
-        try:
-            upload_objects = list_all_s3_objects(BUCKET, f"uploads/{base_name}")
-            keys_to_delete.extend([obj['Key'] for obj in upload_objects])
-            logger.info(f"Found {len(upload_objects)} upload files to delete")
-        except Exception as e:
-            logger.error(f"Failed to list uploads: {e}")
+        # Collect uploaded files and images in parallel for speed
+        upload_objects = []
+        image_objects = []
         
-        # Collect images
-        try:
-            image_objects = list_all_s3_objects(BUCKET, f"images/{base_name}/")
-            keys_to_delete.extend([obj['Key'] for obj in image_objects])
-            logger.info(f"Found {len(image_objects)} image files to delete")
-        except Exception as e:
-            logger.error(f"Failed to list images: {e}")
+        def _list_uploads():
+            try:
+                return list_all_s3_objects(BUCKET, f"uploads/{base_name}")
+            except Exception as e:
+                logger.error(f"Failed to list uploads: {e}")
+                return []
+        
+        def _list_images():
+            try:
+                return list_all_s3_objects(BUCKET, f"images/{base_name}/")
+            except Exception as e:
+                logger.error(f"Failed to list images: {e}")
+                return []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f_uploads = executor.submit(_list_uploads)
+            f_images = executor.submit(_list_images)
+            upload_objects = f_uploads.result()
+            image_objects = f_images.result()
+        
+        keys_to_delete.extend([obj['Key'] for obj in upload_objects])
+        keys_to_delete.extend([obj['Key'] for obj in image_objects])
+        logger.info(f"Found {len(upload_objects)} uploads and {len(image_objects)} images to delete")
         
         # Batch delete all collected keys
         try:
@@ -1159,29 +1188,18 @@ def handle_delete_file_api(event):
             logger.error(f"Batch delete failed: {e}")
             return cors_response({"error": f"Delete failed: {str(e)}"}, 500)
         
-        # Wait a moment for S3 to propagate deletions
-        time.sleep(0.5)
-        
-        # CRITICAL: Clear query cache when documents change
+        # Rebuild master vector store async (don't block the response)
         try:
-            logger.info("Clearing query cache after document deletion...")
-            cache_objects = list_all_s3_objects(BUCKET, "query-cache/", max_keys=1000)
-            if cache_objects:
-                cache_keys = [obj['Key'] for obj in cache_objects]
-                deleted = batch_delete_s3_objects(BUCKET, cache_keys)
-                logger.info(f"Cleared {deleted} cached queries")
-        except Exception as cache_err:
-            logger.warning(f"Failed to clear query cache: {cache_err}")
-        
-        # Rebuild master vector store (removes deleted document from index)
-        try:
-            logger.info("Rebuilding master index...")
-            rebuild_master_index()
-            logger.info("Master index rebuilt after deletion")
+            logger.info("Triggering async master index rebuild after deletion...")
+            lambda_client = boto3.client('lambda')
+            lambda_client.invoke(
+                FunctionName=os.getenv('AGENT_LAMBDA_NAME', os.getenv('AWS_LAMBDA_FUNCTION_NAME')),
+                InvocationType='Event',
+                Payload=json.dumps({"action": "rebuild_index"})
+            )
+            logger.info("Async index rebuild triggered")
         except Exception as e:
-            logger.error(f"Failed to rebuild master index: {e}")
-            # Don't fail the delete operation if index rebuild fails
-            logger.warning("Delete succeeded but index rebuild failed - index will be stale")
+            logger.warning(f"Failed to trigger async index rebuild: {type(e).__name__}")
         
         return cors_response({"success": True, "message": f"{base_name} deleted successfully"})
     except Exception as e:
@@ -1361,11 +1379,7 @@ def handle_search_action(event):
         
         # Extract document name early to use in search
         doc_name_in_query = None
-        # Decode HTML entities FIRST (e.g., &quot; -> ")
-        import html
-        # CRITICAL: Use the agent's reformulated query for extraction, not original input
-        # The agent adds document context that the user didn't explicitly state
-        decoded_input = html.unescape(query)  # Changed from original_input to query
+        decoded_input = html.unescape(query)
         
         # Extended patterns to match various document reference formats
         # Including Hebrew: "מהמסמך" = "from document", 'הצעת מחיר - חברת ליידוס' etc
@@ -1381,8 +1395,10 @@ def handle_search_action(event):
             r'[Cc]ompare\s+(.+?)\s+and\s+(.+?)(?:\s+(?:pricing|for|in|to|with)|\s*$)',
             # Hebrew: "מהמסמך NAME" - capturing until punctuation
             r'מהמסמך\s+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
-            # Hebrew: "ממסמך NAME"
+            # Hebrew: "ממסמך NAME" or "המסמך NAME"
             r'מ(?:ה)?מסמך\s+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
+            # Hebrew: "המסמך NAME" (the document NAME)
+            r'המסמך\s+([^?\n]{3,}?)(?:\?|$)',
             # English: "from/in document"
             r'(?:from|in)\s+(?:the\s+)?document[:\s]+["\'"]?([^"\'?]+?)["\'"]?\s*(\?|$)',
         ]
@@ -1423,7 +1439,16 @@ def handle_search_action(event):
                     doc_name_in_query = doc_name_in_query[:-4]
                 logger.info(f"🔍 Fallback extracted document name: '{doc_name_in_query}'")
             else:
-                logger.info(f"🔍 FALLBACK: No pattern matched in query")
+                # FINAL FALLBACK: if query is mostly Hebrew and looks like a document name
+                # (contains version/number patterns like גרסה1.3 or has parentheses)
+                hebrew_chars = sum(1 for c in decoded_input if '\u05d0' <= c <= '\u05ea')
+                has_version = bool(re.search(r'גרסה|version|v\d|\d+\.\d+', decoded_input, re.IGNORECASE))
+                has_parens = '(' in decoded_input or ')' in decoded_input
+                if hebrew_chars > 5 and (has_version or has_parens):
+                    doc_name_in_query = decoded_input.strip().rstrip('?')
+                    logger.info(f"🔍 FALLBACK: Treating full query as document name: '{doc_name_in_query}'")
+                else:
+                    logger.info(f"🔍 FALLBACK: No pattern matched in query")
         
         # Decision based on signal strength
         if image_signals >= 10:
@@ -1492,7 +1517,8 @@ def handle_search_action(event):
             s3_key = doc.metadata.get('s3_key', '')
             if s3_key:
                 # Extract just the filename from S3 key
-                s3_filename = s3_key.split('/')[-1].replace('.pdf', '')
+                s3_filename = s3_key.split('/')[-1]
+                s3_filename = s3_filename.rsplit('.', 1)[0] if '.' in s3_filename else s3_filename
                 if s3_filename:
                     unique_sources.add(s3_filename)
         
@@ -1505,8 +1531,6 @@ def handle_search_action(event):
         
         # Match document name - be more flexible with matching
         if doc_name_in_query:
-            # Normalize for comparison (handle HTML entities, case, spaces, Hebrew)
-            import html
             normalized_query = html.unescape(doc_name_in_query).strip()
             normalized_query_upper = normalized_query.upper()
             
@@ -1521,8 +1545,6 @@ def handle_search_action(event):
                 doc_filter = exact_match
                 logger.info(f"🎯 ✅ Exact match: '{doc_filter}'")
             else:
-                # Try substring matching (document name is contained in source)
-                # This handles cases where stored name might have prefixes/suffixes
                 for source in unique_sources:
                     normalized_source = html.unescape(source).strip().upper()
                     # Remove timestamp prefix if present for comparison
@@ -1565,7 +1587,7 @@ def handle_search_action(event):
                             source_normalized = prefix_match.group(1)
                         
                         ratio = SequenceMatcher(None, normalized_query_upper, source_normalized).ratio()
-                        if ratio > 0.75 and ratio > best_ratio:  # 75% similarity threshold for better matches
+                        if ratio > 0.88 and ratio > best_ratio:  # Raised from 0.75 — prevents partial Hebrew name collisions
                             best_match = source
                             best_ratio = ratio
                             logger.info(f"🔍 Fuzzy candidate: '{source}' ratio={ratio:.2f}")
@@ -1600,7 +1622,7 @@ def handle_search_action(event):
                     # Check if any field matches doc_filter
                     if (source == doc_filter or 
                         source_file == doc_filter or 
-                        s3_key.split('/')[-1].replace('.pdf', '') == doc_filter if s3_key else False or
+                        (s3_key.split('/')[-1].rsplit('.', 1)[0] if '.' in s3_key.split('/')[-1] else s3_key.split('/')[-1]) == doc_filter if s3_key else False or
                         uploaded_name == doc_filter):
                         filtered.append((doc, score))
                         if len(filtered) <= 5:
@@ -1675,18 +1697,11 @@ def handle_search_action(event):
                 if not requested_image_num:
                     # Get image description for filtering
                     img_desc = doc.metadata.get('description', '').lower()
-                    s3_key = doc.metadata.get('s3_key', '')
-                    
-                    # Filter out tiny images (logos, icons < 10KB)
-                    if s3_key:
-                        try:
-                            s3_obj = get_s3_client().head_object(Bucket=BUCKET, Key=s3_key)
-                            file_size = s3_obj.get('ContentLength', 0)
-                            if file_size < 10000:  # 10KB minimum
-                                logger.info(f"Filtering out tiny image ({file_size} bytes): {s3_key}")
-                                continue
-                        except:
-                            pass
+                    # Use stored file_size metadata to avoid S3 head_object per image
+                    file_size = doc.metadata.get('file_size', doc.metadata.get('size', 99999))
+                    if file_size < 10000:
+                        logger.info(f"Filtering out tiny image ({file_size} bytes)")
+                        continue
                     
                     # Filter out ONLY obvious non-technical images (be conservative)
                     exclude_patterns = [
@@ -1730,8 +1745,6 @@ def handle_search_action(event):
                 source = doc.metadata.get('source', '')
                 
                 if doc_filter:
-                    # Normalize both for comparison
-                    import html
                     normalized_source = html.unescape(source).strip().upper()
                     normalized_filter = html.unescape(doc_filter).strip().upper()
                     
@@ -1923,14 +1936,15 @@ def handle_search_action(event):
             final_results.extend(scored_images[:num_images])
             
         elif wants_text and not wants_images:
-            # PURE TEXT QUERY - return top 30 most relevant chunks with FULL context
-            # For document-specific queries, ensure we get text chunks even if scores are low
+            # PURE TEXT QUERY - return top 15 most relevant chunks
+            # Reduced from 30 to slow context growth in long sessions
+            # Top 15 chunks already contain the most relevant content
             if doc_filter and len(text_candidates) > 0:
-                final_results.extend(text_candidates[:30])
-                logger.info(f"📄 TEXT ONLY (doc-specific): Selected {len(text_candidates[:30])} text chunks from {doc_filter}")
+                final_results.extend(text_candidates[:15])
+                logger.info(f"📄 TEXT ONLY (doc-specific): Selected {len(text_candidates[:15])} text chunks from {doc_filter}")
             elif len(text_candidates) > 0:
-                final_results.extend(text_candidates[:30])
-                logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:30])} text chunks")
+                final_results.extend(text_candidates[:15])
+                logger.info(f"📄 TEXT ONLY: Selected {len(text_candidates[:15])} text chunks")
             else:
                 logger.warning("⚠️ No text candidates found, falling back to hybrid")
                 final_results.extend(image_candidates[:3])
@@ -1944,10 +1958,10 @@ def handle_search_action(event):
                 final_results.extend(image_candidates[:3])
                 logger.info(f"📄 HYBRID (doc-specific): Selected ALL {len(text_candidates)} text chunks + {len(image_candidates[:3])} images")
             else:
-                # General query - balanced mix
-                final_results.extend(text_candidates[:30])
+                # General query - balanced mix, reduced chunks to slow context growth
+                final_results.extend(text_candidates[:15])
                 final_results.extend(image_candidates[:3])
-                logger.info(f"🔄 HYBRID: Selected {len(text_candidates[:30])} text + {len(image_candidates[:3])} images")
+                logger.info(f"🔄 HYBRID: Selected {len(text_candidates[:15])} text + {len(image_candidates[:3])} images")
         
         # Log what we're about to format
         logger.info(f"Final results count: {len(final_results)}")
@@ -2033,7 +2047,7 @@ def handle_search_action(event):
         
         # CRITICAL: Bedrock Agent has a response size limit (~10KB for input)
         # If response is too large, truncate it intelligently
-        MAX_RESPONSE_SIZE = 6000  # 6KB to be safe (reduced from 8KB)
+        MAX_RESPONSE_SIZE = 6000  # 6KB to be safe
         if len(result) > MAX_RESPONSE_SIZE:
             logger.warning(f"⚠️ Response too large ({len(result)} bytes), truncating to {MAX_RESPONSE_SIZE} bytes")
             # Truncate but keep complete results
@@ -2251,7 +2265,7 @@ def handle_agent_query(event):
                     agentAliasId=alias_id,
                     sessionId=session_id,
                     inputText=query,
-                    enableTrace=True
+                    enableTrace=False
                 )
                 logger.info(f"⏱️ TIMING: Agent invocation completed in {time.time() - invoke_start:.3f}s")
                 logger.info(f"✅ Agent response object received, processing stream...")
@@ -2300,8 +2314,6 @@ def handle_agent_query(event):
         # Extract IMAGE_URL: markers and generate presigned URLs
         image_start = time.time()
         images = []
-        import re
-        import html
         
         # DEBUG: Log what agent actually returned
         logger.info(f"📝 AGENT RESPONSE (length={len(answer)}): {answer[:500] if len(answer) > 0 else '[EMPTY]'}")
@@ -2344,11 +2356,12 @@ def handle_agent_query(event):
             
             logger.info(f"🔍 Found {len(matches)} image paths in response")
             
+            s3_client = get_s3_client()
+            unique_keys = set()
+            failed_images = []
+            
             if matches:
                 logger.info(f"Found {len(matches)} IMAGE_URL markers in agent response")
-                s3_client = get_s3_client()
-                unique_keys = set()
-                failed_images = []
             
             for s3_key in matches:
                 # Decode HTML entities (e.g., &quot; -> ")
@@ -2473,8 +2486,7 @@ def handle_agent_query(event):
             
         logger.info(f"⏱️ TIMING: Image URL generation took {time.time() - image_start:.3f}s ({len(images)} images)")
         
-        # Save conversation history
-        history = load_session_history(session_id)
+        # Save conversation history — reuse already-loaded history, just append
         history.append({"role": "user", "content": query})
         history.append({"role": "assistant", "content": answer})
         save_session_history(session_id, history)
@@ -2626,8 +2638,8 @@ def handle_processing_status(event):
                         w = json.loads(s3_client.get_object(Bucket=BUCKET, Key=obj['Key'])['Body'].read())
                         total_pages_done += w.get('pages_done', 0)
                         total_pages += w.get('total_pages', 0)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to read worker progress {obj['Key']}: {type(e).__name__}")
                 if total_pages > 0:
                     pct = 10 + int((total_pages_done / total_pages) * 75)
                     msg = f"OCR: {total_pages_done}/{total_pages} pages across {worker_count} parallel workers..."
@@ -2783,7 +2795,6 @@ def send_websocket_message(connection_url, connection_id, message):
         return True
     except Exception as e:
         logger.error(f"WS SEND FAILED: {type(e).__name__}: {str(e)}")
-        import traceback
         logger.error(f"WS SEND TRACE: {traceback.format_exc()}")
         return False
 
@@ -2893,8 +2904,6 @@ def handle_websocket_agent_query(event):
         user_wants_images = any(keyword in query_lower for keyword in visual_keywords)
         
         if user_wants_images:
-            import re
-            import html
             image_url_pattern = r'IMAGE_URL:([^\n|]+)'
             matches = re.findall(image_url_pattern, answer)
             
@@ -2926,7 +2935,6 @@ def handle_websocket_agent_query(event):
         logger.info("WS: Query complete")
         
     except Exception as e:
-        import traceback
         logger.error(f"WS: Query failed: {e}")
         logger.error(f"WS: Traceback: {traceback.format_exc()}")
         try:
@@ -2986,7 +2994,6 @@ def lambda_handler(event, context):
                 return {'statusCode': 200}
             except Exception as e:
                 logger.error(f"WS HANDLER ERROR: {e}")
-                import traceback
                 logger.error(f"WS HANDLER TRACE: {traceback.format_exc()}")
                 return {'statusCode': 500}
     
@@ -3167,12 +3174,20 @@ def process_agent_query_background(query_id, query, session_id):
         # Initialize semantic cache
         cache = SemanticCache(s3_client, BUCKET, threshold=0.85)
         
-        # Check cache first
-        cached_result = cache.search_similar(query, session_id)
-        if cached_result:
+        # Skip cache for document-specific queries — new uploads may not be in cached response
+        doc_ref_patterns = [
+            r'[\u0590-\u05FF]{3,}',  # Hebrew words (3+ chars = likely a doc name)
+            r'\.(?:pdf|docx|pptx|xlsx)\b',  # File extensions
+            r'(?:document|file|מסמך|קובץ|חוברת)',  # Document reference words
+        ]
+        is_doc_query = any(re.search(p, query, re.IGNORECASE) for p in doc_ref_patterns)
+        
+        # Check cache first (skip for document-specific queries to avoid stale results)
+        cached_result = None if is_doc_query else cache.search_similar(query, session_id)
+        if is_doc_query:
+            logger.info("Cache BYPASS: document-specific query, fetching fresh results")
+        elif cached_result:
             logger.info(f"Cache HIT: similarity={cached_result['similarity']:.2f}, saved tokens")
-            
-            # Return cached response immediately
             s3_client.put_object(
                 Bucket=BUCKET,
                 Key=status_key,
@@ -3205,34 +3220,68 @@ def process_agent_query_background(query_id, query, session_id):
             Body=json.dumps({"status": "processing", "message": "Searching documents..."}),
             ContentType="application/json"
         )
-        time.sleep(0.5)
         
-        # Load and compress history BEFORE sending to agent
+        # Load conversation history from S3 (used for context injection below)
         history = load_session_history(session_id)
-        compressed_history = compress_history(history)
         
-        # Build session attributes with compressed history
-        session_attributes = {}
-        if compressed_history:
-            history_text = "\n".join([f"{m['role']}: {m['content']}" for m in compressed_history])
-            session_attributes['conversationHistory'] = history_text[:200000]
+        # Build context-injected query — inject original question + last 3 Q&A pairs
+        # This makes every call self-contained so Bedrock's session never grows unboundedly
+        # We use a per-call session ID so Bedrock starts fresh each time
+        recent_turns = []  # initialize before the if block to avoid NameError
+        if history:
+            context_lines = []
+            
+            # Always include the first user message (original topic/subject)
+            first_user = next((m for m in history if m['role'] == 'user'), None)
+            if first_user:
+                context_lines.append(f"[Original question]: {first_user.get('content', '')[:500]}")
+            
+            # Include last 3 Q&A pairs (recent context), skipping the first message if already included
+            recent_turns = history[-6:] if len(history) > 6 else history[1:]  # skip first msg already added
+            for m in recent_turns:
+                # Don't duplicate the first message
+                if first_user and m.get('content') == first_user.get('content') and m['role'] == 'user':
+                    continue
+                role_label = "User" if m['role'] == 'user' else "Assistant"
+                content = m.get('content', '')[:600]
+                context_lines.append(f"{role_label}: {content}")
+            
+            context_prefix = "[Conversation context - use this to understand follow-up questions]:\n" + "\n".join(context_lines) + "\n\n[Current question]:\n"
+            query_with_context = context_prefix + query
+        else:
+            query_with_context = query
         
-        # Invoke agent with retry
+        # Use a fresh per-call session ID — we manage context ourselves via injection above
+        # This prevents Bedrock's internal session from growing and hitting context limits
+        per_call_session_id = f"{session_id}_{int(time.time())}"
+        logger.info(f"Using per-call session: {per_call_session_id}, context turns injected: {len(recent_turns) // 2}")
+        
         for attempt in range(3):
             try:
                 response = bedrock_client.invoke_agent(
                     agentId=agent_id,
                     agentAliasId=alias_id,
-                    sessionId=session_id,
-                    inputText=query,
-                    enableTrace=False,
-                    sessionState={'sessionAttributes': session_attributes} if session_attributes else {}
+                    sessionId=per_call_session_id,
+                    inputText=query_with_context,
+                    enableTrace=False
                 )
                 break
             except Exception as e:
-                if 'Throttling' in str(e) and attempt < 2:
+                error_str = str(e)
+                if 'Throttling' in error_str and attempt < 2:
                     time.sleep(2 ** attempt)
                     continue
+                # Safety net: if still too long, strip context and retry bare
+                if 'too long' in error_str.lower() or 'input is too long' in error_str.lower():
+                    logger.warning(f"Context-injected query too long, retrying with bare query")
+                    response = bedrock_client.invoke_agent(
+                        agentId=agent_id,
+                        agentAliasId=alias_id,
+                        sessionId=per_call_session_id,
+                        inputText=query,
+                        enableTrace=False
+                    )
+                    break
                 raise
         
         # Update status: Generating
@@ -3251,7 +3300,6 @@ def process_agent_query_background(query_id, query, session_id):
         
         # Extract images
         images = []
-        import re, html
         matches = re.findall(r'IMAGE_URL:([^\n|]+)', answer)
         for s3_key in matches:
             s3_key = html.unescape(s3_key.strip())
@@ -3271,7 +3319,7 @@ def process_agent_query_background(query_id, query, session_id):
         cache.store(query, answer, images, session_id)
         logger.info("Response cached for future queries")
         
-        # Write success to S3
+        # Write success to S3 — return original session_id so frontend tracks history correctly
         s3_client.put_object(
             Bucket=BUCKET,
             Key=status_key,
@@ -3279,7 +3327,7 @@ def process_agent_query_background(query_id, query, session_id):
                 "status": "completed",
                 "response": answer,
                 "images": images,
-                "sessionId": session_id,
+                "sessionId": session_id,  # original session_id, not per_call
                 "cached": False
             }),
             ContentType="application/json"
@@ -3296,8 +3344,8 @@ def process_agent_query_background(query_id, query, session_id):
                 Body=json.dumps({"status": "failed", "error": str(e)}),
                 ContentType="application/json"
             )
-        except:
-            pass
+        except Exception as write_err:
+            logger.error(f"Failed to write error status: {type(write_err).__name__}")
 
 
 def handle_view_file(event):
@@ -3380,7 +3428,7 @@ def handle_agent_status(event):
             if status_data.get('status') in ['completed', 'failed']:
                 try:
                     s3_client.delete_object(Bucket=BUCKET, Key=status_key)
-                except:
+                except Exception:
                     pass
             
             return cors_response(status_data)
@@ -3437,8 +3485,8 @@ def handle_list_chats(event):
                 chat_obj = s3_client.get_object(Bucket=BUCKET, Key=obj["Key"])
                 chat_data = json.loads(chat_obj["Body"].read().decode("utf-8"))
                 chats.append({"id": chat_data["id"], "title": chat_data["title"], "timestamp": chat_data["timestamp"]})
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Skipping malformed chat {obj['Key']}: {type(e).__name__}")
         
         chats.sort(key=lambda x: x["timestamp"], reverse=True)
         return cors_response({"chats": chats[:50]})
@@ -3448,6 +3496,7 @@ def handle_list_chats(event):
 
 def handle_get_chat(event):
     """Load specific chat history."""
+    s3_client = get_s3_client()
     try:
         params = event.get("queryStringParameters") or {}
         chat_id = params.get("chatId")
@@ -3458,7 +3507,6 @@ def handle_get_chat(event):
         if not chat_id:
             return cors_response({"error": "chatId required"}, 400)
         
-        s3_client = get_s3_client()
         key = f"chat-history/{user_email}/{chat_id}.json"
         response = s3_client.get_object(Bucket=BUCKET, Key=key)
         chat_data = json.loads(response["Body"].read().decode("utf-8"))
@@ -3583,7 +3631,7 @@ def handle_autofill_extract_source(event):
             try:
                 s3_client.head_object(Bucket=BUCKET, Key=text_key)
                 return cors_response({"status": "ready"})
-            except:
+            except Exception:
                 return cors_response({"status": "processing"})
         
         # Upload mode
@@ -3595,7 +3643,6 @@ def handle_autofill_extract_source(event):
         if not file_data or not filename:
             return cors_response({"error": "Missing fileData or filename"}, 400)
         
-        import base64
         try:
             file_bytes = base64.b64decode(file_data)
             logger.info(f"Decoded {len(file_bytes)} bytes")
@@ -3646,7 +3693,6 @@ def handle_autofill_match_fields(event):
         if not session_id or not file_data or not filename:
             return cors_response({"error": "Missing required fields"}, 400)
         
-        import base64
         file_bytes = base64.b64decode(file_data)
         
         s3_client = get_s3_client()
@@ -3705,7 +3751,6 @@ def handle_autofill_fill_document(event):
         file_ext = target_filename.rsplit('.', 1)[-1].lower() if '.' in target_filename else 'txt'
         
         # Download original target file
-        import io
         target_obj = s3_client.get_object(Bucket=BUCKET, Key=target_key)
         target_bytes = io.BytesIO(target_obj['Body'].read())
         
